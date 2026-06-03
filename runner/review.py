@@ -172,7 +172,10 @@ def main():
         provider = random.choice(["claude", "codex"])
         model = a.claude_model if provider == "claude" else a.codex_model
         fn = run_claude if provider == "claude" else run_codex
-        res = fn(build_prompt(pathlib.Path(a.rubrics_dir), rubric, context), a.tool_cwd, model)
+        prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, context)
+        res = fn(prompt, a.tool_cwd, model)
+        if res["returncode"] != 0 or extract_verdict(res.get("text", "")) is None:
+            res = fn(prompt, a.tool_cwd, model)  # one retry for a transient CLI failure
         res.update(provider=provider, model=model, rubric=rubric,
                    verdict_obj=extract_verdict(res.get("text", "")))
         spent_today += res.get("cost_usd") or 0.0
