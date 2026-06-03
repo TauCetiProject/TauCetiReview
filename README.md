@@ -1,35 +1,23 @@
-# TauCetiReview
+# Tau Ceti Review
 
-Human-owned. This is where review of AI-authored `TauCeti/` PRs is specified,
-first as written rubrics, later (the ambition) as bots that apply them.
+The review rubrics and (soon) the machinery that runs review for
+[Tau Ceti](https://github.com/FormalFrontier/TauCeti), an AIs-welcome Lean 4 library
+downstream of Mathlib. Humans own these rubrics; AIs author the code; the human roadmaps
+live in [TauCetiRoadmap](https://github.com/FormalFrontier/TauCetiRoadmap).
 
-The split with CI: anything in review that *can* be a mechanical check should become
-a CI check, so human/automated review is reserved for the judgement calls that can't
-be mechanized (is this the right abstraction? is the statement faithful to intent?).
+## How review works
+
+Reviewers run only after a PR's CI is green, so the mechanical layer (build, the axiom
+allowlist, the Mathlib linter set, the import boundary) is already satisfied. Each PR is then
+judged by several independent agents, one per angle, which post `approve` / `request_changes`
+/ `block` verdicts with evidence. Only the integrity angles may block.
+
+## Rubrics
+
+Each agent's prompt is [`rubrics/_common.md`](rubrics/_common.md) followed by its angle file;
+see [`rubrics/README.md`](rubrics/README.md) for the list and which angles can block.
 
 ## Status
 
-- `rubric.md`: the initial human-review rubric (skeleton).
-- `Axioms.lean`: the axiom-allowlist audit, run in CI as `lake exe axioms`.
-- Review bots: TBD.
-
-## Already mechanized in CI (`.github/workflows/ci.yml`)
-
-- Builds against pinned Mathlib.
-- **Axiom-allowlist audit** (`Axioms.lean`, `lake exe axioms`): inspects the built
-  `TauCeti` environment and asserts every declaration *defined in `TauCeti`* depends only
-  on the allowlist `propext`, `Classical.choice`, `Quot.sound`. Because it reads the
-  kernel environment, not source text, it catches what a grep cannot: `sorry`/`admit`
-  (as `sorryAx`), `native_decide` (as `Lean.ofReduceBool`), and any home-rolled `axiom`,
-  including ones reaching in through imports. This subsumes the old textual no-sorry guard.
-- `TauCeti/` does not import the roadmap/review trees (so it cannot inherit sorried
-  goals, the real trust boundary, since the two-`lean_lib` split alone is only build
-  convenience).
-
-## Planned checks (to migrate from rubric → CI)
-
-- **Statement faithfulness.** A lockfile pinning the expected *type* of each roadmap
-  milestone, with CI failing if a claimed solution's signature drifts from it, so
-  "prove milestone X" can't be won by weakening the statement.
-- **AI-PR path guard.** An AI-authored PR may touch only `TauCeti/`.
-- Docstring presence; environment linters.
+- `rubrics/` — the per-angle prompts (live).
+- The review runner and its GitHub Actions workflow — in progress.

@@ -5,9 +5,10 @@ One question: does this PR belong in Tau Ceti now, as a single coherent unit? Th
 
 ## Roadmap fit
 
-Tau Ceti implements `TauCetiRoadmap/`. A PR is in scope only if it advances a specific
-roadmap target, or supplies a prerequisite a specific target needs. A valid claim identifies
-a roadmap file and node or heading; read it to confirm.
+Tau Ceti implements the roadmaps in the `FormalFrontier/TauCetiRoadmap` repo, checked out for
+you in the workspace. A PR is in scope only if it advances a specific roadmap target, or
+supplies a prerequisite a specific target needs. A valid claim identifies a roadmap file and
+node or heading; read it (in the roadmap checkout) to confirm.
 
 - The dependency must be real and proximate: you can see the path from this material to the
   named target. "Might be useful for", or a long speculative chain, is not a prerequisite.
