@@ -1,0 +1,22 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-1f28f2b92f5121ff9b564625\n{\"verdict\":\"approve\",\"summary\":\"The diff only changes project documentation and introduces no TauCeti or Lean declarations, so there is no reuse or duplication issue under this rubric.\",\"findings\":[]}",
+  "usage": {
+    "input_tokens": 28125,
+    "cached_input_tokens": 23808,
+    "output_tokens": 524,
+    "reasoning_output_tokens": 144
+  },
+  "session_id": "019e8f2b-7219-7272-a05e-6b688f3a3993",
+  "cost_usd": 0.040396,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "reuse",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "The diff only changes project documentation and introduces no TauCeti or Lean declarations, so there is no reuse or duplication issue under this rubric.",
+    "findings": []
+  }
+}
