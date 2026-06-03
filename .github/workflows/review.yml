@@ -1,4 +1,4 @@
-name: review-smoke
+name: review
 
 on:
   push:
@@ -8,8 +8,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: review
+  cancel-in-progress: false
+
 jobs:
-  smoke:
+  review:
     runs-on: ubuntu-latest
     env:
       PR: "12"
@@ -28,7 +32,7 @@ jobs:
       - name: Checkout review repo (runner + rubrics)
         uses: actions/checkout@v4
 
-      - name: Checkout roadmap
+      - name: Checkout roadmap (public)
         uses: actions/checkout@v4
         with:
           repository: FormalFrontier/TauCetiRoadmap
@@ -51,17 +55,25 @@ jobs:
           token: ${{ steps.app.outputs.token }}
           path: code
 
-      - name: Setup Node and CLIs
+      - name: Setup Node and review CLIs
         uses: actions/setup-node@v4
         with:
           node-version: "22"
       - name: Install Claude and Codex CLIs
-        run: |
-          npm install -g @anthropic-ai/claude-code @openai/codex
-          claude --version || true
-          codex --version || true
+        run: npm install -g @anthropic-ai/claude-code @openai/codex
 
-      - name: Run review (4 rubrics, post to PR)
+      - name: Install Lean toolchain and fetch Mathlib (so reviewers can grep it)
+        run: |
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.elan/bin:$PATH"
+          ( cd code && lake exe cache get )
+          PREFIX=$(cd code && lake env lean --print-prefix)
+          LEAN_SRC="$PREFIX/src/lean"; [ -d "$LEAN_SRC" ] || LEAN_SRC=""
+          echo "LEAN_SRC=$LEAN_SRC" >> "$GITHUB_ENV"
+          echo "mathlib present: $(test -d code/.lake/packages/mathlib/Mathlib && echo yes || echo no); LEAN_SRC=$LEAN_SRC"
+
+      - name: Run review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -72,12 +84,14 @@ jobs:
             --rubrics "scope,correctness,reuse,proof-quality" \
             --rubrics-dir rubrics --tool-cwd "$PWD" \
             --code-path code --roadmap-path roadmap \
+            --mathlib-path code/.lake/packages/mathlib --lean-src "$LEAN_SRC" \
             --diff-file diff.txt \
-            --out-dir "reviews/$PR/1" --ledger reviews/ledger.json --daily-budget 5
+            --out-dir "reviews/$PR/1" --ledger reviews/ledger.json --daily-budget 5 \
+            --provider-override codex
 
       - name: Upload review artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: review-smoke
+          name: review
           path: reviews/

@@ -117,8 +117,8 @@ def today():
 def render_comment(results, overall):
     emoji = {"approve": "✅", "request_changes": "🟡", "block": "⛔", "error": "⚠️"}
     lines = [f"## AI review: **{overall}**", "",
-             "_Automated, advisory. Each angle is judged by a separate model; only integrity "
-             "angles can block. See the rubrics in TauCetiReview._", ""]
+             "See the [review rubrics]"
+             "(https://github.com/FormalFrontier/TauCetiReview/tree/main/rubrics).", ""]
     for r in results:
         v = r.get("verdict_obj") or {}
         verdict = v.get("verdict", "error")
@@ -145,6 +145,9 @@ def main():
     ap.add_argument("--tool-cwd", required=True)
     ap.add_argument("--code-path", default="code")
     ap.add_argument("--roadmap-path", default="roadmap")
+    ap.add_argument("--mathlib-path", default="", help="path to Mathlib source, relative to tool-cwd")
+    ap.add_argument("--lean-src", default="", help="absolute path to the Lean toolchain source")
+    ap.add_argument("--provider-override", choices=["claude", "codex", ""], default="")
     ap.add_argument("--diff-file", required=True)
     ap.add_argument("--round", default="1")
     ap.add_argument("--out-dir", required=True)
@@ -157,10 +160,18 @@ def main():
 
     rubrics = [r.strip() for r in a.rubrics.split(",") if r.strip()]
     diff = pathlib.Path(a.diff_file).read_text()[:120000]
+    sources = ""
+    if a.mathlib_path:
+        sources += (f"- Mathlib source: `./{a.mathlib_path}` (grep here to check whether a "
+                    f"declaration already exists before claiming so).\n")
+    if a.lean_src:
+        sources += f"- Lean core/toolchain source: `{a.lean_src}` (for core definitions and defaults).\n"
     context = (f"This is PR #{a.pr} on {a.repo}.\n"
                f"The code at the PR head is at ./{a.code_path} and the roadmap repo at "
                f"./{a.roadmap_path}, relative to your working directory; inspect them with "
-               f"your read-only tools (Read/Grep/Glob).\n\n## Diff\n```diff\n{diff}\n```")
+               f"your read-only tools (Read/Grep/Glob).\n"
+               + (("\nSources you can grep:\n" + sources) if sources else "")
+               + f"\n## Diff\n```diff\n{diff}\n```")
 
     ledger = load_ledger(a.ledger)
     day = today()
@@ -173,7 +184,7 @@ def main():
         if spent_today >= a.daily_budget:
             stopped = rubric
             break
-        provider = random.choice(["claude", "codex"])
+        provider = a.provider_override or random.choice(["claude", "codex"])
         model = a.claude_model if provider == "claude" else a.codex_model
         runner = run_claude if provider == "claude" else run_codex
         res = runner(prompt := build_prompt(pathlib.Path(a.rubrics_dir), rubric, context),
