@@ -111,6 +111,7 @@ jobs:
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --store store --daily-budget 5 --auto-subset \
+            --head-sha "$HEAD_SHA" \
             --keys-dir "$RUNNER_TEMP/keys" --comment-file "$PWD/comment.md" --no-post
 
       # ---- Trusted phase: reviewers are done; mint scoped tokens only now ----
