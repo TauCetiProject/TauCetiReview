@@ -5,6 +5,7 @@ on:
     inputs:
       pr: { required: true, type: string }
       trigger: { required: false, type: string, default: "manual" }
+      review_ref: { required: false, type: string, default: main }
   workflow_dispatch:
     inputs:
       pr: { required: true, type: string }
