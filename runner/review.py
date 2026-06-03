@@ -164,18 +164,27 @@ def main():
     outdir = store / "reviews" / str(a.pr) / str(round_num)
     outdir.mkdir(parents=True, exist_ok=True)
 
+    runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model)}
+
+    def good(res):
+        return res["returncode"] == 0 and extract_verdict(res.get("text", "")) is not None
+
     results, stopped = [], None
     for rubric in rubrics:
         if spent_today >= a.daily_budget:
             stopped = rubric
             break
-        provider = random.choice(["claude", "codex"])
-        model = a.claude_model if provider == "claude" else a.codex_model
-        fn = run_claude if provider == "claude" else run_codex
         prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, context)
-        res = fn(prompt, a.tool_cwd, model)
-        if res["returncode"] != 0 or extract_verdict(res.get("text", "")) is None:
-            res = fn(prompt, a.tool_cwd, model)  # one retry for a transient CLI failure
+        primary = random.choice(["claude", "codex"])
+        # Try the assigned provider, retry once on a transient failure, then fall back to the
+        # other provider once so a single CLI crash never silently drops a rubric.
+        order = [primary, primary, "claude" if primary == "codex" else "codex"]
+        res = None
+        for provider in order:
+            fn, model = runners[provider]
+            res = fn(prompt, a.tool_cwd, model)
+            if good(res):
+                break
         res.update(provider=provider, model=model, rubric=rubric,
                    verdict_obj=extract_verdict(res.get("text", "")))
         spent_today += res.get("cost_usd") or 0.0
