@@ -1,0 +1,30 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-3384388af20745f343ce27c1\n\n{\"verdict\":\"block\",\"summary\":\"This PR is explicitly a throwaway CI/go-live test and does not advance a Tau Ceti roadmap target or a proximate prerequisite. It should not be merged as library content.\",\"findings\":[{\"file\":\"TauCeti/Basic.lean\",\"line\":16,\"issue\":\"`TauCeti.goliveCheck` is a throwaway numeric sanity theorem, not material on a path to a roadmap target.\",\"fix\":\"Close this PR or replace it with content tied to a specific roadmap file and node/heading.\",\"evidence\":\"The PR description states `Throwaway to confirm pull_request_target pr-build auto-runs` and the diff only adds `theorem goliveCheck : 0 < 31 := by norm_num`.\"}]}",
+  "usage": {
+    "input_tokens": 27682,
+    "cached_input_tokens": 23808,
+    "output_tokens": 596,
+    "reasoning_output_tokens": 207
+  },
+  "session_id": "019e8f87-4af3-7453-ae17-b3a528c63cfc",
+  "cost_usd": 0.040563,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "scope",
+  "verdict_obj": {
+    "verdict": "block",
+    "summary": "This PR is explicitly a throwaway CI/go-live test and does not advance a Tau Ceti roadmap target or a proximate prerequisite. It should not be merged as library content.",
+    "findings": [
+      {
+        "file": "TauCeti/Basic.lean",
+        "line": 16,
+        "issue": "`TauCeti.goliveCheck` is a throwaway numeric sanity theorem, not material on a path to a roadmap target.",
+        "fix": "Close this PR or replace it with content tied to a specific roadmap file and node/heading.",
+        "evidence": "The PR description states `Throwaway to confirm pull_request_target pr-build auto-runs` and the diff only adds `theorem goliveCheck : 0 < 31 := by norm_num`."
+      }
+    ]
+  }
+}

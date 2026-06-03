@@ -1,0 +1,30 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-b49faf6a12d9ad2d597e7316\n{\"verdict\":\"request_changes\",\"summary\":\"The new theorem is a named one-off numeric fact rather than reusable API; it should not be added as a parallel declaration for an instance of existing positivity lemmas/tactics.\",\"findings\":[{\"file\":\"TauCeti/Basic.lean\",\"line\":\"16\",\"issue\":\"`TauCeti.goliveCheck : 0 < 31` is a special-case named theorem for a concrete numeral, duplicating the role of existing general positivity facts/procedures rather than adding reusable library material.\",\"fix\":\"Remove `goliveCheck`; where this fact is needed locally, use `norm_num`, `decide`, or a general positivity lemma inline instead of adding a named declaration.\",\"evidence\":\"Diff adds `theorem goliveCheck : 0 < 31 := by norm_num`; the proof itself shows the result is discharged by the existing numeric API rather than requiring a new TauCeti declaration.\"}]}",
+  "usage": {
+    "input_tokens": 27432,
+    "cached_input_tokens": 23808,
+    "output_tokens": 1032,
+    "reasoning_output_tokens": 549
+  },
+  "session_id": "019e8f87-9c8f-7882-aa8e-2ebd39ada30b",
+  "cost_usd": 0.04461,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "reuse",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The new theorem is a named one-off numeric fact rather than reusable API; it should not be added as a parallel declaration for an instance of existing positivity lemmas/tactics.",
+    "findings": [
+      {
+        "file": "TauCeti/Basic.lean",
+        "line": "16",
+        "issue": "`TauCeti.goliveCheck : 0 < 31` is a special-case named theorem for a concrete numeral, duplicating the role of existing general positivity facts/procedures rather than adding reusable library material.",
+        "fix": "Remove `goliveCheck`; where this fact is needed locally, use `norm_num`, `decide`, or a general positivity lemma inline instead of adding a named declaration.",
+        "evidence": "Diff adds `theorem goliveCheck : 0 < 31 := by norm_num`; the proof itself shows the result is discharged by the existing numeric API rather than requiring a new TauCeti declaration."
+      }
+    ]
+  }
+}

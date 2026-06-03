@@ -1,0 +1,22 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-b22d7b80128f492fa84ea39f\n{\"verdict\":\"approve\",\"summary\":\"No attribution issue: the added throwaway numeric sanity theorem does not closely follow an identifiable external formalization or informal source requiring credit.\",\"findings\":[]}",
+  "usage": {
+    "input_tokens": 27374,
+    "cached_input_tokens": 23296,
+    "output_tokens": 460,
+    "reasoning_output_tokens": 174
+  },
+  "session_id": "019e8f87-e8c9-7130-ad90-210cd8eae4c6",
+  "cost_usd": 0.038817,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "attribution",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "No attribution issue: the added throwaway numeric sanity theorem does not closely follow an identifiable external formalization or informal source requiring credit.",
+    "findings": []
+  }
+}
