@@ -1,0 +1,14 @@
+{
+  "returncode": 1,
+  "raw_stderr": "WARNING: proceeding, even though we could not update PATH: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/rev-codex-s2i0sexh/.codex\"))\nReading additional input from stdin...\nNot inside a trusted directory and --skip-git-repo-check was not specified.\n",
+  "text": "",
+  "usage": null,
+  "session_id": null,
+  "event_types": [],
+  "error_events": [],
+  "raw_stdout": "",
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "scope",
+  "verdict_obj": null
+}
