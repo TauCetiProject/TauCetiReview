@@ -16,6 +16,18 @@
             "reuse": "block",
             "proof-quality": null
           }
+        },
+        {
+          "round": 2,
+          "ts": "2026-06-03T04:00:49.683246+00:00",
+          "overall": "partial",
+          "cost": 0,
+          "verdicts": {
+            "scope": null,
+            "correctness": null,
+            "reuse": null,
+            "proof-quality": null
+          }
         }
       ]
     }

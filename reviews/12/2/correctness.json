@@ -1,0 +1,11 @@
+{
+  "returncode": 1,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "",
+  "usage": null,
+  "session_id": "019e8ba4-0d3b-7912-ac53-3b31fea4be08",
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "correctness",
+  "verdict_obj": null
+}
