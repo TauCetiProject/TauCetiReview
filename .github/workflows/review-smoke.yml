@@ -26,7 +26,6 @@ jobs:
           repositories: |
             TauCeti
             TauCetiReview
-            TauCetiRoadmap
 
       - name: Checkout review repo (runner + rubrics)
         uses: actions/checkout@v4
@@ -35,7 +34,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: FormalFrontier/TauCetiRoadmap
-          token: ${{ steps.app.outputs.token }}
           path: roadmap
 
       - name: Resolve PR head and fetch diff
