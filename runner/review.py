@@ -177,6 +177,8 @@ def main():
     ap.add_argument("--max-call-cost", type=float, default=1.0,
                     help="reservation per rubric: skip a rubric if spend so far plus this would "
                          "exceed the daily budget (a hard-ish per-call ceiling, not post-spend)")
+    ap.add_argument("--max-rounds-per-day", type=int, default=12,
+                    help="per-PR cap on paid review rounds in a single UTC day (abuse limit)")
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
     ap.add_argument("--codex-model", default=CODEX_MODEL)
     ap.add_argument("--auto-subset", action="store_true",
@@ -210,6 +212,14 @@ def main():
     ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {"days": {}, "prs": {}}
     pr_rounds = ledger["prs"].get(str(a.pr), {}).get("rounds", [])
     round_num = len(pr_rounds) + 1
+
+    # Per-PR daily round cap: bound how often one PR can spend (rapid commits or repeated
+    # /review). The global daily budget still applies on top of this.
+    todays_rounds = sum(1 for r in pr_rounds if (r.get("ts") or "").startswith(today()))
+    if todays_rounds >= a.max_rounds_per_day:
+        print(f"per-PR daily round cap reached for #{a.pr} "
+              f"({todays_rounds}/{a.max_rounds_per_day}); skipping without spending.")
+        return
 
     candidates = [r.strip() for r in a.rubrics.split(",") if r.strip()]
     if a.auto_subset and pr_rounds:
