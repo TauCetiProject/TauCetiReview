@@ -38,7 +38,9 @@ def reviewer_env(provider, keys):
     if provider == "claude":
         env["ANTHROPIC_API_KEY"] = keys["anthropic"]
     else:
-        env["CODEX_HOME"] = os.path.join(home, ".codex")
+        codex_home = os.path.join(home, ".codex")
+        os.makedirs(codex_home, exist_ok=True)  # codex requires CODEX_HOME to already exist
+        env["CODEX_HOME"] = codex_home
         env["OPENAI_API_KEY"] = keys["openai"]
     return env
 
