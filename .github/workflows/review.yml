@@ -61,6 +61,10 @@ jobs:
           node-version: "22"
       - name: Install Claude and Codex CLIs
         run: npm install -g @anthropic-ai/claude-code @openai/codex
+      - name: Authenticate Codex with the API key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
 
       - name: Install Lean toolchain and fetch Mathlib (so reviewers can grep it)
         run: |
