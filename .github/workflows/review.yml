@@ -5,9 +5,11 @@ on:
     inputs:
       pr: { required: true, type: string }
       trigger: { required: false, type: string, default: "manual" }
+      review_ref: { required: false, type: string, default: main }
   workflow_dispatch:
     inputs:
       pr: { required: true, type: string }
+      review_ref: { required: false, type: string, default: main }
 
 permissions:
   contents: read
@@ -22,85 +24,131 @@ jobs:
     env:
       PR: ${{ inputs.pr }}
     steps:
-      - name: Mint app token
-        id: app
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FormalFrontier
-          repositories: |
-            TauCeti
-            TauCetiReview
-
+      # ---- Untrusted-input phase: NO tokens, NO provider keys reachable by PR code ----
       - name: Checkout review repo (runner + rubrics)
         uses: actions/checkout@v4
         with:
           repository: FormalFrontier/TauCetiReview
-          ref: main
+          # main in production (workflow_call); a dispatch can point at a branch to test changes.
+          ref: ${{ inputs.review_ref || 'main' }}
+          persist-credentials: false
 
       - name: Checkout roadmap (public)
         uses: actions/checkout@v4
-        with: { repository: FormalFrontier/TauCetiRoadmap, path: roadmap }
+        with:
+          repository: FormalFrontier/TauCetiRoadmap
+          path: roadmap
+          persist-credentials: false
 
       - name: Resolve PR head and fetch diff
-        env: { GH_TOKEN: "${{ steps.app.outputs.token }}" }
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
 
-      - name: Checkout code at PR head
+      - name: Checkout code at PR head (public, no credentials persisted)
         uses: actions/checkout@v4
         with:
           repository: FormalFrontier/TauCeti
           ref: ${{ env.HEAD_SHA }}
-          token: ${{ steps.app.outputs.token }}
           path: code
+          persist-credentials: false
+
+      - name: Trusted Mathlib source for reviewer grep
+        # Rev comes from the BASE repo's manifest, never the PR's. We never evaluate the PR's
+        # lakefile/manifest (that would be arbitrary code execution on attacker input — I1).
+        run: |
+          base=$(mktemp -d)
+          git clone --depth 1 https://github.com/FormalFrontier/TauCeti "$base/base"
+          MREV=$(jq -r '.packages[] | select(.name=="mathlib") | .rev' "$base/base/lake-manifest.json")
+          echo "mathlib rev (from base manifest): $MREV"
+          git init -q mathlib
+          git -C mathlib remote add origin https://github.com/leanprover-community/mathlib4
+          git -C mathlib fetch -q --depth 1 origin "$MREV"
+          git -C mathlib checkout -q FETCH_HEAD
 
       - name: Setup Node and CLIs
         uses: actions/setup-node@v4
         with: { node-version: "22" }
       - name: Install Claude and Codex CLIs
         run: npm install -g @anthropic-ai/claude-code @openai/codex
-      - name: Authenticate Codex
-        env: { OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}" }
-        run: printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
 
-      - name: Lean toolchain + Mathlib (for reviewer grep)
+      - name: Assemble clean reviewer workspace
+        # Reviewers run here: only PR source (no .git), roadmap, Mathlib source, and the diff.
+        # No store/, no runner/, no .git configs, no credentials anywhere in this tree.
         run: |
-          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.elan/bin:$PATH"
-          ( cd code && lake exe cache get )
-          PREFIX=$(cd code && lake env lean --print-prefix)
-          LEAN_SRC="$PREFIX/src/lean"; [ -d "$LEAN_SRC" ] || LEAN_SRC=""
-          echo "LEAN_SRC=$LEAN_SRC" >> "$GITHUB_ENV"
+          REVROOT=$(mktemp -d)
+          rsync -a --exclude='.git' code/ "$REVROOT/code/"
+          rsync -a --exclude='.git' roadmap/ "$REVROOT/roadmap/"
+          mv mathlib "$REVROOT/mathlib"
+          cp diff.txt "$REVROOT/diff.txt"
+          echo "REVROOT=$REVROOT" >> "$GITHUB_ENV"
 
-      - name: Prepare review store (reviews branch)
-        env: { TOKEN: "${{ steps.app.outputs.token }}" }
+      - name: Prepare review store (reviews branch; public read, no token on disk)
         run: |
           git clone --depth 1 --branch reviews --single-branch \
-            "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiReview" store 2>/dev/null \
+            https://github.com/FormalFrontier/TauCetiReview store 2>/dev/null \
             || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
 
-      - name: Run review
+      - name: Stage provider keys to files (separate step; keys never enter the run-review env)
         env:
           ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}"
           OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}"
-          GH_TOKEN: "${{ steps.app.outputs.token }}"
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$ANTHROPIC_API_KEY" > "$RUNNER_TEMP/keys/anthropic"
+          printf '%s' "$OPENAI_API_KEY"   > "$RUNNER_TEMP/keys/openai"
+          chmod 700 "$RUNNER_TEMP/keys"; chmod 600 "$RUNNER_TEMP/keys/"*
+
+      - name: Run review
+        # This step has NO secrets in its env. The runner reads the key files, unlinks them, and
+        # hands each reviewer only its own key via an explicit minimal env (see runner reviewer_env).
         run: |
           python3 runner/review.py \
             --repo FormalFrontier/TauCeti --pr "$PR" \
-            --rubrics-dir rubrics --tool-cwd "$PWD" \
-            --code-path code --roadmap-path roadmap \
-            --mathlib-path code/.lake/packages/mathlib --lean-src "$LEAN_SRC" \
-            --diff-file diff.txt --store store --daily-budget 5 --auto-subset
+            --rubrics-dir rubrics --tool-cwd "$REVROOT" \
+            --code-path code --roadmap-path roadmap --mathlib-path mathlib \
+            --diff-file diff.txt --store store --daily-budget 5 --auto-subset \
+            --keys-dir "$RUNNER_TEMP/keys" --comment-file "$PWD/comment.md" --no-post
+
+      # ---- Trusted phase: reviewers are done; mint scoped tokens only now ----
+      - name: Mint comment token (TauCeti pull-requests:write)
+        id: comment_token
+        if: always()
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: TauCeti
+          permission-pull-requests: write
+
+      - name: Post review comment
+        if: always()
+        env: { GH_TOKEN: "${{ steps.comment_token.outputs.token }}" }
+        run: |
+          if [ -s comment.md ]; then
+            gh pr comment "$PR" --repo FormalFrontier/TauCeti --body-file comment.md
+          else
+            echo "no comment to post"
+          fi
+
+      - name: Mint store token (TauCetiReview contents:write)
+        id: store_token
+        if: always()
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: TauCetiReview
+          permission-contents: write
 
       - name: Persist review store
         if: always()
-        env: { TOKEN: "${{ steps.app.outputs.token }}" }
+        env: { TOKEN: "${{ steps.store_token.outputs.token }}" }
         run: |
           cd store
           git add -A
