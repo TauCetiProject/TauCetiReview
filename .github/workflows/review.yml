@@ -35,6 +35,9 @@ jobs:
 
       - name: Checkout review repo (runner + rubrics)
         uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCetiReview
+          ref: main
 
       - name: Checkout roadmap (public)
         uses: actions/checkout@v4
