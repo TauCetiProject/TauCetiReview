@@ -18,6 +18,10 @@ weaker than it pretends. Approve only once you have tried and failed.
 - Vacuity and tautology: a statement that holds trivially, a definition defeq to `True` or to
   its own restatement, or a "definition" that relocates the difficulty instead of discharging
   it.
+  Trivial-but-true is **not** your concern: a simple correct lemma (say `0 < 2`) is faithful.
+  Whether material is worth having is the scope agent's job, not yours; reject vacuity in the
+  logical sense (a `True`-typed or vacuously-quantified claim, content moved into hypotheses),
+  not mere simplicity.
 - Placeholders: reject `True` or any trivial stand-in in a signature or as a structure-field
   type, including a field given a plausible mathematical name that is really an assumption.
 - Over-strong typeclass or structural assumptions that quietly narrow the claim.

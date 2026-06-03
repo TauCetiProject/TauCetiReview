@@ -1,0 +1,107 @@
+name: review
+
+on:
+  workflow_call:
+    inputs:
+      pr: { required: true, type: string }
+      trigger: { required: false, type: string, default: "manual" }
+  workflow_dispatch:
+    inputs:
+      pr: { required: true, type: string }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tauceti-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    env:
+      PR: ${{ inputs.pr }}
+    steps:
+      - name: Mint app token
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: |
+            TauCeti
+            TauCetiReview
+
+      - name: Checkout review repo (runner + rubrics)
+        uses: actions/checkout@v4
+
+      - name: Checkout roadmap (public)
+        uses: actions/checkout@v4
+        with: { repository: FormalFrontier/TauCetiRoadmap, path: roadmap }
+
+      - name: Resolve PR head and fetch diff
+        env: { GH_TOKEN: "${{ steps.app.outputs.token }}" }
+        run: |
+          HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
+          echo "diff lines: $(wc -l < diff.txt)"
+
+      - name: Checkout code at PR head
+        uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCeti
+          ref: ${{ env.HEAD_SHA }}
+          token: ${{ steps.app.outputs.token }}
+          path: code
+
+      - name: Setup Node and CLIs
+        uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Install Claude and Codex CLIs
+        run: npm install -g @anthropic-ai/claude-code @openai/codex
+      - name: Authenticate Codex
+        env: { OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}" }
+        run: printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
+
+      - name: Lean toolchain + Mathlib (for reviewer grep)
+        run: |
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.elan/bin:$PATH"
+          ( cd code && lake exe cache get )
+          PREFIX=$(cd code && lake env lean --print-prefix)
+          LEAN_SRC="$PREFIX/src/lean"; [ -d "$LEAN_SRC" ] || LEAN_SRC=""
+          echo "LEAN_SRC=$LEAN_SRC" >> "$GITHUB_ENV"
+
+      - name: Prepare review store (reviews branch)
+        env: { TOKEN: "${{ steps.app.outputs.token }}" }
+        run: |
+          git clone --depth 1 --branch reviews --single-branch \
+            "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiReview" store 2>/dev/null \
+            || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
+
+      - name: Run review
+        env:
+          ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}"
+          OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}"
+          GH_TOKEN: "${{ steps.app.outputs.token }}"
+        run: |
+          python3 runner/review.py \
+            --repo FormalFrontier/TauCeti --pr "$PR" \
+            --rubrics-dir rubrics --tool-cwd "$PWD" \
+            --code-path code --roadmap-path roadmap \
+            --mathlib-path code/.lake/packages/mathlib --lean-src "$LEAN_SRC" \
+            --diff-file diff.txt --store store --daily-budget 5 --auto-subset
+
+      - name: Persist review store
+        if: always()
+        env: { TOKEN: "${{ steps.app.outputs.token }}" }
+        run: |
+          cd store
+          git add -A
+          git -c user.name="tauceti-review-bot[bot]" \
+              -c user.email="tauceti-review-bot[bot]@users.noreply.github.com" \
+              commit -q -m "review: PR #${PR}" || { echo "nothing to commit"; exit 0; }
+          git push "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiReview" HEAD:reviews
