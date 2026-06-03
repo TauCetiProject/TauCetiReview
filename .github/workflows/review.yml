@@ -119,13 +119,19 @@ jobs:
         run: |
           AM=""
           [ "$ENABLE_AUTOMERGE" = "true" ] && AM="--auto-merge"
+          # A /review comment forces a full re-review; CI success on a new commit re-runs only
+          # what is blocking, then sweeps stale greens.
+          MODE=commit
+          [ "${{ inputs.trigger }}" = "issue_comment" ] && MODE=manual
           python3 runner/review.py \
-            --repo FormalFrontier/TauCeti --pr "$PR" \
+            --repo FormalFrontier/TauCeti --pr "$PR" --mode "$MODE" \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
-            --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 10 --auto-subset \
+            --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 10 \
             --head-sha "$HEAD_SHA" $AM --merge-decision-file "$PWD/merge.json" \
-            --keys-dir "$RUNNER_TEMP/keys" --comment-file "$PWD/comment.md" --no-post
+            --keys-dir "$RUNNER_TEMP/keys" \
+            --scoreboard-file "$PWD/scoreboard.md" --threads-dir "$PWD/threads" \
+            --post-plan-file "$PWD/post_plan.json"
 
       # ---- Trusted phase: reviewers are done; mint scoped tokens only now ----
       - name: Mint comment token (TauCeti pull-requests:write)
@@ -139,14 +145,17 @@ jobs:
           repositories: TauCeti
           permission-pull-requests: write
 
-      - name: Post review comment
+      - name: Post review (scoreboard + threads)
+        # Executes the runner's post plan: upsert the in-place scoreboard and the per-rubric
+        # review threads, then write the comment ids back into the store ledger (committed below).
         if: always()
         env: { GH_TOKEN: "${{ steps.comment_token.outputs.token }}" }
         run: |
-          if [ -s comment.md ]; then
-            gh pr comment "$PR" --repo FormalFrontier/TauCeti --body-file comment.md
+          if [ -s post_plan.json ]; then
+            python3 runner/post.py --repo FormalFrontier/TauCeti --pr "$PR" \
+              --plan "$PWD/post_plan.json" --store store
           else
-            echo "no comment to post"
+            echo "no post plan (runner did not run, e.g. round cap); nothing to post"
           fi
 
       - name: Mint store token (TauCetiReview contents:write)
