@@ -44,7 +44,7 @@ def run_codex(prompt, cwd, model):
     cmd = ["codex", "exec", "--json", "-s", "read-only"] + (["-m", model] if model else []) + [prompt]
     r = sh(cmd, cwd=cwd)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
-    text, usage, thread = "", None, None
+    text, usage, thread, events, errors = "", None, None, [], []
     for line in r.stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -54,13 +54,19 @@ def run_codex(prompt, cwd, model):
         except Exception:
             continue
         t = ev.get("type")
+        events.append(t)
         if t == "thread.started":
             thread = ev.get("thread_id")
         elif t == "item.completed" and ev.get("item", {}).get("type") == "agent_message":
             text = ev["item"].get("text", "")
         elif t == "turn.completed":
             usage = ev.get("usage")
+        elif t and ("error" in t or "failed" in t):
+            errors.append(ev)
     out.update(text=text, usage=usage, session_id=thread)
+    # Surface why codex produced no usable answer, so failures are diagnosable not silent.
+    if r.returncode != 0 or not text:
+        out.update(event_types=events, error_events=errors[:5], raw_stdout=r.stdout[-3000:])
     if usage:
         pin, pout = PRICES.get(model, DEFAULT_PRICE)
         out["cost_usd"] = round((usage.get("input_tokens", 0) * pin
@@ -166,25 +172,17 @@ def main():
 
     runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model)}
 
-    def good(res):
-        return res["returncode"] == 0 and extract_verdict(res.get("text", "")) is not None
-
     results, stopped = [], None
     for rubric in rubrics:
         if spent_today >= a.daily_budget:
             stopped = rubric
             break
         prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, context)
-        primary = random.choice(["claude", "codex"])
-        # Try the assigned provider, retry once on a transient failure, then fall back to the
-        # other provider once so a single CLI crash never silently drops a rubric.
-        order = [primary, primary, "claude" if primary == "codex" else "codex"]
-        res = None
-        for provider in order:
-            fn, model = runners[provider]
-            res = fn(prompt, a.tool_cwd, model)
-            if good(res):
-                break
+        provider = random.choice(["claude", "codex"])
+        fn, model = runners[provider]
+        res = fn(prompt, a.tool_cwd, model)
+        if res["returncode"] != 0 or extract_verdict(res.get("text", "")) is None:
+            res = fn(prompt, a.tool_cwd, model)  # one retry for a transient network blip
         res.update(provider=provider, model=model, rubric=rubric,
                    verdict_obj=extract_verdict(res.get("text", "")))
         spent_today += res.get("cost_usd") or 0.0
