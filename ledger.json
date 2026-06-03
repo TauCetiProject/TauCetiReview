@@ -1,23 +1,4 @@
 {
-  "days": {
-    "2026-06-03": 0.296199
-  },
-  "prs": {
-    "18": {
-      "rounds": [
-        {
-          "round": 1,
-          "ts": "2026-06-03T06:37:25.178480+00:00",
-          "overall": "blocked",
-          "cost": 0.296198,
-          "verdicts": {
-            "scope": "block",
-            "correctness": "request_changes",
-            "reuse": "request_changes",
-            "proof-quality": "request_changes"
-          }
-        }
-      ]
-    }
-  }
+  "days": {},
+  "prs": {}
 }
