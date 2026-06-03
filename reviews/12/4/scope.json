@@ -1,0 +1,53 @@
+{
+  "returncode": 0,
+  "raw_stderr": "",
+  "text": "```json\n{\n  \"verdict\": \"block\",\n  \"summary\": \"The PR adds a lemma whose own docstring calls it 'throwaway' and 'used only to exercise the review harness' \u2014 it has no path to any roadmap target. No roadmap file or node is cited, and `0 < 2` is not a prerequisite for any target in JacobianChallenge, PDE, ReductiveGroups, or UniversalCovers.\",\n  \"findings\": [\n    {\n      \"file\": \"TauCeti/Basic.lean\",\n      \"line\": 16,\n      \"issue\": \"theorem two_pos is self-described as a throwaway harness-exercise lemma with no connection to any roadmap target; it belongs in no release of the library.\",\n      \"fix\": \"Remove the lemma. If the review harness needs a test target, add it in a dedicated test file outside the library namespace, or add a genuine roadmap prerequisite instead.\",\n      \"evidence\": \"Docstring: 'A throwaway lemma, used only to exercise the review harness.' None of the four roadmap Targets.lean files (JacobianChallenge, PDE, ReductiveGroups, UniversalCovers) reference or require a proof of 0 < 2.\"\n    }\n  ]\n}\n```",
+  "cost_usd": 0.0732942,
+  "usage": {
+    "input_tokens": 5,
+    "cache_creation_input_tokens": 10002,
+    "cache_read_input_tokens": 69899,
+    "output_tokens": 851,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 10002
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 313,
+        "cache_read_input_tokens": 25992,
+        "cache_creation_input_tokens": 2475,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 2475,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "session_id": "93d39110-3d85-4dba-988a-385088a8f6d1",
+  "provider": "claude",
+  "model": "claude-sonnet-4-6",
+  "rubric": "scope",
+  "verdict_obj": {
+    "verdict": "block",
+    "summary": "The PR adds a lemma whose own docstring calls it 'throwaway' and 'used only to exercise the review harness' \u2014 it has no path to any roadmap target. No roadmap file or node is cited, and `0 < 2` is not a prerequisite for any target in JacobianChallenge, PDE, ReductiveGroups, or UniversalCovers.",
+    "findings": [
+      {
+        "file": "TauCeti/Basic.lean",
+        "line": 16,
+        "issue": "theorem two_pos is self-described as a throwaway harness-exercise lemma with no connection to any roadmap target; it belongs in no release of the library.",
+        "fix": "Remove the lemma. If the review harness needs a test target, add it in a dedicated test file outside the library namespace, or add a genuine roadmap prerequisite instead.",
+        "evidence": "Docstring: 'A throwaway lemma, used only to exercise the review harness.' None of the four roadmap Targets.lean files (JacobianChallenge, PDE, ReductiveGroups, UniversalCovers) reference or require a proof of 0 < 2."
+      }
+    ]
+  }
+}
