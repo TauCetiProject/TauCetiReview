@@ -8,8 +8,6 @@ on:
   workflow_dispatch:
     inputs:
       pr: { required: true, type: string }
-  push:
-    branches: [harness-dev]   # dev-only; removed when going live
 
 permissions:
   contents: read
@@ -22,7 +20,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     env:
-      PR: ${{ inputs.pr || '12' }}
+      PR: ${{ inputs.pr }}
     steps:
       - name: Mint app token
         id: app
