@@ -1,0 +1,14 @@
+{
+  "returncode": 1,
+  "raw_stderr": "WARNING: proceeding, even though we could not update PATH: CODEX_HOME points to \"/tmp/rev-codex-zgmzdlij/.codex\", but that path does not exist\nError finding codex home: CODEX_HOME points to \"/tmp/rev-codex-zgmzdlij/.codex\", but that path does not exist\n",
+  "text": "",
+  "usage": null,
+  "session_id": null,
+  "event_types": [],
+  "error_events": [],
+  "raw_stdout": "",
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "proof-quality",
+  "verdict_obj": null
+}
