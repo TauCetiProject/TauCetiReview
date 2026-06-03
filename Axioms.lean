@@ -12,7 +12,7 @@ declaration uses only the standard allowlist
 
 Because it works on the kernel environment rather than on source text, it catches what a
 `grep` cannot: `sorry`/`admit` (which surface as `sorryAx`), `native_decide` (which adds
-`Lean.ofReduceBool`), and any home-rolled `axiom` — including ones reaching in through
+`Lean.ofReduceBool`), and any home-rolled `axiom`, including ones reaching in through
 imports. Run via `lake exe axioms` (after `lake build`).
 -/
 
@@ -92,7 +92,7 @@ def main : IO UInt32 := do
   let (audited, messages) ← withImportedEnv modules audit
   if audited == 0 then
     -- Governance tooling must fail loudly if it audited nothing (e.g. miswired import).
-    IO.eprintln s!"axioms: audited 0 declarations in {auditedRoot} — the audit is miswired."
+    IO.eprintln s!"axioms: audited 0 declarations in {auditedRoot}: the audit is miswired."
     return 1
   if messages.isEmpty then
     IO.println s!"axioms: audited {audited} {auditedRoot} declaration(s); \
