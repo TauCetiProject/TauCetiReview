@@ -49,6 +49,12 @@ jobs:
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
+          # The PR title+body: the author's stated intent, sources, and dependencies. The
+          # rubric tells agents to read it; pass it through (as untrusted author input, like
+          # the diff). Author-controlled, so no more trusted than the diff already is.
+          gh pr view "$PR" --repo FormalFrontier/TauCeti --json title,body \
+            --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
+          echo "pr_desc bytes: $(wc -c < pr_desc.txt)"
 
       - name: Checkout code at PR head (public, no credentials persisted)
         uses: actions/checkout@v4
@@ -86,6 +92,7 @@ jobs:
           rsync -a --exclude='.git' roadmap/ "$REVROOT/roadmap/"
           mv mathlib "$REVROOT/mathlib"
           cp diff.txt "$REVROOT/diff.txt"
+          cp pr_desc.txt "$REVROOT/pr_desc.txt"
           echo "REVROOT=$REVROOT" >> "$GITHUB_ENV"
 
       - name: Prepare review store (reviews branch; public read, no token on disk)
@@ -116,7 +123,7 @@ jobs:
             --repo FormalFrontier/TauCeti --pr "$PR" \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
-            --diff-file diff.txt --store store --daily-budget 5 --auto-subset \
+            --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 5 --auto-subset \
             --head-sha "$HEAD_SHA" $AM --merge-decision-file "$PWD/merge.json" \
             --keys-dir "$RUNNER_TEMP/keys" --comment-file "$PWD/comment.md" --no-post
 
