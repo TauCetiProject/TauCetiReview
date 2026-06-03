@@ -1,22 +1,28 @@
 name: review
 
 on:
+  workflow_call:
+    inputs:
+      pr: { required: true, type: string }
+      trigger: { required: false, type: string, default: "manual" }
+  workflow_dispatch:
+    inputs:
+      pr: { required: true, type: string }
   push:
-    branches: [harness-dev]
-  workflow_dispatch: {}
+    branches: [harness-dev]   # dev-only; removed when going live
 
 permissions:
   contents: read
 
 concurrency:
-  group: review
+  group: tauceti-review
   cancel-in-progress: false
 
 jobs:
   review:
     runs-on: ubuntu-latest
     env:
-      PR: "12"
+      PR: ${{ inputs.pr || '12' }}
     steps:
       - name: Mint app token
         id: app
@@ -34,13 +40,10 @@ jobs:
 
       - name: Checkout roadmap (public)
         uses: actions/checkout@v4
-        with:
-          repository: FormalFrontier/TauCetiRoadmap
-          path: roadmap
+        with: { repository: FormalFrontier/TauCetiRoadmap, path: roadmap }
 
       - name: Resolve PR head and fetch diff
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+        env: { GH_TOKEN: "${{ steps.app.outputs.token }}" }
         run: |
           HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
@@ -55,18 +58,16 @@ jobs:
           token: ${{ steps.app.outputs.token }}
           path: code
 
-      - name: Setup Node and review CLIs
+      - name: Setup Node and CLIs
         uses: actions/setup-node@v4
-        with:
-          node-version: "22"
+        with: { node-version: "22" }
       - name: Install Claude and Codex CLIs
         run: npm install -g @anthropic-ai/claude-code @openai/codex
-      - name: Authenticate Codex with the API key
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - name: Authenticate Codex
+        env: { OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}" }
         run: printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
 
-      - name: Install Lean toolchain and fetch Mathlib (so reviewers can grep it)
+      - name: Lean toolchain + Mathlib (for reviewer grep)
         run: |
           curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
@@ -75,27 +76,34 @@ jobs:
           PREFIX=$(cd code && lake env lean --print-prefix)
           LEAN_SRC="$PREFIX/src/lean"; [ -d "$LEAN_SRC" ] || LEAN_SRC=""
           echo "LEAN_SRC=$LEAN_SRC" >> "$GITHUB_ENV"
-          echo "mathlib present: $(test -d code/.lake/packages/mathlib/Mathlib && echo yes || echo no); LEAN_SRC=$LEAN_SRC"
+
+      - name: Prepare review store (reviews branch)
+        env: { TOKEN: "${{ steps.app.outputs.token }}" }
+        run: |
+          git clone --depth 1 --branch reviews --single-branch \
+            "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiReview" store 2>/dev/null \
+            || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
 
       - name: Run review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}"
+          OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}"
+          GH_TOKEN: "${{ steps.app.outputs.token }}"
         run: |
           python3 runner/review.py \
-            --repo FormalFrontier/TauCeti --pr "$PR" --round 1 \
-            --rubrics "scope,correctness,reuse,proof-quality" \
+            --repo FormalFrontier/TauCeti --pr "$PR" \
             --rubrics-dir rubrics --tool-cwd "$PWD" \
             --code-path code --roadmap-path roadmap \
             --mathlib-path code/.lake/packages/mathlib --lean-src "$LEAN_SRC" \
-            --diff-file diff.txt \
-            --out-dir "reviews/$PR/1" --ledger reviews/ledger.json --daily-budget 5 \
-            --provider-override codex
+            --diff-file diff.txt --store store --daily-budget 5 --auto-subset
 
-      - name: Upload review artifacts
+      - name: Persist review store
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: review
-          path: reviews/
+        env: { TOKEN: "${{ steps.app.outputs.token }}" }
+        run: |
+          cd store
+          git add -A
+          git -c user.name="tauceti-review-bot[bot]" \
+              -c user.email="tauceti-review-bot[bot]@users.noreply.github.com" \
+              commit -q -m "review: PR #${PR}" || { echo "nothing to commit"; exit 0; }
+          git push "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiReview" HEAD:reviews

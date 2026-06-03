@@ -1,27 +1,18 @@
 #!/usr/bin/env python3
 """Tau Ceti review runner.
 
-Runs the review rubrics over a checked-out PR with agentic CLIs (claude / codex, chosen at
-random per rubric), read-only, then posts an aggregated verdict to the PR and records token
-spend. A daily USD budget halts spending; partial review is a first-class outcome.
-
-The workflow provides: a checkout of the review repo (rubrics + this runner), a checkout of
-the TauCeti code at the PR head under ./code, a checkout of the roadmap under ./roadmap, the
-PR diff, and an app token in GH_TOKEN for posting. Persisting the ledger/logs is the
-workflow's job (it commits the out-dir); the runner just writes files and updates the ledger.
+Reviews a PR with agentic CLIs (claude / codex, random per rubric, read-only), posts an
+aggregated verdict, and records spend. State lives in a `--store` directory (a checkout of
+the `reviews` branch of TauCetiReview): `ledger.json` plus `reviews/<pr>/<round>/`. A daily
+USD budget halts spending. With `--auto-subset`, a re-review runs only the rubrics whose last
+round was not `approve`. The workflow commits the store after the run.
 """
-import argparse, datetime, json, os, pathlib, random, re, subprocess, sys
+import argparse, datetime, json, pathlib, random, re, subprocess, sys
 
 DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "proof-quality"]
 CLAUDE_MODEL = "claude-sonnet-4-6"
-CODEX_MODEL = "gpt-5.5"   # Sonnet-level analogue; override with --codex-model
-
-# Rough USD per 1M tokens (input, output), for the daily-budget guard. claude reports exact
-# cost; codex does not, so we estimate from these. Keep conservative.
-PRICES = {
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "gpt-5.5": (1.25, 10.0),
-}
+CODEX_MODEL = "gpt-5.5"
+PRICES = {"claude-sonnet-4-6": (3.0, 15.0), "gpt-5.5": (1.25, 10.0)}
 DEFAULT_PRICE = (3.0, 15.0)
 
 
@@ -50,10 +41,7 @@ def run_claude(prompt, cwd, model):
 
 
 def run_codex(prompt, cwd, model):
-    cmd = ["codex", "exec", "--json", "-s", "read-only"]
-    if model:
-        cmd += ["-m", model]
-    cmd += [prompt]
+    cmd = ["codex", "exec", "--json", "-s", "read-only"] + (["-m", model] if model else []) + [prompt]
     r = sh(cmd, cwd=cwd)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     text, usage, thread = "", None, None
@@ -73,18 +61,16 @@ def run_codex(prompt, cwd, model):
         elif t == "turn.completed":
             usage = ev.get("usage")
     out.update(text=text, usage=usage, session_id=thread)
-    # estimate cost
     if usage:
         pin, pout = PRICES.get(model, DEFAULT_PRICE)
-        cost = (usage.get("input_tokens", 0) * pin + usage.get("output_tokens", 0) * pout) / 1e6
-        out["cost_usd"] = round(cost, 6)
+        out["cost_usd"] = round((usage.get("input_tokens", 0) * pin
+                                 + usage.get("output_tokens", 0) * pout) / 1e6, 6)
         out["cost_estimated"] = True
     return out
 
 
 def extract_verdict(text):
-    cands = re.findall(r"\{.*?\}", text, flags=re.S) + re.findall(r"\{.*\}", text, flags=re.S)
-    for cand in reversed(cands):
+    for cand in reversed(re.findall(r"\{.*?\}", text, flags=re.S) + re.findall(r"\{.*\}", text, flags=re.S)):
         try:
             d = json.loads(cand)
             if isinstance(d, dict) and "verdict" in d:
@@ -100,35 +86,23 @@ def extract_verdict(text):
     return None
 
 
-def load_ledger(path):
-    p = pathlib.Path(path)
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            pass
-    return {"days": {}, "prs": {}}
-
-
 def today():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
 
-def render_comment(results, overall):
+def render_comment(results, overall, round_num):
     emoji = {"approve": "✅", "request_changes": "🟡", "block": "⛔", "error": "⚠️"}
-    lines = [f"## AI review: **{overall}**", "",
-             "See the [review rubrics]"
-             "(https://github.com/FormalFrontier/TauCetiReview/tree/main/rubrics).", ""]
+    lines = [f"## AI review (round {round_num}): **{overall}**", "",
+             "See the [review rubrics](https://github.com/FormalFrontier/TauCetiReview/tree/main/rubrics).", ""]
     for r in results:
         v = r.get("verdict_obj") or {}
         verdict = v.get("verdict", "error")
-        lines.append(f"### {emoji.get(verdict,'•')} {r['rubric']} — {verdict}  "
-                     f"`{r['provider']}/{r['model']}`")
+        lines.append(f"### {emoji.get(verdict, '•')} {r['rubric']} — {verdict}  `{r['provider']}/{r['model']}`")
         if v.get("summary"):
             lines.append(v["summary"])
         for f in (v.get("findings") or []):
-            loc = f.get("file", "") + (f":{f['line']}" if f.get("line") else "")
-            lines.append(f"- {('`'+loc+'` — ') if loc else ''}{f.get('issue','')}"
+            loc = (f.get("file") or "") + (f":{f['line']}" if f.get("line") else "")
+            lines.append(f"- {('`' + loc + '` — ') if loc else ''}{f.get('issue', '')}"
                          + (f" _Fix:_ {f['fix']}" if f.get("fix") else ""))
         if not v:
             lines.append(f"(no verdict parsed; rc={r.get('returncode')})")
@@ -145,38 +119,49 @@ def main():
     ap.add_argument("--tool-cwd", required=True)
     ap.add_argument("--code-path", default="code")
     ap.add_argument("--roadmap-path", default="roadmap")
-    ap.add_argument("--mathlib-path", default="", help="path to Mathlib source, relative to tool-cwd")
-    ap.add_argument("--lean-src", default="", help="absolute path to the Lean toolchain source")
-    ap.add_argument("--provider-override", choices=["claude", "codex", ""], default="")
+    ap.add_argument("--mathlib-path", default="")
+    ap.add_argument("--lean-src", default="")
     ap.add_argument("--diff-file", required=True)
-    ap.add_argument("--round", default="1")
-    ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--ledger", required=True)
+    ap.add_argument("--store", required=True, help="checkout of the reviews branch (ledger + logs)")
     ap.add_argument("--daily-budget", type=float, default=5.0)
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
     ap.add_argument("--codex-model", default=CODEX_MODEL)
+    ap.add_argument("--auto-subset", action="store_true",
+                    help="re-review only rubrics whose last round was not approve")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
-    rubrics = [r.strip() for r in a.rubrics.split(",") if r.strip()]
+    store = pathlib.Path(a.store)
+    ledger_path = store / "ledger.json"
+    ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {"days": {}, "prs": {}}
+    pr_rounds = ledger["prs"].get(str(a.pr), {}).get("rounds", [])
+    round_num = len(pr_rounds) + 1
+
+    candidates = [r.strip() for r in a.rubrics.split(",") if r.strip()]
+    if a.auto_subset and pr_rounds:
+        last = pr_rounds[-1].get("verdicts", {})
+        rubrics = [r for r in candidates if last.get(r) != "approve"]
+    else:
+        rubrics = candidates
+    if not rubrics:
+        print("nothing to re-review (all rubrics approved in the last round).")
+        return
+
     diff = pathlib.Path(a.diff_file).read_text()[:120000]
-    sources = ""
+    src = ""
     if a.mathlib_path:
-        sources += (f"- Mathlib source: `./{a.mathlib_path}` (grep here to check whether a "
-                    f"declaration already exists before claiming so).\n")
+        src += f"- Mathlib source: `./{a.mathlib_path}` (grep before claiming a declaration exists).\n"
     if a.lean_src:
-        sources += f"- Lean core/toolchain source: `{a.lean_src}` (for core definitions and defaults).\n"
-    context = (f"This is PR #{a.pr} on {a.repo}.\n"
+        src += f"- Lean core/toolchain source: `{a.lean_src}`.\n"
+    context = (f"This is PR #{a.pr} on {a.repo} (review round {round_num}).\n"
                f"The code at the PR head is at ./{a.code_path} and the roadmap repo at "
-               f"./{a.roadmap_path}, relative to your working directory; inspect them with "
-               f"your read-only tools (Read/Grep/Glob).\n"
-               + (("\nSources you can grep:\n" + sources) if sources else "")
+               f"./{a.roadmap_path}; inspect them with your read-only tools (Read/Grep/Glob).\n"
+               + (("\nSources you can grep:\n" + src) if src else "")
                + f"\n## Diff\n```diff\n{diff}\n```")
 
-    ledger = load_ledger(a.ledger)
     day = today()
     spent_today = ledger["days"].get(day, 0.0)
-    outdir = pathlib.Path(a.out_dir)
+    outdir = store / "reviews" / str(a.pr) / str(round_num)
     outdir.mkdir(parents=True, exist_ok=True)
 
     results, stopped = [], None
@@ -184,47 +169,41 @@ def main():
         if spent_today >= a.daily_budget:
             stopped = rubric
             break
-        provider = a.provider_override or random.choice(["claude", "codex"])
+        provider = random.choice(["claude", "codex"])
         model = a.claude_model if provider == "claude" else a.codex_model
-        runner = run_claude if provider == "claude" else run_codex
-        res = runner(prompt := build_prompt(pathlib.Path(a.rubrics_dir), rubric, context),
-                     a.tool_cwd, model)
+        fn = run_claude if provider == "claude" else run_codex
+        res = fn(build_prompt(pathlib.Path(a.rubrics_dir), rubric, context), a.tool_cwd, model)
         res.update(provider=provider, model=model, rubric=rubric,
                    verdict_obj=extract_verdict(res.get("text", "")))
-        cost = res.get("cost_usd") or 0.0
-        spent_today += cost
-        ledger["prs"].setdefault(str(a.pr), {"rounds": []})
+        spent_today += res.get("cost_usd") or 0.0
         results.append(res)
         (outdir / f"{rubric}.json").write_text(json.dumps(res, indent=2))
         v = res["verdict_obj"] or {}
         print(f"[{rubric}] {provider}/{model} rc={res['returncode']} "
-              f"verdict={v.get('verdict','PARSE_FAILED')} cost=${cost:.4f} today=${spent_today:.2f}")
+              f"verdict={v.get('verdict', 'PARSE_FAILED')} cost=${res.get('cost_usd') or 0:.4f} "
+              f"today=${spent_today:.2f}")
 
-    verdicts = [(r.get("verdict_obj") or {}).get("verdict") for r in results]
-    overall = ("blocked" if "block" in verdicts
-               else "changes requested" if "request_changes" in verdicts
-               else "approved" if results and all(v == "approve" for v in verdicts)
-               else "partial")
+    verdicts = {r["rubric"]: (r.get("verdict_obj") or {}).get("verdict") for r in results}
+    vals = list(verdicts.values())
+    overall = ("blocked" if "block" in vals else "changes requested" if "request_changes" in vals
+               else "approved" if vals and all(v == "approve" for v in vals) else "partial")
     if stopped:
-        overall += f" (budget reached; skipped {stopped} and after)"
-
-    comment = render_comment(results, overall)
+        overall += f" (daily budget reached; skipped {stopped} and after)"
+    round_cost = round(sum((r.get("cost_usd") or 0) for r in results), 6)
+    comment = render_comment(results, overall, round_num)
     (outdir / "summary.md").write_text(comment)
     ledger["days"][day] = round(spent_today, 6)
-    ledger["prs"][str(a.pr)]["rounds"].append(
-        {"round": a.round, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-         "overall": overall, "cost": round(sum((r.get('cost_usd') or 0) for r in results), 6),
-         "verdicts": {r["rubric"]: (r.get("verdict_obj") or {}).get("verdict") for r in results}})
-
-    print(f"\nOVERALL: {overall}  (round cost ${sum((r.get('cost_usd') or 0) for r in results):.2f}, "
-          f"today ${spent_today:.2f}/{a.daily_budget})")
+    ledger["prs"].setdefault(str(a.pr), {"rounds": []})["rounds"].append(
+        {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+         "overall": overall, "cost": round_cost, "verdicts": verdicts})
+    print(f"\nROUND {round_num} OVERALL: {overall}  (cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
 
     if a.dry_run:
-        print("[dry-run] not posting; not updating ledger on disk.")
+        print("[dry-run] not posting, not writing ledger.")
         return
-    pathlib.Path(a.ledger).write_text(json.dumps(ledger, indent=2))
+    ledger_path.write_text(json.dumps(ledger, indent=2))
     r = sh(["gh", "pr", "comment", a.pr, "--repo", a.repo, "--body", comment])
-    print("posted comment" if r.returncode == 0 else f"POST FAILED: {r.stderr[-500:]}")
+    print("posted comment" if r.returncode == 0 else f"POST FAILED: {r.stderr[-400:]}")
 
 
 if __name__ == "__main__":
