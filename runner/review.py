@@ -7,7 +7,7 @@ the `reviews` branch of TauCetiReview): `ledger.json` plus `reviews/<pr>/<round>
 USD budget halts spending. With `--auto-subset`, a re-review runs only the rubrics whose last
 round was not `approve`. The workflow commits the store after the run.
 """
-import argparse, datetime, json, pathlib, random, re, subprocess, sys
+import argparse, datetime, json, os, pathlib, random, re, subprocess, sys, tempfile
 
 DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "proof-quality"]
 CLAUDE_MODEL = "claude-sonnet-4-6"
@@ -16,8 +16,36 @@ PRICES = {"claude-sonnet-4-6": (3.0, 15.0), "gpt-5.5": (1.25, 10.0)}
 DEFAULT_PRICE = (3.0, 15.0)
 
 
-def sh(cmd, cwd=None):
-    return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+def sh(cmd, cwd=None, env=None, stdin_text=None):
+    return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, env=env,
+                          input=stdin_text,
+                          stdin=(None if stdin_text is not None else subprocess.DEVNULL))
+
+
+def reviewer_env(provider, keys):
+    """A minimal, isolated environment for a reviewer subprocess.
+
+    Each reviewer gets a fresh throwaway HOME and ONLY its own provider credential — never the
+    other provider's key, never a GitHub token (the parent posts/pushes in separate tokenless-here
+    steps). This isolation is load-bearing: with public transcripts and no redaction gate, a
+    prompt-injected reviewer must have nothing worth leaking. The unguessable HOME/CODEX_HOME keeps
+    each provider's credential out of the other's reach. Residual: a reviewer can still read its OWN
+    key via /proc/self/environ (documented in I2/R6; needs a proxy or uid-separation to close).
+    """
+    # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp.
+    base = os.path.join(os.path.expanduser("~"), ".tauceti-rev")
+    os.makedirs(base, exist_ok=True)
+    home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=base)
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": home,
+           "LANG": os.environ.get("LANG", "C.UTF-8"), "CI": "1"}
+    if provider == "claude":
+        env["ANTHROPIC_API_KEY"] = keys["anthropic"]
+    else:
+        codex_home = os.path.join(home, ".codex")
+        os.makedirs(codex_home, exist_ok=True)  # codex requires CODEX_HOME to already exist
+        env["CODEX_HOME"] = codex_home
+        env["OPENAI_API_KEY"] = keys["openai"]
+    return env
 
 
 def build_prompt(rubrics_dir, rubric, context):
@@ -27,9 +55,9 @@ def build_prompt(rubrics_dir, rubric, context):
             "Produce your review now. Output only the single JSON object specified above.")
 
 
-def run_claude(prompt, cwd, model):
+def run_claude(prompt, cwd, model, env):
     r = sh(["claude", "-p", prompt, "--output-format", "json", "--model", model,
-            "--allowedTools", "Read", "Grep", "Glob"], cwd=cwd)
+            "--allowedTools", "Read", "Grep", "Glob"], cwd=cwd, env=env)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     try:
         d = json.loads(r.stdout)
@@ -40,9 +68,14 @@ def run_claude(prompt, cwd, model):
     return out
 
 
-def run_codex(prompt, cwd, model):
-    cmd = ["codex", "exec", "--json", "-s", "read-only"] + (["-m", model] if model else []) + [prompt]
-    r = sh(cmd, cwd=cwd)
+def run_codex(prompt, cwd, model, env):
+    # Authenticate into this invocation's isolated CODEX_HOME so the credential is not shared.
+    sh(["codex", "login", "--with-api-key"], env=env, stdin_text=env.get("OPENAI_API_KEY", ""))
+    # inherit=none: codex's model-run shell commands get a clean env, not codex's own.
+    cmd = (["codex", "exec", "--json", "-s", "read-only", "--skip-git-repo-check",
+            "-c", "shell_environment_policy.inherit=none"]
+           + (["-m", model] if model else []) + [prompt])
+    r = sh(cmd, cwd=cwd, env=env)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     text, usage, thread, events, errors = "", None, None, [], []
     for line in r.stdout.splitlines():
@@ -134,8 +167,29 @@ def main():
     ap.add_argument("--codex-model", default=CODEX_MODEL)
     ap.add_argument("--auto-subset", action="store_true",
                     help="re-review only rubrics whose last round was not approve")
+    ap.add_argument("--keys-dir", default="",
+                    help="dir with files 'anthropic' and 'openai'; keys are passed only to the "
+                         "matching reviewer subprocess and never kept in this process's env")
+    ap.add_argument("--comment-file", default="",
+                    help="write the rendered review comment here for a separate post step")
+    ap.add_argument("--no-post", action="store_true",
+                    help="do not post the comment (a later tokened step does); still writes ledger")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
+
+    if a.keys_dir:
+        kd = pathlib.Path(a.keys_dir)
+        keys = {}
+        for name in ("anthropic", "openai"):
+            f = kd / name
+            keys[name] = f.read_text().strip() if f.exists() else ""
+            # Read into memory then remove from disk: neither key should sit on a filesystem a
+            # reviewer can reach while it runs (a codex reviewer must not find the anthropic key).
+            if f.exists():
+                f.unlink()
+    else:  # local/dev fallback: read from this process's env
+        keys = {"anthropic": os.environ.get("ANTHROPIC_API_KEY", ""),
+                "openai": os.environ.get("OPENAI_API_KEY", "")}
 
     store = pathlib.Path(a.store)
     ledger_path = store / "ledger.json"
@@ -180,9 +234,10 @@ def main():
         prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, context)
         provider = random.choice(["claude", "codex"])
         fn, model = runners[provider]
-        res = fn(prompt, a.tool_cwd, model)
+        env = reviewer_env(provider, keys)
+        res = fn(prompt, a.tool_cwd, model, env)
         if res["returncode"] != 0 or extract_verdict(res.get("text", "")) is None:
-            res = fn(prompt, a.tool_cwd, model)  # one retry for a transient network blip
+            res = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys))  # one retry, transient blip
         res.update(provider=provider, model=model, rubric=rubric,
                    verdict_obj=extract_verdict(res.get("text", "")))
         spent_today += res.get("cost_usd") or 0.0
@@ -202,6 +257,8 @@ def main():
     round_cost = round(sum((r.get("cost_usd") or 0) for r in results), 6)
     comment = render_comment(results, overall, round_num)
     (outdir / "summary.md").write_text(comment)
+    if a.comment_file:
+        pathlib.Path(a.comment_file).write_text(comment)
     ledger["days"][day] = round(spent_today, 6)
     ledger["prs"].setdefault(str(a.pr), {"rounds": []})["rounds"].append(
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -212,6 +269,9 @@ def main():
         print("[dry-run] not posting, not writing ledger.")
         return
     ledger_path.write_text(json.dumps(ledger, indent=2))
+    if a.no_post:
+        print("[--no-post] comment written for a separate post step; ledger written.")
+        return
     r = sh(["gh", "pr", "comment", a.pr, "--repo", a.repo, "--body", comment])
     print("posted comment" if r.returncode == 0 else f"POST FAILED: {r.stderr[-400:]}")
 
