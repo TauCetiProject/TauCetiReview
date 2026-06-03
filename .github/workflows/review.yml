@@ -6,10 +6,12 @@ on:
       pr: { required: true, type: string }
       trigger: { required: false, type: string, default: "manual" }
       review_ref: { required: false, type: string, default: main }
+      enable_automerge: { required: false, type: boolean, default: false }
   workflow_dispatch:
     inputs:
       pr: { required: true, type: string }
       review_ref: { required: false, type: string, default: main }
+      enable_automerge: { required: false, type: boolean, default: false }
 
 permissions:
   contents: read
@@ -105,13 +107,17 @@ jobs:
       - name: Run review
         # This step has NO secrets in its env. The runner reads the key files, unlinks them, and
         # hands each reviewer only its own key via an explicit minimal env (see runner reviewer_env).
+        env:
+          ENABLE_AUTOMERGE: ${{ inputs.enable_automerge }}
         run: |
+          AM=""
+          [ "$ENABLE_AUTOMERGE" = "true" ] && AM="--auto-merge"
           python3 runner/review.py \
             --repo FormalFrontier/TauCeti --pr "$PR" \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --store store --daily-budget 5 --auto-subset \
-            --head-sha "$HEAD_SHA" \
+            --head-sha "$HEAD_SHA" $AM --merge-decision-file "$PWD/merge.json" \
             --keys-dir "$RUNNER_TEMP/keys" --comment-file "$PWD/comment.md" --no-post
 
       # ---- Trusted phase: reviewers are done; mint scoped tokens only now ----
@@ -157,3 +163,28 @@ jobs:
               -c user.email="tauceti-review-bot[bot]@users.noreply.github.com" \
               commit -q -m "review: PR #${PR}" || { echo "nothing to commit"; exit 0; }
           git push "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiReview" HEAD:reviews
+
+      # ---- Auto-merge (I9): dormant unless enable_automerge. The App must be a ruleset bypass
+      # ---- actor and hold TauCeti contents:write for the merge to land.
+      - name: Mint merge token (TauCeti contents + pull-requests write)
+        id: merge_token
+        if: ${{ inputs.enable_automerge }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: TauCeti
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Auto-merge if all rubrics approve and PR is TauCeti/-only
+        if: ${{ inputs.enable_automerge }}
+        env: { GH_TOKEN: "${{ steps.merge_token.outputs.token }}" }
+        run: |
+          if [ -f merge.json ] && [ "$(jq -r .merge merge.json)" = "true" ]; then
+            echo "auto-merging: $(jq -r .reason merge.json)"
+            gh pr merge "$PR" --repo FormalFrontier/TauCeti --squash
+          else
+            echo "not auto-merging: $(jq -r '.reason // "no decision file"' merge.json 2>/dev/null || echo 'no decision file')"
+          fi

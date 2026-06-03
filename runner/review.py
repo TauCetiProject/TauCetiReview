@@ -48,6 +48,14 @@ def reviewer_env(provider, keys):
     return env
 
 
+def changed_paths(diff_text):
+    """Repo-relative paths touched by a unified diff (both sides, to catch renames/deletes)."""
+    paths = set()
+    for m in re.finditer(r"^diff --git a/(.+?) b/(.+)$", diff_text, flags=re.M):
+        paths.add(m.group(1)); paths.add(m.group(2))
+    return paths
+
+
 def rubrics_fingerprint(rubrics_dir):
     """Short hash of all rubric text, so a rubric edit invalidates carried-forward approvals."""
     h = hashlib.sha256()
@@ -191,6 +199,14 @@ def main():
     ap.add_argument("--head-sha", default="",
                     help="PR head commit; approvals are bound to it, so a new commit re-runs all "
                          "blocking rubrics instead of carrying forward stale approvals")
+    ap.add_argument("--auto-merge", action="store_true",
+                    help="compute a merge decision: mergeable iff every rubric approves on the "
+                         "current commit and the PR touches only --merge-path-prefix")
+    ap.add_argument("--merge-path-prefix", default="TauCeti/",
+                    help="auto-merge only PRs whose every changed path is under this prefix; "
+                         "anything else (infra) is left for human merge")
+    ap.add_argument("--merge-decision-file", default="",
+                    help="write the auto-merge decision JSON here for a separate merge step")
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
     ap.add_argument("--codex-model", default=CODEX_MODEL)
     ap.add_argument("--auto-subset", action="store_true",
@@ -319,6 +335,36 @@ def main():
          "head_sha": a.head_sha, "rubrics_version": rubrics_version,
          "full": set(rubrics) == set(candidates)})
     print(f"\nROUND {round_num} OVERALL: {overall}  (cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
+
+    # Auto-merge gate (I9). Mergeable only if EVERY rubric approves on the current commit (latest
+    # verdict per rubric across this commit's rounds; freshness binding in I7 means a new commit
+    # re-runs all) AND the PR touches only the AI-owned prefix. Infra-touching PRs are never
+    # auto-merged — they still need a human. The decision is advisory data; a separate, scoped
+    # step performs the merge. Path check uses the FULL diff, not the prompt-truncated copy.
+    if a.merge_decision_file:
+        merge_ok, reason = False, "auto-merge not enabled"
+        if a.auto_merge:
+            sha_rounds = [r for r in ledger["prs"][str(a.pr)]["rounds"]
+                          if r.get("head_sha") == a.head_sha and a.head_sha]
+            eff = {}
+            for rnd in sha_rounds:
+                for rub, vd in (rnd.get("verdicts") or {}).items():
+                    if vd is not None:
+                        eff[rub] = vd
+            all_approve = bool(candidates) and all(eff.get(r) == "approve" for r in candidates)
+            paths = changed_paths(pathlib.Path(a.diff_file).read_text())
+            code_only = bool(paths) and all(p.startswith(a.merge_path_prefix) for p in paths)
+            if not a.head_sha:
+                reason = "no head_sha; refusing to merge"
+            elif not all_approve:
+                reason = "not all rubrics approve on the current commit"
+            elif not code_only:
+                reason = f"PR touches paths outside {a.merge_path_prefix}; needs human merge"
+            else:
+                merge_ok, reason = True, f"all rubrics approve on {a.head_sha[:7]}; {a.merge_path_prefix}-only"
+        pathlib.Path(a.merge_decision_file).write_text(
+            json.dumps({"merge": merge_ok, "reason": reason, "head_sha": a.head_sha}))
+        print(f"[auto-merge] {merge_ok}: {reason}")
 
     if a.dry_run:
         print("[dry-run] not posting, not writing ledger.")
