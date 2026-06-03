@@ -1,0 +1,22 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-907c985772a9b159d0c896cc\n\n{\"verdict\":\"approve\",\"summary\":\"The supplied diff only changes GitHub Actions review-trigger handling and adds no Lean definitions or theorem statements, so there is no semantic-faithfulness issue in this review angle.\",\"findings\":[]}",
+  "usage": {
+    "input_tokens": 27835,
+    "cached_input_tokens": 23296,
+    "output_tokens": 604,
+    "reasoning_output_tokens": 243
+  },
+  "session_id": "019e8c38-8e03-7181-9e7e-e0f351826cc3",
+  "cost_usd": 0.040834,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "correctness",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "The supplied diff only changes GitHub Actions review-trigger handling and adds no Lean definitions or theorem statements, so there is no semantic-faithfulness issue in this review angle.",
+    "findings": []
+  }
+}

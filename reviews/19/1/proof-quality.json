@@ -1,0 +1,22 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-92f5f9f5aea180a5f9a68372\n{\"verdict\":\"approve\",\"summary\":\"No proof-quality issues: the diff only changes a GitHub workflow and adds no Lean proofs or proof maintenance surface.\",\"findings\":[]}",
+  "usage": {
+    "input_tokens": 27426,
+    "cached_input_tokens": 20736,
+    "output_tokens": 451,
+    "reasoning_output_tokens": 128
+  },
+  "session_id": "019e8c38-f345-7192-8370-737115b83053",
+  "cost_usd": 0.038793,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "proof-quality",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "No proof-quality issues: the diff only changes a GitHub workflow and adds no Lean proofs or proof maintenance surface.",
+    "findings": []
+  }
+}
