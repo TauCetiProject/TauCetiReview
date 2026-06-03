@@ -12,9 +12,10 @@ import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, subp
 DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "attribution", "api-design",
                    "generality", "placement", "naming", "documentation", "proof-quality",
                    "deprecation"]
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-opus-4-8"
 CODEX_MODEL = "gpt-5.5"
-PRICES = {"claude-sonnet-4-6": (3.0, 15.0), "gpt-5.5": (1.25, 10.0)}
+PRICES = {"claude-sonnet-4-6": (3.0, 15.0), "claude-opus-4-8": (15.0, 75.0),
+          "gpt-5.5": (1.25, 10.0)}
 DEFAULT_PRICE = (3.0, 15.0)
 
 

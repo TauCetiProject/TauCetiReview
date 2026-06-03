@@ -123,7 +123,7 @@ jobs:
             --repo FormalFrontier/TauCeti --pr "$PR" \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
-            --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 5 --auto-subset \
+            --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 10 --auto-subset \
             --head-sha "$HEAD_SHA" $AM --merge-decision-file "$PWD/merge.json" \
             --keys-dir "$RUNNER_TEMP/keys" --comment-file "$PWD/comment.md" --no-post
 
