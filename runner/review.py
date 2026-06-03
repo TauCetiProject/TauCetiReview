@@ -32,7 +32,10 @@ def reviewer_env(provider, keys):
     each provider's credential out of the other's reach. Residual: a reviewer can still read its OWN
     key via /proc/self/environ (documented in I2/R6; needs a proxy or uid-separation to close).
     """
-    home = tempfile.mkdtemp(prefix=f"rev-{provider}-")
+    # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp.
+    base = os.path.join(os.path.expanduser("~"), ".tauceti-rev")
+    os.makedirs(base, exist_ok=True)
+    home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=base)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": home,
            "LANG": os.environ.get("LANG", "C.UTF-8"), "CI": "1"}
     if provider == "claude":
@@ -69,7 +72,7 @@ def run_codex(prompt, cwd, model, env):
     # Authenticate into this invocation's isolated CODEX_HOME so the credential is not shared.
     sh(["codex", "login", "--with-api-key"], env=env, stdin_text=env.get("OPENAI_API_KEY", ""))
     # inherit=none: codex's model-run shell commands get a clean env, not codex's own.
-    cmd = (["codex", "exec", "--json", "-s", "read-only",
+    cmd = (["codex", "exec", "--json", "-s", "read-only", "--skip-git-repo-check",
             "-c", "shell_environment_policy.inherit=none"]
            + (["-m", model] if model else []) + [prompt])
     r = sh(cmd, cwd=cwd, env=env)
