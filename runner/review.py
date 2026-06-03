@@ -7,7 +7,7 @@ the `reviews` branch of TauCetiReview): `ledger.json` plus `reviews/<pr>/<round>
 USD budget halts spending. With `--auto-subset`, a re-review runs only the rubrics whose last
 round was not `approve`. The workflow commits the store after the run.
 """
-import argparse, datetime, json, os, pathlib, random, re, secrets, subprocess, sys, tempfile
+import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, subprocess, sys, tempfile
 
 DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "proof-quality"]
 CLAUDE_MODEL = "claude-sonnet-4-6"
@@ -46,6 +46,15 @@ def reviewer_env(provider, keys):
         env["CODEX_HOME"] = codex_home
         env["OPENAI_API_KEY"] = keys["openai"]
     return env
+
+
+def rubrics_fingerprint(rubrics_dir):
+    """Short hash of all rubric text, so a rubric edit invalidates carried-forward approvals."""
+    h = hashlib.sha256()
+    for p in sorted(pathlib.Path(rubrics_dir).glob("*.md")):
+        h.update(p.name.encode())
+        h.update(p.read_bytes())
+    return h.hexdigest()[:16]
 
 
 def build_prompt(rubrics_dir, rubric, context, marker):
@@ -179,6 +188,9 @@ def main():
                          "exceed the daily budget (a hard-ish per-call ceiling, not post-spend)")
     ap.add_argument("--max-rounds-per-day", type=int, default=12,
                     help="per-PR cap on paid review rounds in a single UTC day (abuse limit)")
+    ap.add_argument("--head-sha", default="",
+                    help="PR head commit; approvals are bound to it, so a new commit re-runs all "
+                         "blocking rubrics instead of carrying forward stale approvals")
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
     ap.add_argument("--codex-model", default=CODEX_MODEL)
     ap.add_argument("--auto-subset", action="store_true",
@@ -222,13 +234,21 @@ def main():
         return
 
     candidates = [r.strip() for r in a.rubrics.split(",") if r.strip()]
-    if a.auto_subset and pr_rounds:
-        last = pr_rounds[-1].get("verdicts", {})
+    # An approval is only valid for the exact code + rubric text it was made against. Carry
+    # approvals forward (subset re-review) ONLY when the last round was on this same commit and
+    # rubric version; if either changed, the prior approvals are stale, so re-run everything.
+    rubrics_version = rubrics_fingerprint(pathlib.Path(a.rubrics_dir))
+    last_round = pr_rounds[-1] if pr_rounds else None
+    same_basis = (last_round is not None and a.head_sha
+                  and last_round.get("head_sha") == a.head_sha
+                  and last_round.get("rubrics_version") == rubrics_version)
+    if a.auto_subset and same_basis:
+        last = last_round.get("verdicts", {})
         rubrics = [r for r in candidates if last.get(r) != "approve"]
     else:
-        rubrics = candidates
+        rubrics = candidates  # first round, new commit, or changed rubrics -> full round
     if not rubrics:
-        print("nothing to re-review (all rubrics approved in the last round).")
+        print("nothing to re-review (all rubrics approved on this commit).")
         return
 
     diff = pathlib.Path(a.diff_file).read_text()[:120000]
@@ -295,7 +315,9 @@ def main():
     ledger["days"][day] = round(spent_today, 6)
     ledger["prs"].setdefault(str(a.pr), {"rounds": []})["rounds"].append(
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-         "overall": overall, "cost": round_cost, "verdicts": verdicts})
+         "overall": overall, "cost": round_cost, "verdicts": verdicts,
+         "head_sha": a.head_sha, "rubrics_version": rubrics_version,
+         "full": set(rubrics) == set(candidates)})
     print(f"\nROUND {round_num} OVERALL: {overall}  (cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
 
     if a.dry_run:
