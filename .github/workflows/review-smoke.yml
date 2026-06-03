@@ -1,0 +1,85 @@
+name: review-smoke
+
+on:
+  push:
+    branches: [harness-dev]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      PR: "12"
+      RUBRIC: "scope"
+      PROVIDER: "claude"
+    steps:
+      - name: Mint app token
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: |
+            TauCeti
+            TauCetiReview
+            TauCetiRoadmap
+
+      - name: Checkout review repo (runner + rubrics)
+        uses: actions/checkout@v4
+
+      - name: Checkout roadmap
+        uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCetiRoadmap
+          token: ${{ steps.app.outputs.token }}
+          path: roadmap
+
+      - name: Resolve PR head and fetch diff
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
+          echo "diff lines: $(wc -l < diff.txt)"
+
+      - name: Checkout code at PR head
+        uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCeti
+          ref: ${{ env.HEAD_SHA }}
+          token: ${{ steps.app.outputs.token }}
+          path: code
+
+      - name: Setup Node and CLIs
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Claude and Codex CLIs
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex
+          claude --version || true
+          codex --version || true
+
+      - name: Run review (dry-run, one rubric)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 runner/review.py \
+            --rubric "$RUBRIC" --provider "$PROVIDER" \
+            --rubrics-dir rubrics --tool-cwd "$PWD" \
+            --code-path code --roadmap-path roadmap \
+            --diff-file diff.txt --pr "$PR" --round 1 \
+            --out-dir "reviews/$PR/1" --dry-run
+
+      - name: Upload review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-smoke
+          path: reviews/
