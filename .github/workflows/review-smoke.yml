@@ -13,8 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PR: "12"
-      RUBRIC: "scope"
-      PROVIDER: "claude"
     steps:
       - name: Mint app token
         id: app
@@ -63,17 +61,19 @@ jobs:
           claude --version || true
           codex --version || true
 
-      - name: Run review (dry-run, one rubric)
+      - name: Run review (4 rubrics, post to PR)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           python3 runner/review.py \
-            --rubric "$RUBRIC" --provider "$PROVIDER" \
+            --repo FormalFrontier/TauCeti --pr "$PR" --round 1 \
+            --rubrics "scope,correctness,reuse,proof-quality" \
             --rubrics-dir rubrics --tool-cwd "$PWD" \
             --code-path code --roadmap-path roadmap \
-            --diff-file diff.txt --pr "$PR" --round 1 \
-            --out-dir "reviews/$PR/1" --dry-run
+            --diff-file diff.txt \
+            --out-dir "reviews/$PR/1" --ledger reviews/ledger.json --daily-budget 5
 
       - name: Upload review artifacts
         if: always()
