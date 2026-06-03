@@ -1,0 +1,22 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-9583c00447856a6aa8214ee3\n{\"verdict\":\"approve\",\"summary\":\"No public TauCeti API is renamed, removed, or weakened by this PR; it only adds the new Deck API and imports it from the aggregate file.\",\"findings\":[]}",
+  "usage": {
+    "input_tokens": 45729,
+    "cached_input_tokens": 34944,
+    "output_tokens": 1452,
+    "reasoning_output_tokens": 985
+  },
+  "session_id": "019e8f86-6843-7dc1-b309-907f0389b91e",
+  "cost_usd": 0.071681,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "deprecation",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "No public TauCeti API is renamed, removed, or weakened by this PR; it only adds the new Deck API and imports it from the aggregate file.",
+    "findings": []
+  }
+}

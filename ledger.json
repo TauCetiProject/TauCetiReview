@@ -1,6 +1,6 @@
 {
   "days": {
-    "2026-06-03": 2.747562
+    "2026-06-03": 3.678961
   },
   "prs": {
     "21": {
@@ -110,6 +110,25 @@
           "head_sha": "b99c3044baff6d45c65798aa40582dd2e8a1a3d5",
           "rubrics_version": "dccacfb6e0bf58e2",
           "full": true
+        },
+        {
+          "round": 2,
+          "ts": "2026-06-03T22:07:16.746331+00:00",
+          "overall": "changes requested",
+          "cost": 0.931399,
+          "verdicts": {
+            "scope": "approve",
+            "attribution": "approve",
+            "api-design": "request_changes",
+            "generality": "approve",
+            "placement": "request_changes",
+            "naming": "request_changes",
+            "documentation": "request_changes",
+            "deprecation": "approve"
+          },
+          "head_sha": "b99c3044baff6d45c65798aa40582dd2e8a1a3d5",
+          "rubrics_version": "dccacfb6e0bf58e2",
+          "full": false
         }
       ]
     },
