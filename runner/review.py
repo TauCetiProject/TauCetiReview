@@ -9,7 +9,9 @@ round was not `approve`. The workflow commits the store after the run.
 """
 import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, subprocess, sys, tempfile
 
-DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "proof-quality"]
+DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "attribution", "api-design",
+                   "generality", "placement", "naming", "documentation", "proof-quality",
+                   "deprecation"]
 CLAUDE_MODEL = "claude-sonnet-4-6"
 CODEX_MODEL = "gpt-5.5"
 PRICES = {"claude-sonnet-4-6": (3.0, 15.0), "gpt-5.5": (1.25, 10.0)}
