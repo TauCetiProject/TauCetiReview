@@ -1,0 +1,22 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-3ce00abc9a3b2369b63a5f06\n{\"verdict\":\"approve\",\"summary\":\"The PR only changes review workflow configuration and touches no Lean proofs, so there are no proof-quality issues to report.\",\"findings\":[]}",
+  "usage": {
+    "input_tokens": 27220,
+    "cached_input_tokens": 23296,
+    "output_tokens": 470,
+    "reasoning_output_tokens": 186
+  },
+  "session_id": "019e8c85-749b-7f00-ba94-b9f8e1977398",
+  "cost_usd": 0.038725,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "proof-quality",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "The PR only changes review workflow configuration and touches no Lean proofs, so there are no proof-quality issues to report.",
+    "findings": []
+  }
+}

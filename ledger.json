@@ -1,4 +1,26 @@
 {
-  "days": {},
-  "prs": {}
+  "days": {
+    "2026-06-03": 0.157408
+  },
+  "prs": {
+    "21": {
+      "rounds": [
+        {
+          "round": 1,
+          "ts": "2026-06-03T08:07:07.212011+00:00",
+          "overall": "blocked",
+          "cost": 0.157408,
+          "verdicts": {
+            "scope": "block",
+            "correctness": "approve",
+            "reuse": "approve",
+            "proof-quality": "approve"
+          },
+          "head_sha": "f45d46efc05ea0880ea3b7ae4fb158d77ff34a91",
+          "rubrics_version": "dccacfb6e0bf58e2",
+          "full": true
+        }
+      ]
+    }
+  }
 }
