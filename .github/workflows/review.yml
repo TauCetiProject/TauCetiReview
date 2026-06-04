@@ -171,7 +171,7 @@ jobs:
             --repo FormalFrontier/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
-            --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 10 \
+            --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
             --head-sha "$HEAD_SHA" $AM --merge-decision-file "$PWD/merge.json" \
             --keys-dir "$RUNNER_TEMP/keys" \
             --scoreboard-file "$PWD/scoreboard.md" --threads-dir "$PWD/threads" \
