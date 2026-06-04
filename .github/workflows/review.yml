@@ -67,6 +67,38 @@ jobs:
             echo "reply bytes: $(wc -c < reply.txt)"
           fi
 
+      - name: Prepare review store (reviews branch; public read, no token on disk)
+        run: |
+          git clone --depth 1 --branch reviews --single-branch \
+            https://github.com/FormalFrontier/TauCetiReview store 2>/dev/null \
+            || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
+
+      # ---- Responsiveness: post an in-progress scoreboard NOW — before the slow Mathlib clone,
+      # ---- CLI install, and the model calls — so the bot's sticky comment appears as soon as it
+      # ---- wakes. A comment token lives in these two steps only; the reviewer phase below stays
+      # ---- tokenless. Best-effort: a failure here must not abort the review.
+      - name: Mint comment token (early, for the in-progress scoreboard)
+        id: early_comment_token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: TauCeti
+          permission-pull-requests: write
+
+      - name: Post in-progress scoreboard
+        continue-on-error: true
+        env: { GH_TOKEN: "${{ steps.early_comment_token.outputs.token }}" }
+        run: |
+          python3 runner/review.py --repo FormalFrontier/TauCeti --pr "$PR" --mode init \
+            --rubrics-dir rubrics --tool-cwd . --diff-file diff.txt --store store \
+            --head-sha "$HEAD_SHA" \
+            --scoreboard-file "$PWD/scoreboard.md" --post-plan-file "$PWD/post_plan.json"
+          python3 runner/post.py --repo FormalFrontier/TauCeti --pr "$PR" \
+            --plan "$PWD/post_plan.json" --store store
+
       - name: Checkout code at PR head (public, no credentials persisted)
         uses: actions/checkout@v4
         with:
@@ -105,12 +137,6 @@ jobs:
           cp diff.txt "$REVROOT/diff.txt"
           cp pr_desc.txt "$REVROOT/pr_desc.txt"
           echo "REVROOT=$REVROOT" >> "$GITHUB_ENV"
-
-      - name: Prepare review store (reviews branch; public read, no token on disk)
-        run: |
-          git clone --depth 1 --branch reviews --single-branch \
-            https://github.com/FormalFrontier/TauCetiReview store 2>/dev/null \
-            || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
 
       - name: Stage provider keys to files (separate step; keys never enter the run-review env)
         env:
