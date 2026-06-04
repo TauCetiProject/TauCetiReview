@@ -1,0 +1,37 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-27c5f3e7f316d4b942613b7a\n{\n  \"verdict\": \"request_changes\",\n  \"summary\": \"Two public names overstate or misdescribe their conclusions and should be renamed before exposing this API.\",\n  \"findings\": [\n    {\n      \"file\": \"TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean\",\n      \"line\": 462,\n      \"issue\": \"`joinedIn_preimage_singleton_of_homotopic` mentions `singleton`, but the theorem is for an arbitrary `U : Set X` with `hy : y \u2208 U`; no singleton appears in the statement.\",\n      \"fix\": \"Rename it to describe the conclusion, e.g. `joinedIn_endpoint_preimage_of_homotopic` or `joinedIn_endpoint_preimage_of_homotopic_paths`.\",\n      \"evidence\": \"Declaration: `public theorem joinedIn_preimage_singleton_of_homotopic ... {U : Set X} (hy : y \u2208 U) ... : JoinedIn (endpoint ... \u207b\u00b9' U) ...`.\"\n    },\n    {\n      \"file\": \"TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean\",\n      \"line\": 238,\n      \"issue\": \"`exists_uniquePath_neighborhood` overstates the conclusion: it proves a neighborhood with `IsPathHomotopyTrivial U`, i.e. uniqueness only up to path homotopy, not unique paths.\",\n      \"fix\": \"Rename it to match the actual predicate, e.g. `exists_pathHomotopyTrivial_neighborhood`.\",\n      \"evidence\": \"Declaration: `public theorem exists_uniquePath_neighborhood ... : \u2203 U : Set X, IsOpen U \u2227 x \u2208 U \u2227 IsPathHomotopyTrivial U`.\"\n    }\n  ]\n}",
+  "usage": {
+    "input_tokens": 160683,
+    "cached_input_tokens": 74368,
+    "output_tokens": 3517,
+    "reasoning_output_tokens": 2631
+  },
+  "session_id": "019e90ae-1c4f-7810-8f27-5ebd1516faa5",
+  "cost_usd": 0.236024,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "naming",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "Two public names overstate or misdescribe their conclusions and should be renamed before exposing this API.",
+    "findings": [
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+        "line": 462,
+        "issue": "`joinedIn_preimage_singleton_of_homotopic` mentions `singleton`, but the theorem is for an arbitrary `U : Set X` with `hy : y \u2208 U`; no singleton appears in the statement.",
+        "fix": "Rename it to describe the conclusion, e.g. `joinedIn_endpoint_preimage_of_homotopic` or `joinedIn_endpoint_preimage_of_homotopic_paths`.",
+        "evidence": "Declaration: `public theorem joinedIn_preimage_singleton_of_homotopic ... {U : Set X} (hy : y \u2208 U) ... : JoinedIn (endpoint ... \u207b\u00b9' U) ...`."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+        "line": 238,
+        "issue": "`exists_uniquePath_neighborhood` overstates the conclusion: it proves a neighborhood with `IsPathHomotopyTrivial U`, i.e. uniqueness only up to path homotopy, not unique paths.",
+        "fix": "Rename it to match the actual predicate, e.g. `exists_pathHomotopyTrivial_neighborhood`.",
+        "evidence": "Declaration: `public theorem exists_uniquePath_neighborhood ... : \u2203 U : Set X, IsOpen U \u2227 x \u2208 U \u2227 IsPathHomotopyTrivial U`."
+      }
+    ]
+  }
+}

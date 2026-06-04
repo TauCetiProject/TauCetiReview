@@ -1,0 +1,51 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-cead219924315456f2657373\n{\"verdict\":\"request_changes\",\"summary\":\"The PR introduces useful local notions but several exported declarations are not at their natural level: some global hypotheses should be local, one structure carries unused endpoint parameters, and one theorem has an unused SLSC assumption.\",\"findings\":[{\"file\":\"TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean\",\"line\":230,\"issue\":\"`exists_uniquePath_neighborhood` is stated with the global typeclass `[SemilocallySimplyConnectedSpace X]`, even though the file has already defined the local predicate `SemilocallySimplyConnectedAt x` and the proof only needs the property at this point.\",\"fix\":\"State the local theorem as `SemilocallySimplyConnectedAt x \u2192 \u2203 U, IsOpen U \u2227 x \u2208 U \u2227 IsPathHomotopyTrivial U`, and derive the current typeclass version as a corollary if needed.\",\"evidence\":\"The declaration reads `public theorem exists_uniquePath_neighborhood [SemilocallySimplyConnectedSpace X] (x : X)`, while `semilocallySimplyConnectedAt_iff_paths` immediately provides the needed local characterization.\"},{\"file\":\"TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean\",\"line\":242,\"issue\":\"`exists_pathConnected_slsc_neighborhood` repeats the same under-generalization: it assumes global SLSC, but its natural input is the local assumption at `x` plus local path-connectedness.\",\"fix\":\"State it from `SemilocallySimplyConnectedAt x` and `[LocPathConnectedSpace X]`; keep a typeclass wrapper only as a convenience theorem.\",\"evidence\":\"The proof obtains `V` via `exists_uniquePath_neighborhood x` and then takes `pathComponentIn V x`; no point other than `x` requires the global class.\"},{\"file\":\"TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean\",\"line\":295,\"issue\":\"`TubeData (X) (x y) (n)` is over-parameterized: the fields `U`, `V`, and their openness/path/SLSC/subset properties never mention `x` or `y`. This forces identical tube data to be indexed by irrelevant endpoints.\",\"fix\":\"Define `TubeData X n` and put the path endpoints only on `PathInTube`, `TubeData.toSet`, and the theorems that quantify over paths.\",\"evidence\":\"The structure header is `public structure TubeData (X : Type*) [TopologicalSpace X] (x y : X) (n : \u2115) where`, but every field mentions only `X`, `n`, `U`, and `V`, not `x` or `y`.\"},{\"file\":\"TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean\",\"line\":580,\"issue\":\"`exists_refined_terminal_vertex` assumes `[SemilocallySimplyConnectedSpace X]`, but the statement and proof only use local path-connectedness and the already bundled tube data.\",\"fix\":\"Remove the `[SemilocallySimplyConnectedSpace X]` hypothesis from this theorem; callers that need SLSC can keep it at the call site.\",\"evidence\":\"The proof forms `W := V_last \u2229 U` and returns `pathComponentIn W (endpoint \u03b1)` using `hW_open.pathComponentIn` and `isPathConnected_pathComponentIn`; it never invokes the SLSC class or `T.U_slsc`.\"}]}",
+  "usage": {
+    "input_tokens": 160267,
+    "cached_input_tokens": 115840,
+    "output_tokens": 3671,
+    "reasoning_output_tokens": 2527
+  },
+  "session_id": "019e90aa-ad86-7fe1-a71c-315943304b79",
+  "cost_usd": 0.237044,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "generality",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The PR introduces useful local notions but several exported declarations are not at their natural level: some global hypotheses should be local, one structure carries unused endpoint parameters, and one theorem has an unused SLSC assumption.",
+    "findings": [
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+        "line": 230,
+        "issue": "`exists_uniquePath_neighborhood` is stated with the global typeclass `[SemilocallySimplyConnectedSpace X]`, even though the file has already defined the local predicate `SemilocallySimplyConnectedAt x` and the proof only needs the property at this point.",
+        "fix": "State the local theorem as `SemilocallySimplyConnectedAt x \u2192 \u2203 U, IsOpen U \u2227 x \u2208 U \u2227 IsPathHomotopyTrivial U`, and derive the current typeclass version as a corollary if needed.",
+        "evidence": "The declaration reads `public theorem exists_uniquePath_neighborhood [SemilocallySimplyConnectedSpace X] (x : X)`, while `semilocallySimplyConnectedAt_iff_paths` immediately provides the needed local characterization."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+        "line": 242,
+        "issue": "`exists_pathConnected_slsc_neighborhood` repeats the same under-generalization: it assumes global SLSC, but its natural input is the local assumption at `x` plus local path-connectedness.",
+        "fix": "State it from `SemilocallySimplyConnectedAt x` and `[LocPathConnectedSpace X]`; keep a typeclass wrapper only as a convenience theorem.",
+        "evidence": "The proof obtains `V` via `exists_uniquePath_neighborhood x` and then takes `pathComponentIn V x`; no point other than `x` requires the global class."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+        "line": 295,
+        "issue": "`TubeData (X) (x y) (n)` is over-parameterized: the fields `U`, `V`, and their openness/path/SLSC/subset properties never mention `x` or `y`. This forces identical tube data to be indexed by irrelevant endpoints.",
+        "fix": "Define `TubeData X n` and put the path endpoints only on `PathInTube`, `TubeData.toSet`, and the theorems that quantify over paths.",
+        "evidence": "The structure header is `public structure TubeData (X : Type*) [TopologicalSpace X] (x y : X) (n : \u2115) where`, but every field mentions only `X`, `n`, `U`, and `V`, not `x` or `y`."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+        "line": 580,
+        "issue": "`exists_refined_terminal_vertex` assumes `[SemilocallySimplyConnectedSpace X]`, but the statement and proof only use local path-connectedness and the already bundled tube data.",
+        "fix": "Remove the `[SemilocallySimplyConnectedSpace X]` hypothesis from this theorem; callers that need SLSC can keep it at the call site.",
+        "evidence": "The proof forms `W := V_last \u2229 U` and returns `pathComponentIn W (endpoint \u03b1)` using `hW_open.pathComponentIn` and `isPathConnected_pathComponentIn`; it never invokes the SLSC class or `T.U_slsc`."
+      }
+    ]
+  }
+}

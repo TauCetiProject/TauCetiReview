@@ -1,0 +1,45 @@
+{
+  "returncode": 0,
+  "raw_stderr": "",
+  "text": "Scope is satisfied.\n\n**Roadmap fit.** The UniversalCovers `README.md` (lines 49\u201388) names exactly this material as the missing-and-to-be-ported foundation: Stage 0.1 (discreteness of homotopy-class fibres, from #31576) and Stage 0.2 (`BasedPath x\u2080` and the path-component machinery of `endpoint \u207b\u00b9' U`, from #38292), under `[\u2026][SemilocallySimplyConnectedSpace X]`. The PR delivers precisely these: `SemilocallySimplyConnected.lean` (the SLSC typeclass plus `Path.Homotopic.Quotient.instDiscreteTopology`) and `BasedPath.lean` (the based-path space and `isOpen_pathComponent_preimage` / `pathComponent_preimage_saturated`). Direct, proximate path to a named target \u2014 not speculative. The `UniversalCoverPrelude` vendors only pending-Mathlib API both files consume. Description states the path explicitly.\n\n**Single topic.** The three files are a linear dependency stack (Prelude \u2190 SemilocallySimplyConnected \u2190 BasedPath), all Stage-0 foundations aimed at the one universal-cover construction; the SLSC typeclass is itself consumed by `BasedPath`'s main results. This is coherent prerequisite infrastructure as one unit, not unrelated targets or an opportunistic refactor bundled with new work.\n\nNo scope findings.\n\nTAUCETI-VERDICT-cb203d2a06625de520e3f825\n\n```json\n{\n  \"verdict\": \"approve\",\n  \"summary\": \"Ports Stage 0.1 (SLSC typeclass + discreteness of homotopy-class fibres, #31576) and Stage 0.2 (based-path space + endpoint-preimage path components, #38292) named in the UniversalCovers roadmap, plus a prelude vendoring pending-Mathlib API. The three files form a single prerequisite dependency stack toward the one universal-cover target.\",\n  \"findings\": []\n}\n```",
+  "cost_usd": 0.723067,
+  "usage": {
+    "input_tokens": 1664,
+    "cache_creation_input_tokens": 73015,
+    "cache_read_input_tokens": 269958,
+    "output_tokens": 2828,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 73015
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 924,
+        "cache_read_input_tokens": 88228,
+        "cache_creation_input_tokens": 2106,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 2106,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "session_id": "62b8c56d-8c8d-4449-a670-b18c5c78862b",
+  "provider": "claude",
+  "model": "claude-opus-4-8",
+  "rubric": "scope",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "Ports Stage 0.1 (SLSC typeclass + discreteness of homotopy-class fibres, #31576) and Stage 0.2 (based-path space + endpoint-preimage path components, #38292) named in the UniversalCovers roadmap, plus a prelude vendoring pending-Mathlib API. The three files form a single prerequisite dependency stack toward the one universal-cover target.",
+    "findings": []
+  }
+}

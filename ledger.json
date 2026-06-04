@@ -1,7 +1,7 @@
 {
   "days": {
     "2026-06-03": 1.41115,
-    "2026-06-04": 2.473681
+    "2026-06-04": 8.645779
   },
   "prs": {
     "26": {
@@ -922,6 +922,351 @@
         }
       },
       "scoreboard_comment_id": 4618352464
+    },
+    "42": {
+      "state": {
+        "scope": {
+          "rubric": "scope",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "approve",
+          "confidence": null,
+          "summary": "Ports Stage 0.1 (SLSC typeclass + discreteness of homotopy-class fibres, #31576) and Stage 0.2 (based-path space + endpoint-preimage path components, #38292) named in the UniversalCovers roadmap, plus a prelude vendoring pending-Mathlib API. The three files form a single prerequisite dependency stack toward the one universal-cover target.",
+          "findings": [],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "approved_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": null,
+          "author_replies": []
+        },
+        "correctness": {
+          "rubric": "correctness",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "approve",
+          "confidence": null,
+          "summary": "No correctness or faithfulness issues found in the new based-path, SLSC, and prelude declarations under this rubric.",
+          "findings": [],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "approved_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": null,
+          "author_replies": []
+        },
+        "reuse": {
+          "rubric": "reuse",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "block",
+          "confidence": null,
+          "summary": "One declaration is an outright duplicate wrapper around an existing generic topology instance rather than new TauCeti API.",
+          "findings": [
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": "915",
+              "issue": "`Path.Homotopic.Quotient.instTopologicalSpace` redefines the existing quotient topology instance for `Quotient _`; the body is just `inferInstanceAs (TopologicalSpace (Quotient _))`, so this adds a parallel instance for an already-topologized quotient type.",
+              "fix": "Remove this instance and rely on the existing generic `TopologicalSpace (Quotient _)` instance directly.",
+              "evidence": "The declaration itself proves the replacement: `public instance Path.Homotopic.Quotient.instTopologicalSpace ... := inferInstanceAs (TopologicalSpace (Quotient _))`."
+            }
+          ],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": {
+            "comment_id": 3353248138,
+            "node_id": "PRRC_kwDOSup8rs7H3oGK",
+            "path": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean"
+          },
+          "author_replies": []
+        },
+        "attribution": {
+          "rubric": "attribution",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The work is attributed to Kim Morrison and to Mathlib PRs, but the discreteness-of-homotopy-fibres file is sourced from the wrong PR number and two of three files omit the per-file source-PR credit the roadmap requires.",
+          "findings": [
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": 0,
+              "issue": "This file ports the discreteness-of-homotopy-class-fibres material (Path.Homotopic.Quotient.instDiscreteTopology and the SLSC strategy), which the roadmap (UniversalCovers/README.md, Stage 0 item 1) attributes to mathlib4#31576. The PR description instead cites #38292 and #31449; #31576 is credited nowhere and #31449 does not appear in the roadmap.",
+              "fix": "Confirm the correct PR number and credit mathlib4#31576 as the source of the discreteness material (likely #31449 is a typo for #31576); update the PR description accordingly.",
+              "evidence": "roadmap/TauCetiRoadmap/UniversalCovers/README.md line 68-73: 'Discreteness of homotopy-class fibres (from #31576)'; PR description names #38292 and #31449; SemilocallySimplyConnected.lean ends with Path.Homotopic.Quotient.instDiscreteTopology."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+              "line": 0,
+              "issue": "Roadmap Stage 0 instructs to 'credit the original authors and source PR in each file', but BasedPath.lean and SemilocallySimplyConnected.lean name no source PR in-file (header only has 'Authors: Kim Morrison'); only UniversalCoverPrelude.lean cites #38292.",
+              "fix": "Add the source PR(s) to the module docstring/header of BasedPath.lean (#38292) and SemilocallySimplyConnected.lean (#31576), matching the prelude's convention.",
+              "evidence": "UniversalCoverPrelude.lean docstring cites 'mathlib4#38292 (Kim Morrison)'; BasedPath.lean and SemilocallySimplyConnected.lean headers/docstrings cite no PR; roadmap README line 65 'credit the original authors and source PR in each file'."
+            }
+          ],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": {
+            "comment_id": 3353248175,
+            "node_id": "PRRC_kwDOSup8rs7H3oGv",
+            "path": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean"
+          },
+          "author_replies": []
+        },
+        "api-design": {
+          "rubric": "api-design",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The PR exposes more implementation surface and reducible bodies than the universal-cover Stage 0 API appears to need. Several new definitions are made public by unfolding rather than by characteristic lemmas.",
+          "findings": [
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/UniversalCoverPrelude.lean",
+              "line": 18,
+              "issue": "`@[expose] public section` exposes the bodies of every vendored prelude declaration, including helper definitions and proof lemmas.",
+              "fix": "Remove the section-level `@[expose]`; make declarations `public` only as needed and expose only computational definitions that downstream code must unfold.",
+              "evidence": "The diff has `@[expose] public section` before `unitInterval.half`, partition lemmas, `Path.codRestrict`, `Path.subpathOn`, and homotopy helper lemmas."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+              "line": 128,
+              "issue": "`BasedPath.append` is `@[expose]` but its API only gives the endpoint; users still need to unfold to reason about the underlying path values.",
+              "fix": "Remove `@[expose]` from `append` and add characteristic lemmas such as `toPath_append`/`append_apply` plus appropriate `[simp]` normal forms.",
+              "evidence": "The diff declares `@[expose] public noncomputable def append` and only follows it with `endpoint_append`."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": 50,
+              "issue": "`SemilocallySimplyConnectedAt`, `SemilocallySimplyConnectedOn`, and `IsPathHomotopyTrivial` expose their bodies even though the file provides public iff/constructor API for using them.",
+              "fix": "Keep these definitions opaque and rely on `semilocallySimplyConnectedAt_iff`, `semilocallySimplyConnectedAt_iff_paths`, and the corresponding `On`/space lemmas; add missing intro/elimination lemmas if a downstream proof currently unfolds them.",
+              "evidence": "The diff marks these Prop definitions with `@[expose] public def` at their declarations."
+            }
+          ],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": {
+            "comment_id": 3353248212,
+            "node_id": "PRRC_kwDOSup8rs7H3oHU",
+            "path": "TauCeti/AlgebraicTopology/FundamentalGroupoid/UniversalCoverPrelude.lean"
+          },
+          "author_replies": []
+        },
+        "generality": {
+          "rubric": "generality",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The PR introduces useful local notions but several exported declarations are not at their natural level: some global hypotheses should be local, one structure carries unused endpoint parameters, and one theorem has an unused SLSC assumption.",
+          "findings": [
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": 230,
+              "issue": "`exists_uniquePath_neighborhood` is stated with the global typeclass `[SemilocallySimplyConnectedSpace X]`, even though the file has already defined the local predicate `SemilocallySimplyConnectedAt x` and the proof only needs the property at this point.",
+              "fix": "State the local theorem as `SemilocallySimplyConnectedAt x \u2192 \u2203 U, IsOpen U \u2227 x \u2208 U \u2227 IsPathHomotopyTrivial U`, and derive the current typeclass version as a corollary if needed.",
+              "evidence": "The declaration reads `public theorem exists_uniquePath_neighborhood [SemilocallySimplyConnectedSpace X] (x : X)`, while `semilocallySimplyConnectedAt_iff_paths` immediately provides the needed local characterization."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": 242,
+              "issue": "`exists_pathConnected_slsc_neighborhood` repeats the same under-generalization: it assumes global SLSC, but its natural input is the local assumption at `x` plus local path-connectedness.",
+              "fix": "State it from `SemilocallySimplyConnectedAt x` and `[LocPathConnectedSpace X]`; keep a typeclass wrapper only as a convenience theorem.",
+              "evidence": "The proof obtains `V` via `exists_uniquePath_neighborhood x` and then takes `pathComponentIn V x`; no point other than `x` requires the global class."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": 295,
+              "issue": "`TubeData (X) (x y) (n)` is over-parameterized: the fields `U`, `V`, and their openness/path/SLSC/subset properties never mention `x` or `y`. This forces identical tube data to be indexed by irrelevant endpoints.",
+              "fix": "Define `TubeData X n` and put the path endpoints only on `PathInTube`, `TubeData.toSet`, and the theorems that quantify over paths.",
+              "evidence": "The structure header is `public structure TubeData (X : Type*) [TopologicalSpace X] (x y : X) (n : \u2115) where`, but every field mentions only `X`, `n`, `U`, and `V`, not `x` or `y`."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+              "line": 580,
+              "issue": "`exists_refined_terminal_vertex` assumes `[SemilocallySimplyConnectedSpace X]`, but the statement and proof only use local path-connectedness and the already bundled tube data.",
+              "fix": "Remove the `[SemilocallySimplyConnectedSpace X]` hypothesis from this theorem; callers that need SLSC can keep it at the call site.",
+              "evidence": "The proof forms `W := V_last \u2229 U` and returns `pathComponentIn W (endpoint \u03b1)` using `hW_open.pathComponentIn` and `isPathConnected_pathComponentIn`; it never invokes the SLSC class or `T.U_slsc`."
+            }
+          ],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": {
+            "comment_id": 3353248243,
+            "node_id": "PRRC_kwDOSup8rs7H3oHz",
+            "path": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean"
+          },
+          "author_replies": []
+        },
+        "placement": {
+          "rubric": "placement",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "approve",
+          "confidence": null,
+          "summary": "Files are coherently placed under AlgebraicTopology/FundamentalGroupoid/, matching Mathlib's home for this material; the Prelude vendors only declarations genuinely absent from the pinned Mathlib, with attribution. No evidently-wrong or unused imports (e.g. Topology.Order.Basic is needed for exists_Ioc_subset_of_mem_nhds').",
+          "findings": [],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "approved_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": null,
+          "author_replies": []
+        },
+        "naming": {
+          "rubric": "naming",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "Two public names overstate or misdescribe their conclusions and should be renamed before exposing this API.",
+          "findings": [
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+              "line": 462,
+              "issue": "`joinedIn_preimage_singleton_of_homotopic` mentions `singleton`, but the theorem is for an arbitrary `U : Set X` with `hy : y \u2208 U`; no singleton appears in the statement.",
+              "fix": "Rename it to describe the conclusion, e.g. `joinedIn_endpoint_preimage_of_homotopic` or `joinedIn_endpoint_preimage_of_homotopic_paths`.",
+              "evidence": "Declaration: `public theorem joinedIn_preimage_singleton_of_homotopic ... {U : Set X} (hy : y \u2208 U) ... : JoinedIn (endpoint ... \u207b\u00b9' U) ...`."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": 238,
+              "issue": "`exists_uniquePath_neighborhood` overstates the conclusion: it proves a neighborhood with `IsPathHomotopyTrivial U`, i.e. uniqueness only up to path homotopy, not unique paths.",
+              "fix": "Rename it to match the actual predicate, e.g. `exists_pathHomotopyTrivial_neighborhood`.",
+              "evidence": "Declaration: `public theorem exists_uniquePath_neighborhood ... : \u2203 U : Set X, IsOpen U \u2227 x \u2208 U \u2227 IsPathHomotopyTrivial U`."
+            }
+          ],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": {
+            "comment_id": 3353248270,
+            "node_id": "PRRC_kwDOSup8rs7H3oIO",
+            "path": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean"
+          },
+          "author_replies": []
+        },
+        "documentation": {
+          "rubric": "documentation",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The mathematics is documented, but several docstrings carry dangling or stale cross-references and one theorem documents its proof. Module-level and definition docstrings cite declarations that do not exist under the names given.",
+          "findings": [
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": "45",
+              "issue": "Module 'Main theorems' lists `Path.Homotopic.Quotient.discreteTopology`, but the declaration is `instDiscreteTopology` (line 932). Same stale name reused in the proof-strategy block at line 492.",
+              "fix": "Rename the references to `Path.Homotopic.Quotient.instDiscreteTopology`.",
+              "evidence": "grep: line 45/492 reference `discreteTopology`; line 932 defines `instDiscreteTopology`."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": "161",
+              "issue": "`IsPathHomotopyTrivial` docstring claims an equivalence 'by `paths_homotopic_iff_loops_nullhomotopic`', but no such declaration exists in the codebase.",
+              "fix": "Remove the citation or add the lemma it names.",
+              "evidence": "grep `paths_homotopic_iff_loops_nullhomotopic`: only hit is the docstring at line 161."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+              "line": "516",
+              "issue": "Proof-strategy comment cites `tube_isOpen`; the actual declaration is `TubeData.isOpen`.",
+              "fix": "Update to `TubeData.isOpen` (and fix `discreteTopology` per finding 1).",
+              "evidence": "grep: line 516 `tube_isOpen`; declaration at line 254 is `TubeData.isOpen` (`public theorem TubeData.isOpen`)."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+              "line": "0",
+              "issue": "`toPath_homotopic_of_joinedIn_slsc` docstring includes a multi-step '## Proof sketch' (uncurry F, null-homotopy, reparametrisation), describing the proof rather than the result.",
+              "fix": "Drop the proof sketch from the docstring (move to inline comments if wanted); keep the result description.",
+              "evidence": "Docstring body contains numbered steps '1. Uncurry the path F ... 2. Since U has the SLSC ... 3. Combine F' with this null-homotopy'."
+            }
+          ],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": {
+            "comment_id": 3353248298,
+            "node_id": "PRRC_kwDOSup8rs7H3oIq",
+            "path": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean"
+          },
+          "author_replies": []
+        },
+        "proof-quality": {
+          "rubric": "proof-quality",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "Proofs are generally robust automation, but several goals are closed by `change` across Subtype/coercion definitional equality without justification (one with no comment), and the deformTerminal evaluation lemmas rely on simp-unfolding a tactic-constructed definition.",
+          "findings": [
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+              "line": "383",
+              "issue": "`change s \u2264 1` (and `change ((a\u2080 : I) : \u211d) < s` at line 381) close the `Set.Ioc` membership goal by unfolding the Subtype order on `I` and the `(1 : I)` coercion definitionally; line 383 has no comment, line 381's comment states what not why.",
+              "fix": "Replace with an explicit lemma, e.g. `Subtype.coe_le_coe`/`Subtype.coe_lt_coe` (or `unitInterval.le_one`), instead of relying on defeq.",
+              "evidence": "Lines 380-384: `change ((a\u2080 : I) : \u211d) < s` / `change s \u2264 1` against goal `\u27e8s,hs01\u27e9 \u2208 Set.Ioc a\u2080 1`."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+              "line": "471",
+              "issue": "Undocumented `change` tactics rest on beta/structure-projection defeq: line 471 (`change Continuous fun ts : I\u00d7I \u21a6 H ts`), 481/510 (`change endpoint (ofPath \u2026) \u2208 U`), 889/893 (`change K_fn (t,(0:I)) = (\u03b1'.trans L) 0/1`). Comments at 481/510 describe what, not why; 471/889/893 have none.",
+              "fix": "Document why the goal cannot be reached by `rw`/`simp only` with the relevant eval lemma, or use such a lemma instead of `change`.",
+              "evidence": "Grep hits BasedPath.lean:471,481,510,889,893; `change`/`show` are flagged when used without a why-comment."
+            },
+            {
+              "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+              "line": "182",
+              "issue": "`deformTerminal` is defined in tactic mode (`:= by \u2026 refine \u27e8ContinuousMap.mk (fun t \u21a6 f t) \u2026\u27e9` with an internal `let f := dite \u2026`). The eval lemmas at 182/189/195 and endpoint at 201 prove their results by `simp [deformTerminal, \u2026]`, i.e. unfolding that opaque term and reducing its nested `dite`; any reshaping of the definition breaks all four.",
+              "fix": "Give `deformTerminal` an explicit named `toFun` term and a single `deformTerminal_apply` unfolding lemma; derive the branch lemmas from it via `Path.extend` rewriting rather than re-unfolding the def each time.",
+              "evidence": "Lines 153-176 define deformTerminal via `by`/`refine`; lines 182,189,195,201 each `simp [deformTerminal, \u2026]`."
+            }
+          ],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": {
+            "comment_id": 3353248325,
+            "node_id": "PRRC_kwDOSup8rs7H3oJF",
+            "path": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean"
+          },
+          "author_replies": []
+        },
+        "deprecation": {
+          "rubric": "deprecation",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "approve",
+          "confidence": null,
+          "summary": "Purely additive PR: three new files (BasedPath, SemilocallySimplyConnected, UniversalCoverPrelude) in a new directory, with no modification, rename, removal, or weakening of any existing public API and no Mathlib bump. Nothing in the deprecation/backward-compatibility angle is at risk.",
+          "findings": [],
+          "reviewed_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "approved_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "thread": null,
+          "author_replies": []
+        }
+      },
+      "scoreboard_comment_id": 4618649896,
+      "rounds": [
+        {
+          "round": 1,
+          "ts": "2026-06-04T03:34:23.517861+00:00",
+          "mode": "commit",
+          "ran": [
+            "scope",
+            "correctness",
+            "reuse",
+            "attribution",
+            "api-design",
+            "generality",
+            "placement",
+            "naming",
+            "documentation",
+            "proof-quality",
+            "deprecation"
+          ],
+          "states": {
+            "scope": "green",
+            "correctness": "green",
+            "reuse": "blocking_block",
+            "attribution": "blocking_request",
+            "api-design": "blocking_request",
+            "generality": "blocking_request",
+            "placement": "green",
+            "naming": "blocking_request",
+            "documentation": "blocking_request",
+            "proof-quality": "blocking_request",
+            "deprecation": "green"
+          },
+          "cost": 6.172098,
+          "head_sha": "056cad4c5d74ac45323c1e7111fd9100eb246a04",
+          "rubrics_version": "dccacfb6e0bf58e2"
+        }
+      ]
     }
   }
 }

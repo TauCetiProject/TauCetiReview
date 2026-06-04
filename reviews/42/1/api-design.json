@@ -1,0 +1,44 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-6d8f0d4b2eda2c075a385ed2\n{\n  \"verdict\": \"request_changes\",\n  \"summary\": \"The PR exposes more implementation surface and reducible bodies than the universal-cover Stage 0 API appears to need. Several new definitions are made public by unfolding rather than by characteristic lemmas.\",\n  \"findings\": [\n    {\n      \"file\": \"TauCeti/AlgebraicTopology/FundamentalGroupoid/UniversalCoverPrelude.lean\",\n      \"line\": 18,\n      \"issue\": \"`@[expose] public section` exposes the bodies of every vendored prelude declaration, including helper definitions and proof lemmas.\",\n      \"fix\": \"Remove the section-level `@[expose]`; make declarations `public` only as needed and expose only computational definitions that downstream code must unfold.\",\n      \"evidence\": \"The diff has `@[expose] public section` before `unitInterval.half`, partition lemmas, `Path.codRestrict`, `Path.subpathOn`, and homotopy helper lemmas.\"\n    },\n    {\n      \"file\": \"TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean\",\n      \"line\": 128,\n      \"issue\": \"`BasedPath.append` is `@[expose]` but its API only gives the endpoint; users still need to unfold to reason about the underlying path values.\",\n      \"fix\": \"Remove `@[expose]` from `append` and add characteristic lemmas such as `toPath_append`/`append_apply` plus appropriate `[simp]` normal forms.\",\n      \"evidence\": \"The diff declares `@[expose] public noncomputable def append` and only follows it with `endpoint_append`.\"\n    },\n    {\n      \"file\": \"TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean\",\n      \"line\": 50,\n      \"issue\": \"`SemilocallySimplyConnectedAt`, `SemilocallySimplyConnectedOn`, and `IsPathHomotopyTrivial` expose their bodies even though the file provides public iff/constructor API for using them.\",\n      \"fix\": \"Keep these definitions opaque and rely on `semilocallySimplyConnectedAt_iff`, `semilocallySimplyConnectedAt_iff_paths`, and the corresponding `On`/space lemmas; add missing intro/elimination lemmas if a downstream proof currently unfolds them.\",\n      \"evidence\": \"The diff marks these Prop definitions with `@[expose] public def` at their declarations.\"\n    }\n  ]\n}",
+  "usage": {
+    "input_tokens": 106869,
+    "cached_input_tokens": 63744,
+    "output_tokens": 2523,
+    "reasoning_output_tokens": 1591
+  },
+  "session_id": "019e90a9-eb4c-7551-bd5f-d9b0a5fb3a8d",
+  "cost_usd": 0.158816,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "api-design",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The PR exposes more implementation surface and reducible bodies than the universal-cover Stage 0 API appears to need. Several new definitions are made public by unfolding rather than by characteristic lemmas.",
+    "findings": [
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/UniversalCoverPrelude.lean",
+        "line": 18,
+        "issue": "`@[expose] public section` exposes the bodies of every vendored prelude declaration, including helper definitions and proof lemmas.",
+        "fix": "Remove the section-level `@[expose]`; make declarations `public` only as needed and expose only computational definitions that downstream code must unfold.",
+        "evidence": "The diff has `@[expose] public section` before `unitInterval.half`, partition lemmas, `Path.codRestrict`, `Path.subpathOn`, and homotopy helper lemmas."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+        "line": 128,
+        "issue": "`BasedPath.append` is `@[expose]` but its API only gives the endpoint; users still need to unfold to reason about the underlying path values.",
+        "fix": "Remove `@[expose]` from `append` and add characteristic lemmas such as `toPath_append`/`append_apply` plus appropriate `[simp]` normal forms.",
+        "evidence": "The diff declares `@[expose] public noncomputable def append` and only follows it with `endpoint_append`."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+        "line": 50,
+        "issue": "`SemilocallySimplyConnectedAt`, `SemilocallySimplyConnectedOn`, and `IsPathHomotopyTrivial` expose their bodies even though the file provides public iff/constructor API for using them.",
+        "fix": "Keep these definitions opaque and rely on `semilocallySimplyConnectedAt_iff`, `semilocallySimplyConnectedAt_iff_paths`, and the corresponding `On`/space lemmas; add missing intro/elimination lemmas if a downstream proof currently unfolds them.",
+        "evidence": "The diff marks these Prop definitions with `@[expose] public def` at their declarations."
+      }
+    ]
+  }
+}
