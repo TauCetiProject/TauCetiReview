@@ -337,9 +337,10 @@ def main():
                     help="write the rendered review comment here for a separate post step")
     ap.add_argument("--no-post", action="store_true",
                     help="do not post the comment (a later tokened step does); still writes ledger")
-    ap.add_argument("--mode", default="commit", choices=["commit", "manual", "reply"],
+    ap.add_argument("--mode", default="commit", choices=["commit", "manual", "reply", "init"],
                     help="commit: re-run blocking rubrics then sweep stale greens; manual "
-                         "(/review): re-run all; reply: re-run only --reply-rubric")
+                         "(/review): re-run all; reply: re-run only --reply-rubric; init: post an "
+                         "in-progress scoreboard immediately (no models), before the review runs")
     ap.add_argument("--reply-rubric", default="", help="reply mode: the single rubric to re-run")
     ap.add_argument("--reply-file", default="", help="reply mode: file with the author's reply")
     ap.add_argument("--scoreboard-file", default="",
@@ -387,6 +388,25 @@ def main():
     pr_state.setdefault("state", {})            # per-rubric case files (= scoreboard/staleness)
     pr_state.setdefault("scoreboard_comment_id", None)
     state_map = pr_state["state"]
+
+    # init mode: post an in-progress scoreboard immediately, before any model runs. No keys, no
+    # diff, no ledger writes — just render the current states under a "running now" header and emit
+    # a scoreboard-only post plan for the early trusted post step.
+    if a.mode == "init":
+        outdir = store / "reviews" / str(a.pr) / str(round_num)
+        outdir.mkdir(parents=True, exist_ok=True)
+        pr_total = sum(r.get("cost", 0) for r in pr_state.get("rounds", []))
+        cost_line = f"Review spend: ${pr_total:.2f}." if pr_total else ""
+        sb = render_scoreboard(candidates, state_map, head, "in progress — running now…", "", cost_line)
+        sb_path = pathlib.Path(a.scoreboard_file) if a.scoreboard_file else (outdir / "scoreboard.md")
+        sb_path.write_text(sb)
+        (outdir / "scoreboard.md").write_text(sb)
+        if a.post_plan_file:
+            pathlib.Path(a.post_plan_file).write_text(json.dumps(
+                {"head_sha": head, "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
+                 "scoreboard_body": str(sb_path), "threads": []}, indent=2))
+        print("[init] wrote in-progress scoreboard + scoreboard-only post plan.")
+        return
 
     reply_text = ""
     if a.reply_file and pathlib.Path(a.reply_file).exists():
