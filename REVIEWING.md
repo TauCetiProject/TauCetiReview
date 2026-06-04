@@ -79,7 +79,11 @@ Add `--post` to publish. Useful flags:
 2. Builds the same read-only reviewer workspace CI uses: the PR source at its head, the roadmap
    repo, and (unless `--no-mathlib`) the pinned Mathlib source for `reuse`/`naming` to grep.
 3. Runs each rubric through `claude -p` / `codex exec`, **read-only** (`Read`/`Grep`/`Glob` only),
-   in `--auth subscription` mode — no API key, so the CLIs use your logged-in subscription.
+   in `--auth subscription` mode — no API key, so the CLIs use your logged-in subscription. Each
+   reviewer runs in a **clean room**: a throwaway HOME seeded with only your subscription
+   credential, so it authenticates as you but ignores your personal `CLAUDE.md` / `AGENTS.md`,
+   skills, plugins, and settings (and skills are disabled outright). The review depends on the
+   rubrics and the PR, not on who runs it.
 4. Reads each verdict from a fresh one-time marker token, so nothing in the PR text can forge an
    `approve` (this anti-forgery channel is kept even though you are trusted).
 5. Prints the scoreboard + threads, and with `--post`, publishes them via `gh` as you.
@@ -96,5 +100,11 @@ Add `--post` to publish. Useful flags:
   is fine for occasional, interactive, human-initiated runs like this. Standing it up as a 24/7
   self-hosted auto-reviewer is closer to API-tier usage and likely outside subscription terms — if
   you want always-on review, use the CI path (`--auth api`) with API keys.
+- **Reproducibility.** The clean room means your personal `~/.claude/CLAUDE.md`, `~/.codex/`
+  config/`AGENTS.md`, skills, and MCP servers do **not** influence the review — two people running
+  the same rubrics on the same PR get reviews that differ only by the model, not by their local
+  setup. (The repo's own in-tree `CLAUDE.md` is still visible, as part of the code under review.)
+  On macOS, where the login lives in the keychain rather than a credential file, it falls back to
+  your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.

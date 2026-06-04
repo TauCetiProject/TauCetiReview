@@ -7,7 +7,7 @@ the `reviews` branch of TauCetiReview): `ledger.json` plus `reviews/<pr>/<round>
 USD budget halts spending. With `--auto-subset`, a re-review runs only the rubrics whose last
 round was not `approve`. The workflow commits the store after the run.
 """
-import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, subprocess, sys, tempfile
+import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, shutil, subprocess, sys, tempfile
 
 DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "attribution", "api-design",
                    "generality", "placement", "naming", "documentation", "proof-quality",
@@ -35,16 +35,14 @@ def reviewer_env(provider, keys, subscription=False):
     each provider's credential out of the other's reach. Residual: a reviewer can still read its OWN
     key via /proc/self/environ (documented in I2/R6; needs a proxy or uid-separation to close).
 
-    In `subscription` mode (a trusted human running locally with `claude`/`codex` already logged
-    in) there is no API key to isolate: inherit the real environment so the CLIs find the
-    logged-in subscription credentials under the user's own HOME, and strip any stray API keys so
-    the CLIs use the subscription rather than silently billing an API account.
+    In `subscription` mode (a trusted human running locally) there is no API key, so we seed the
+    same throwaway HOME with ONLY the provider's logged-in subscription credential — never the
+    user's `~/.claude` / `~/.codex` at large. That gives a clean room: the reviewer authenticates
+    on the subscription but sees none of the runner's personal `CLAUDE.md` / `AGENTS.md`, skills,
+    plugins, or settings, so the review does not depend on who runs it. If the credential is not
+    where we expect (e.g. a macOS keychain login), we fall back to the real HOME so auth still
+    works, trading reproducibility for a working review.
     """
-    if subscription:
-        env = {**os.environ, "CI": "1"}
-        env.pop("ANTHROPIC_API_KEY", None)
-        env.pop("OPENAI_API_KEY", None)
-        return env
     # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp.
     base = os.path.join(os.path.expanduser("~"), ".tauceti-rev")
     os.makedirs(base, exist_ok=True)
@@ -52,12 +50,30 @@ def reviewer_env(provider, keys, subscription=False):
     env = {"PATH": os.environ.get("PATH", ""), "HOME": home,
            "LANG": os.environ.get("LANG", "C.UTF-8"), "CI": "1"}
     if provider == "claude":
-        env["ANTHROPIC_API_KEY"] = keys["anthropic"]
+        if subscription:
+            # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
+            src = os.path.expanduser("~/.claude/.credentials.json")
+            if os.path.exists(src):
+                cdir = os.path.join(home, ".claude")
+                os.makedirs(cdir, exist_ok=True)
+                shutil.copyfile(src, os.path.join(cdir, ".credentials.json"))
+            else:
+                env["HOME"] = os.path.expanduser("~")  # fallback: keychain/other; less reproducible
+        else:
+            env["ANTHROPIC_API_KEY"] = keys["anthropic"]
     else:
         codex_home = os.path.join(home, ".codex")
         os.makedirs(codex_home, exist_ok=True)  # codex requires CODEX_HOME to already exist
         env["CODEX_HOME"] = codex_home
-        env["OPENAI_API_KEY"] = keys["openai"]
+        if subscription:
+            # Seed only the ChatGPT login; no personal AGENTS.md / config.toml.
+            src = os.path.expanduser("~/.codex/auth.json")
+            if os.path.exists(src):
+                shutil.copyfile(src, os.path.join(codex_home, "auth.json"))
+            else:
+                env["CODEX_HOME"] = os.path.expanduser("~/.codex")  # fallback; less reproducible
+        else:
+            env["OPENAI_API_KEY"] = keys["openai"]
     return env
 
 
@@ -90,8 +106,10 @@ def build_prompt(rubrics_dir, rubric, context, marker):
 
 
 def run_claude(prompt, cwd, model, env):
+    # --disable-slash-commands drops skills entirely; read-only tools only. With the clean HOME in
+    # reviewer_env this keeps the review independent of the runner's personal claude config.
     r = sh(["claude", "-p", prompt, "--output-format", "json", "--model", model,
-            "--allowedTools", "Read", "Grep", "Glob"], cwd=cwd, env=env)
+            "--disable-slash-commands", "--allowedTools", "Read", "Grep", "Glob"], cwd=cwd, env=env)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     try:
         d = json.loads(r.stdout)
