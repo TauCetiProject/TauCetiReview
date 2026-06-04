@@ -264,8 +264,8 @@ def render_thread(cf):
                      + (f" _Fix:_ {f['fix']}" if f.get("fix") else ""))
     if not cf.get("findings"):
         lines.append("(no parseable verdict this round)")
-    lines.append("\nReply in this thread to contest a finding or report a fix; that re-runs "
-                 "**only** this rubric.")
+    lines.append("\nReply in this thread to contest a finding; that re-runs **only** this rubric. "
+                 "(To fix it, just push a commit — that re-reviews on its own.)")
     return "\n".join(lines)
 
 
@@ -497,7 +497,7 @@ def main():
     # scoreboard. The current round's spend is not yet in a round record, so add it in.
     this_run_cost = round(spent_today - spent_start, 6)
     pr_total = sum(r.get("cost", 0) for r in pr_state.get("rounds", [])) + this_run_cost
-    cost_line = f"Review spend at current prices: ${pr_total:.2f}."
+    cost_line = f"Review spend: ${pr_total:.2f}."
 
     # Emit the scoreboard body, per-rubric thread bodies, and a post plan for the trusted step.
     scoreboard_md = render_scoreboard(candidates, state_map, head, overall, budget_note, cost_line)
