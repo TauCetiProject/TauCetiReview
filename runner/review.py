@@ -493,14 +493,11 @@ def main():
     overall = overall_label(list(states.values()), stopped)
     budget_note = f"Deferred {stopped} and after to the next run." if stopped else ""
 
-    # A running total of review spend, in small text at the foot of the scoreboard. The current
-    # round's spend is not yet in a round record, so add it to the per-PR and all-PR totals.
+    # This PR's running review spend (across its rounds), in small text at the foot of the
+    # scoreboard. The current round's spend is not yet in a round record, so add it in.
     this_run_cost = round(spent_today - spent_start, 6)
-    grand_total = sum(r.get("cost", 0) for p in ledger["prs"].values()
-                      for r in p.get("rounds", [])) + this_run_cost
     pr_total = sum(r.get("cost", 0) for r in pr_state.get("rounds", [])) + this_run_cost
-    cost_line = (f"Review spend at current prices — ${pr_total:.2f} this PR · "
-                 f"${grand_total:.2f} all reviews · ${spent_today:.2f}/${a.daily_budget:.0f} today.")
+    cost_line = f"Review spend at current prices: ${pr_total:.2f}."
 
     # Emit the scoreboard body, per-rubric thread bodies, and a post plan for the trusted step.
     scoreboard_md = render_scoreboard(candidates, state_map, head, overall, budget_note, cost_line)
