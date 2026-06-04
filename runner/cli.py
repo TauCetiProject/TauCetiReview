@@ -99,8 +99,10 @@ def main():
     ap.add_argument("--repo", default=DEFAULT_CODE_REPO, help="code repo (owner/name)")
     ap.add_argument("--roadmap-repo", default=DEFAULT_ROADMAP_REPO)
     ap.add_argument("--rubrics", default="", help="comma-separated subset (default: all)")
-    ap.add_argument("--mode", default="manual", choices=["manual", "commit"],
-                    help="manual: review every rubric (default); commit: only unresolved ones")
+    ap.add_argument("--mode", default="commit", choices=["commit", "manual"],
+                    help="commit (default): re-run only unresolved rubrics, carry prior approvals "
+                         "forward as ♻️ (stale) until the PR is otherwise clean, then sweep them; "
+                         "manual: force a full re-review of every rubric")
     ap.add_argument("--auth", default="subscription", choices=["subscription", "api"],
                     help="subscription (default): use your logged-in claude/codex; api: use "
                          "ANTHROPIC_API_KEY / OPENAI_API_KEY from the environment (billed)")
