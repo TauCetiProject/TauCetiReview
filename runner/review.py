@@ -25,7 +25,7 @@ def sh(cmd, cwd=None, env=None, stdin_text=None):
                           stdin=(None if stdin_text is not None else subprocess.DEVNULL))
 
 
-def reviewer_env(provider, keys):
+def reviewer_env(provider, keys, subscription=False):
     """A minimal, isolated environment for a reviewer subprocess.
 
     Each reviewer gets a fresh throwaway HOME and ONLY its own provider credential — never the
@@ -34,7 +34,17 @@ def reviewer_env(provider, keys):
     prompt-injected reviewer must have nothing worth leaking. The unguessable HOME/CODEX_HOME keeps
     each provider's credential out of the other's reach. Residual: a reviewer can still read its OWN
     key via /proc/self/environ (documented in I2/R6; needs a proxy or uid-separation to close).
+
+    In `subscription` mode (a trusted human running locally with `claude`/`codex` already logged
+    in) there is no API key to isolate: inherit the real environment so the CLIs find the
+    logged-in subscription credentials under the user's own HOME, and strip any stray API keys so
+    the CLIs use the subscription rather than silently billing an API account.
     """
+    if subscription:
+        env = {**os.environ, "CI": "1"}
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("OPENAI_API_KEY", None)
+        return env
     # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp.
     base = os.path.join(os.path.expanduser("~"), ".tauceti-rev")
     os.makedirs(base, exist_ok=True)
@@ -94,7 +104,9 @@ def run_claude(prompt, cwd, model, env):
 
 def run_codex(prompt, cwd, model, env):
     # Authenticate into this invocation's isolated CODEX_HOME so the credential is not shared.
-    sh(["codex", "login", "--with-api-key"], env=env, stdin_text=env.get("OPENAI_API_KEY", ""))
+    # In subscription mode there is no key (and no isolated home): use the inherited codex login.
+    if env.get("OPENAI_API_KEY"):
+        sh(["codex", "login", "--with-api-key"], env=env, stdin_text=env["OPENAI_API_KEY"])
     # inherit=none: codex's model-run shell commands get a clean env, not codex's own.
     cmd = (["codex", "exec", "--json", "-s", "read-only", "--skip-git-repo-check",
             "-c", "shell_environment_policy.inherit=none"]
@@ -328,8 +340,16 @@ def main():
                     help="write the auto-merge decision JSON here for a separate merge step")
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
     ap.add_argument("--codex-model", default=CODEX_MODEL)
+    ap.add_argument("--providers", default="claude,codex",
+                    help="comma-separated reviewers to draw from (e.g. just 'claude' when only "
+                         "the Claude CLI is logged in). A rubric's prior provider is kept only if "
+                         "still listed; otherwise it is re-drawn from this set")
     ap.add_argument("--auto-subset", action="store_true",
                     help="re-review only rubrics whose last round was not approve")
+    ap.add_argument("--auth", choices=["api", "subscription"], default="api",
+                    help="api: each reviewer gets an isolated HOME and its own API key (CI). "
+                         "subscription: inherit the environment so a locally logged-in `claude` / "
+                         "`codex` reviews on the runner's own subscription (no API key, no spend)")
     ap.add_argument("--keys-dir", default="",
                     help="dir with files 'anthropic' and 'openai'; keys are passed only to the "
                          "matching reviewer subprocess and never kept in this process's env")
@@ -352,7 +372,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
-    if a.keys_dir:
+    subscription = a.auth == "subscription"
+    if subscription:  # no keys: reviewers use the runner's logged-in claude/codex subscription
+        keys = {"anthropic": "", "openai": ""}
+    elif a.keys_dir:
         kd = pathlib.Path(a.keys_dir)
         keys = {}
         for name in ("anthropic", "openai"):
@@ -448,6 +471,10 @@ def main():
     outdir = store / "reviews" / str(a.pr) / str(round_num)
     outdir.mkdir(parents=True, exist_ok=True)
     runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model)}
+    providers = [p.strip() for p in a.providers.split(",") if p.strip() in runners]
+    if not providers:
+        print(f"no usable providers in --providers={a.providers!r}", file=sys.stderr)
+        sys.exit(1)
     ran, stopped = [], None
 
     def run_one(rubric):
@@ -458,14 +485,15 @@ def main():
         reblock = build_reactivation_block(cf_prev, reply_text if is_reply else None)
         prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context + reblock, marker)
         # Pin the provider to whoever first reviewed this rubric, so a follow-up audits its own
-        # prior finding (and an author can't shop for a softer model); else roll at random.
-        provider = (cf_prev.get("provider") if cf_prev and cf_prev.get("provider") in runners
-                    else random.choice(["claude", "codex"]))
+        # prior finding (and an author can't shop for a softer model); else roll at random over
+        # the available providers. A pinned provider that is no longer available is re-drawn.
+        provider = (cf_prev.get("provider") if cf_prev and cf_prev.get("provider") in providers
+                    else random.choice(providers))
         fn, model = runners[provider]
-        res = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys))
+        res = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys, subscription))
         cost = res.get("cost_usd") or 0.0
         if res["returncode"] != 0 or extract_verdict(res.get("text", ""), marker) is None:
-            res = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys))  # one retry
+            res = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys, subscription))  # one retry
             cost += res.get("cost_usd") or 0.0  # count every attempt
         res["cost_usd"] = round(cost, 6)
         res.update(provider=provider, model=model, rubric=rubric,
