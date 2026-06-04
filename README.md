@@ -17,7 +17,18 @@ judged by several independent agents, one per angle, which post `approve` / `req
 Each agent's prompt is [`rubrics/_common.md`](rubrics/_common.md) followed by its angle file;
 see [`rubrics/README.md`](rubrics/README.md) for the list and which angles can block.
 
+## Reviewing it yourself
+
+CI runs the review on the metered Anthropic / OpenAI APIs. A trusted contributor can run the
+same review on their **own Claude / Codex subscription** with the `tauceti-review` CLI — no API
+bill. See [REVIEWING.md](REVIEWING.md):
+
+```bash
+uvx --from git+https://github.com/FormalFrontier/TauCetiReview tauceti-review 42
+```
+
 ## Status
 
 - `rubrics/` — the per-angle prompts (live).
-- The review runner and its GitHub Actions workflow — in progress.
+- `runner/` — the review engine (`review.py` + `post.py`) and the `tauceti-review` CLI (live).
+- The GitHub Actions workflow — live.

@@ -1,0 +1,19 @@
+[project]
+name = "tauceti-review"
+version = "0.1.0"
+description = "Run the Tau Ceti AI code review on a PR using your own Claude/Codex subscription."
+readme = "REVIEWING.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# No Python dependencies: the engine shells out to the `git`, `gh`, `claude`, and `codex` CLIs.
+dependencies = []
+
+[project.scripts]
+tauceti-review = "runner.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["runner"]
