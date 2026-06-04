@@ -116,6 +116,13 @@ def main():
                     help="path to a TauCetiReview checkout (default: auto-detect / cached clone)")
     ap.add_argument("--workdir", default="", help="workspace dir (default: a fresh temp dir)")
     ap.add_argument("--keep", action="store_true", help="keep the workspace dir after finishing")
+    ap.add_argument("--store", default="",
+                    help="review store dir holding the ledger (scoreboard/thread comment ids + "
+                         "per-rubric verdicts). Default: a persistent per-repo store under the "
+                         "cache, so a re-review UPDATES the existing scoreboard and threads in "
+                         "place and --mode commit re-runs only unresolved rubrics")
+    ap.add_argument("--fresh", action="store_true",
+                    help="ignore the persistent store and start clean (posts a new scoreboard)")
     a = ap.parse_args()
 
     need("git", "Install git.")
@@ -188,8 +195,17 @@ def main():
             print("note: no mathlib rev in lake-manifest.json; skipping Mathlib source.",
                   file=sys.stderr)
 
-    store = work / "store"
-    store.mkdir(exist_ok=True)
+    # The store (ledger of scoreboard/thread comment ids + per-rubric verdicts) is PERSISTENT and
+    # lives outside the throwaway workspace, so a re-review edits the same scoreboard and threads in
+    # place instead of posting duplicates, and --mode commit can re-run only unresolved rubrics.
+    if a.store:
+        store = pathlib.Path(a.store)
+    elif a.fresh:
+        store = work / "store"
+    else:
+        store = CACHE_DIR / "store" / a.repo.replace("/", "__")
+    store.mkdir(parents=True, exist_ok=True)
+    print(f"store: {store}{'  (fresh)' if a.fresh else ''}", file=sys.stderr)
     plan = work / "post_plan.json"
     cmd = [sys.executable, str(repo_dir / "runner" / "review.py"),
            "--repo", a.repo, "--pr", str(a.pr), "--mode", a.mode,
