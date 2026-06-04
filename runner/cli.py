@@ -152,6 +152,10 @@ def main():
                          "place and --mode commit re-runs only unresolved rubrics")
     ap.add_argument("--fresh", action="store_true",
                     help="ignore the persistent store and start clean (posts a new scoreboard)")
+    ap.add_argument("--expect-head", default="",
+                    help="abort unless the PR head matches this commit (a prefix is fine). Use it "
+                         "right after a push so a propagation lag can't make the review run against "
+                         "a stale head")
     a = ap.parse_args()
 
     need("git", "Install git.")
@@ -185,6 +189,9 @@ def main():
     # PR head, diff, and description (author-provided context, no more trusted than the diff).
     head = gh_json(a.repo, a.pr, "headRefOid")["headRefOid"]
     print(f"PR #{a.pr} head: {head[:12]}", file=sys.stderr)
+    if a.expect_head and not (head.startswith(a.expect_head) or a.expect_head.startswith(head)):
+        die(f"PR #{a.pr} head is {head[:12]}, expected {a.expect_head[:12]}. The push may not have "
+            "propagated to the API yet; re-run in a moment to avoid reviewing a stale commit.")
     diff = run(["gh", "pr", "diff", str(a.pr), "--repo", a.repo], capture=True, quiet=True).stdout
     (work / "diff.txt").write_text(diff)
     meta = gh_json(a.repo, a.pr, "title,body")
