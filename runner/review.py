@@ -271,12 +271,27 @@ def build_reactivation_block(cf, reply_text=None):
     return "\n".join(out) + "\n"
 
 
-def pick_anchor(cf, fallback_path):
+def normalize_finding_path(path, code_path):
+    """Strip the reviewer-workspace prefix (e.g. `code/`) so a finding's file is the PR-relative
+    path. Reviewers see the PR source under `./<code_path>/`, and some report that prefix verbatim;
+    used as-is it is not a valid path in the PR and the file-level review comment fails to post."""
+    if not path:
+        return path
+    for pre in (f"./{code_path}/", f"{code_path}/", "./"):
+        if path.startswith(pre):
+            return path[len(pre):]
+    return path
+
+
+def pick_anchor(cf, fallback_path, changed=None):
     """Where to attach a rubric's review thread: its top finding's file (a file-level comment,
-    robust to the line not lying in a diff hunk), else the PR's first changed file."""
+    robust to the line not lying in a diff hunk), else the PR's first changed file. Only a file
+    that is actually changed in this PR is a valid anchor; anything else (a path the reviewer
+    mentioned that is not in the diff) would 422, so fall back."""
     for f in (cf.get("findings") or []):
-        if f.get("file"):
-            return f["file"]
+        p = f.get("file")
+        if p and (changed is None or p in changed):
+            return p
     return fallback_path
 
 
@@ -516,6 +531,12 @@ def main():
         res["cost_usd"] = round(cost, 6)
         res.update(provider=provider, model=model, rubric=rubric,
                    verdict_obj=extract_verdict(res.get("text", ""), marker))
+        # Normalize finding file paths to PR-relative (strip the reviewer-workspace prefix) so the
+        # rendered locations and the thread anchor are valid PR paths.
+        vo = res.get("verdict_obj")
+        for fnd in (vo.get("findings") or []) if vo else []:
+            if fnd.get("file"):
+                fnd["file"] = normalize_finding_path(fnd["file"], a.code_path)
         cf = update_case_file(state_map, rubric, res, head)
         if is_reply and reply_text:
             cf["author_replies"].append(
@@ -588,7 +609,8 @@ def main():
             bpath.write_text(render_thread(cf))
             plan["threads"].append(
                 {"rubric": rubric, "action": "upsert", "body": str(bpath),
-                 "comment_id": (thread or {}).get("comment_id"), "path": pick_anchor(cf, fallback_path)})
+                 "comment_id": (thread or {}).get("comment_id"),
+                 "path": pick_anchor(cf, fallback_path, set(paths_sorted))})
         elif s in ("green", "stale") and thread:
             bpath.write_text(f"<!--tauceti-rubric:{rubric}-->\n### ✅ {rubric} — now passing on "
                              f"`{head[:7]}`.")
