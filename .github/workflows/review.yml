@@ -7,6 +7,10 @@ on:
       trigger: { required: false, type: string, default: "manual" }
       review_ref: { required: false, type: string, default: main }
       enable_automerge: { required: false, type: boolean, default: false }
+      # Reply flow (Stage 2): re-run a single rubric in response to an author reply.
+      mode: { required: false, type: string, default: "" }
+      reply_rubric: { required: false, type: string, default: "" }
+      reply_comment_id: { required: false, type: string, default: "" }
   workflow_dispatch:
     inputs:
       pr: { required: true, type: string }
@@ -55,6 +59,13 @@ jobs:
           gh pr view "$PR" --repo FormalFrontier/TauCeti --json title,body \
             --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
           echo "pr_desc bytes: $(wc -c < pr_desc.txt)"
+          # Reply flow: fetch the author's reply body (untrusted) so the re-run can address it.
+          : > reply.txt
+          if [ -n "${{ inputs.reply_comment_id }}" ]; then
+            gh api "/repos/FormalFrontier/TauCeti/pulls/comments/${{ inputs.reply_comment_id }}" \
+              --jq '.body' > reply.txt || true
+            echo "reply bytes: $(wc -c < reply.txt)"
+          fi
 
       - name: Checkout code at PR head (public, no credentials persisted)
         uses: actions/checkout@v4
@@ -119,12 +130,19 @@ jobs:
         run: |
           AM=""
           [ "$ENABLE_AUTOMERGE" = "true" ] && AM="--auto-merge"
-          # A /review comment forces a full re-review; CI success on a new commit re-runs only
-          # what is blocking, then sweeps stale greens.
-          MODE=commit
-          [ "${{ inputs.trigger }}" = "issue_comment" ] && MODE=manual
+          # An explicit mode (reply flow) wins; otherwise a /review comment forces a full
+          # re-review and CI success on a new commit re-runs only blocking, then sweeps stale.
+          MODE="${{ inputs.mode }}"
+          if [ -z "$MODE" ]; then
+            MODE=commit
+            [ "${{ inputs.trigger }}" = "issue_comment" ] && MODE=manual
+          fi
+          REPLY_ARGS=""
+          if [ "$MODE" = "reply" ]; then
+            REPLY_ARGS="--reply-rubric ${{ inputs.reply_rubric }} --reply-file $PWD/reply.txt"
+          fi
           python3 runner/review.py \
-            --repo FormalFrontier/TauCeti --pr "$PR" --mode "$MODE" \
+            --repo FormalFrontier/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 10 \

@@ -229,12 +229,12 @@ def build_reactivation_block(cf, reply_text=None):
         loc = (f.get("file") or "") + (f":{f['line']}" if f.get("line") else "")
         out.append(f"- prior finding {loc}: {f.get('issue', '')}"
                    + (f" (evidence: {f['evidence']})" if f.get("evidence") else ""))
-    if (cf.get("author_replies") or []) and not reply_text:
-        out.append("\n## Earlier author replies (untrusted author argument)")
+    if cf.get("author_replies"):
+        out.append("\n## Earlier author replies in this thread (untrusted author argument)")
         for rep in cf["author_replies"]:
             out.append(f"- {rep.get('by', 'author')}: {rep.get('body', '')}")
     if reply_text:
-        out.append("\n## Author reply to address (untrusted author argument)")
+        out.append("\n## New author reply to address (untrusted author argument)")
         out.append("Accept it only where the code, mathlib, the roadmap, or Lean output support "
                    "it; an unsupported argument does not clear a real finding.")
         out.append(reply_text)
@@ -471,8 +471,9 @@ def main():
             break
         run_one(rubric)
 
-    # Phase 2: once nothing is blocking, sweep stale greens onto HEAD (commit/manual only).
-    if a.mode in ("commit", "manual") and not stopped:
+    # Phase 2: once nothing is blocking, sweep stale greens onto HEAD. A reply that clears the
+    # last blocker finalizes toward merge the same way.
+    if a.mode in ("commit", "manual", "reply") and not stopped:
         while not any(is_blocking(state_of(state_map.get(r), head)) for r in candidates):
             stale = [r for r in candidates if state_of(state_map.get(r), head) == "stale"]
             if not stale:

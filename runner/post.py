@@ -33,6 +33,32 @@ def gh_api(method, endpoint, fields=None, body_file=None):
         return {}
 
 
+def resolve_thread(repo, pr, comment_id):
+    """Resolve (collapse) the review thread whose root comment is `comment_id`, so a finding the
+    author has cleared stops cluttering the conversation. Best-effort; failures are logged."""
+    owner, name = repo.split("/")
+    q = ("query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){"
+         "pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved "
+         "comments(first:1){nodes{databaseId}}}}}}}")
+    r = subprocess.run(["gh", "api", "graphql", "-f", f"query={q}", "-F", f"owner={owner}",
+                        "-F", f"name={name}", "-F", f"pr={int(pr)}"], text=True, capture_output=True)
+    if r.returncode != 0:
+        print(f"resolve query failed: {r.stderr[-300:]}", file=sys.stderr)
+        return
+    try:
+        nodes = json.loads(r.stdout)["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+    except Exception:
+        return
+    tid = next((t["id"] for t in nodes if not t["isResolved"]
+                and t["comments"]["nodes"] and t["comments"]["nodes"][0]["databaseId"] == comment_id),
+               None)
+    if not tid:
+        return
+    mut = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}"
+    subprocess.run(["gh", "api", "graphql", "-f", f"query={mut}", "-F", f"id={tid}"],
+                   text=True, capture_output=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
@@ -70,6 +96,8 @@ def main():
         cid = (cf.get("thread") or {}).get("comment_id") or t.get("comment_id")
         if cid:  # edit the existing thread root (blocking update, or 'now passing' note)
             gh_api("PATCH", f"/repos/{a.repo}/pulls/comments/{cid}", body_file=t["body"])
+            if t["action"] == "close":  # finding cleared: collapse the thread
+                resolve_thread(a.repo, a.pr, cid)
         elif t["action"] == "upsert":  # first time blocking: open a file-level review thread
             resp = gh_api("POST", f"/repos/{a.repo}/pulls/{a.pr}/comments",
                           fields={"commit_id": head, "path": t["path"], "subject_type": "file"},
