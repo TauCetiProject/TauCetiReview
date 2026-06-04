@@ -269,7 +269,7 @@ def render_thread(cf):
     return "\n".join(lines)
 
 
-def render_scoreboard(candidates, state_map, head_sha, overall, budget_note):
+def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cost_line=""):
     icon = {"green": "✅", "stale": "♻️", "blocking_request": "🟡", "blocking_block": "⛔",
             "error": "⚠️", "absent": "▫️"}
     word = {"green": "approved", "stale": "stale (re-run pending)",
@@ -286,7 +286,10 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note):
         judge = f"{cf.get('provider')}/{cf.get('model')}" if cf.get("provider") else "—"
         summ = (cf.get("summary") or "").replace("\n", " ").replace("|", "\\|")
         lines.append(f"| {icon[s]} | {r} | {word[s]} | `{judge}` | {summ} |")
-    lines += ["", f"♻️ = approved on an earlier commit, re-run before merge. {budget_note}"]
+    note = "♻️ = approved on an earlier commit, re-run before merge."
+    lines += ["", f"{note}{(' ' + budget_note) if budget_note else ''}"]
+    if cost_line:
+        lines += ["", f"<sub>{cost_line}</sub>"]
     return "\n".join(lines)
 
 
@@ -488,12 +491,19 @@ def main():
 
     states = {r: state_of(state_map.get(r), head) for r in candidates}
     overall = overall_label(list(states.values()), stopped)
-    budget_note = f"Spent today: ${spent_today:.2f}/${a.daily_budget:.0f}."
-    if stopped:
-        budget_note += f" Deferred {stopped} and after to the next run."
+    budget_note = f"Deferred {stopped} and after to the next run." if stopped else ""
+
+    # A running total of review spend, in small text at the foot of the scoreboard. The current
+    # round's spend is not yet in a round record, so add it to the per-PR and all-PR totals.
+    this_run_cost = round(spent_today - spent_start, 6)
+    grand_total = sum(r.get("cost", 0) for p in ledger["prs"].values()
+                      for r in p.get("rounds", [])) + this_run_cost
+    pr_total = sum(r.get("cost", 0) for r in pr_state.get("rounds", [])) + this_run_cost
+    cost_line = (f"Review spend at current prices — ${pr_total:.2f} this PR · "
+                 f"${grand_total:.2f} all reviews · ${spent_today:.2f}/${a.daily_budget:.0f} today.")
 
     # Emit the scoreboard body, per-rubric thread bodies, and a post plan for the trusted step.
-    scoreboard_md = render_scoreboard(candidates, state_map, head, overall, budget_note)
+    scoreboard_md = render_scoreboard(candidates, state_map, head, overall, budget_note, cost_line)
     (outdir / "scoreboard.md").write_text(scoreboard_md)
     sb_path = pathlib.Path(a.scoreboard_file) if a.scoreboard_file else (outdir / "scoreboard.md")
     if a.scoreboard_file:
