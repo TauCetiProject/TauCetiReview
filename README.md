@@ -1,6 +1,6 @@
 # Tau Ceti Review
 
-The review rubrics and (soon) the machinery that runs review for
+The review rubrics and the machinery that runs review for
 [Tau Ceti](https://github.com/FormalFrontier/TauCeti), an AIs-welcome Lean 4 library
 downstream of Mathlib. Humans own these rubrics; AIs author the code; the human roadmaps
 live in [TauCetiRoadmap](https://github.com/FormalFrontier/TauCetiRoadmap).
