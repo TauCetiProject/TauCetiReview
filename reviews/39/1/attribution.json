@@ -1,0 +1,53 @@
+{
+  "returncode": 0,
+  "raw_stderr": "",
+  "text": "The source (Meta's Atlas, `facebookresearch/atlas-lean`) is named in both the PR description and the module docstring, so the central source is credited in the code itself. The remaining attribution problem is the copyright/license header.\n\nTAUCETI-VERDICT-44e4f651f7f36a21b3c39bc1\n\n```json\n{\n  \"verdict\": \"request_changes\",\n  \"summary\": \"The Atlas source is credited in the module docstring and description, satisfying the core attribution requirement. But the file header stamps these adapted formalizations with 'Copyright (c) 2026 Lean FRO, LLC' under Apache 2.0, which misattributes copyright for material the PR itself says is adapted from Meta's facebookresearch/atlas-lean and may violate that project's own license.\",\n  \"findings\": [\n    {\n      \"file\": \"TauCeti/AtlasExamples.lean\",\n      \"line\": \"2\",\n      \"issue\": \"Header claims 'Copyright (c) 2026 Lean FRO, LLC' under Apache 2.0 for code the PR explicitly adapts from Meta's Atlas project (facebookresearch/atlas-lean). Copyright/authorship is attributed to a party that did not originate the material, and the upstream license is not acknowledged.\",\n      \"fix\": \"Preserve/cite the original Atlas (Meta Platforms) copyright and license in the header, or note 'adapted from facebookresearch/atlas-lean' in the Authors line; confirm Atlas's license permits the Apache-2.0 relicensing before stamping Lean FRO copyright.\",\n      \"evidence\": \"Header lines 2-4 vs. docstring/description stating the results are 'adapted from Meta's Atlas autoformalization project (facebookresearch/atlas-lean)'.\"\n    }\n  ]\n}\n```",
+  "cost_usd": 0.163213,
+  "usage": {
+    "input_tokens": 1662,
+    "cache_creation_input_tokens": 8554,
+    "cache_read_input_tokens": 65007,
+    "output_tokens": 2635,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 8554
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1319,
+        "cache_read_input_tokens": 25286,
+        "cache_creation_input_tokens": 587,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 587,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "session_id": "ee80f950-4575-496d-856b-caada7f388ab",
+  "provider": "claude",
+  "model": "claude-opus-4-8",
+  "rubric": "attribution",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The Atlas source is credited in the module docstring and description, satisfying the core attribution requirement. But the file header stamps these adapted formalizations with 'Copyright (c) 2026 Lean FRO, LLC' under Apache 2.0, which misattributes copyright for material the PR itself says is adapted from Meta's facebookresearch/atlas-lean and may violate that project's own license.",
+    "findings": [
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": "2",
+        "issue": "Header claims 'Copyright (c) 2026 Lean FRO, LLC' under Apache 2.0 for code the PR explicitly adapts from Meta's Atlas project (facebookresearch/atlas-lean). Copyright/authorship is attributed to a party that did not originate the material, and the upstream license is not acknowledged.",
+        "fix": "Preserve/cite the original Atlas (Meta Platforms) copyright and license in the header, or note 'adapted from facebookresearch/atlas-lean' in the Authors line; confirm Atlas's license permits the Apache-2.0 relicensing before stamping Lean FRO copyright.",
+        "evidence": "Header lines 2-4 vs. docstring/description stating the results are 'adapted from Meta's Atlas autoformalization project (facebookresearch/atlas-lean)'."
+      }
+    ]
+  }
+}

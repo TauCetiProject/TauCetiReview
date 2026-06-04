@@ -1,0 +1,60 @@
+{
+  "returncode": 0,
+  "raw_stderr": "",
+  "text": "Verified. `banach_steinhaus` matches the third theorem's statement, so `uniform_boundedness_principle` is a faithful (if thin) restatement \u2014 no correctness fault there. The other two are defective.\n\nTAUCETI-VERDICT-3d49153a0662bf6b1d8560a5\n\n```json\n{\n  \"verdict\": \"block\",\n  \"summary\": \"Two of the three declarations are logically defective: curvature_gauge_transformation's conclusion is its own hypothesis verbatim (pure tautology, the law is assumed), and IsCompactOrientedManifold encodes orientation as the placeholder field `oriented : True`. The third (uniform_boundedness_principle) is a faithful restatement of Mathlib's banach_steinhaus.\",\n  \"findings\": [\n    { \"file\": \"TauCeti/AtlasExamples.lean\", \"line\": \"16\",\n      \"issue\": \"curvature_gauge_transformation concludes `F' = g_inv * F * g` while taking that exact equation as hypothesis `h_transform`. The proof is `h_transform`; the statement is a tautology and the gauge law has been relocated into an assumption. `_hg` is unused, so even `g_inv*g=1` carries no weight.\",\n      \"fix\": \"State actual content: e.g. given a curvature defined from a connection/trivialisation, prove the transformed object equals `g_inv * F * g`; do not assume the equality you claim to prove.\",\n      \"evidence\": \"Lines 16-19: hypothesis `h_transform : F' = g_inv * F * g`, conclusion `F' = g_inv * F * g`, proof `h_transform`.\" },\n    { \"file\": \"TauCeti/AtlasExamples.lean\", \"line\": \"26\",\n      \"issue\": \"IsCompactOrientedManifold's `oriented` field has type `True` \u2014 a placeholder standing in for orientability. The class therefore asserts nothing about orientation; any compact space instantiates it. `IsCompactOrientedManifold.isCompact` is consequently just a renamed `CompactSpace` projection.\",\n      \"fix\": \"Replace `oriented : True` with a real orientation hypothesis (e.g. an `Orientation`/orientability statement on the manifold's tangent structure), or drop the class.\",\n      \"evidence\": \"Line 26: `oriented : True`; the only nontrivial field is `compact : CompactSpace M`.\" }\n  ]\n}\n```",
+  "cost_usd": 0.137262,
+  "usage": {
+    "input_tokens": 1660,
+    "cache_creation_input_tokens": 9927,
+    "cache_read_input_tokens": 40091,
+    "output_tokens": 1742,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 9927
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1035,
+        "cache_read_input_tokens": 22772,
+        "cache_creation_input_tokens": 4474,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 4474,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "session_id": "7991ae32-8bf1-4ffd-a9e1-041e90cd24e1",
+  "provider": "claude",
+  "model": "claude-opus-4-8",
+  "rubric": "correctness",
+  "verdict_obj": {
+    "verdict": "block",
+    "summary": "Two of the three declarations are logically defective: curvature_gauge_transformation's conclusion is its own hypothesis verbatim (pure tautology, the law is assumed), and IsCompactOrientedManifold encodes orientation as the placeholder field `oriented : True`. The third (uniform_boundedness_principle) is a faithful restatement of Mathlib's banach_steinhaus.",
+    "findings": [
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": "16",
+        "issue": "curvature_gauge_transformation concludes `F' = g_inv * F * g` while taking that exact equation as hypothesis `h_transform`. The proof is `h_transform`; the statement is a tautology and the gauge law has been relocated into an assumption. `_hg` is unused, so even `g_inv*g=1` carries no weight.",
+        "fix": "State actual content: e.g. given a curvature defined from a connection/trivialisation, prove the transformed object equals `g_inv * F * g`; do not assume the equality you claim to prove.",
+        "evidence": "Lines 16-19: hypothesis `h_transform : F' = g_inv * F * g`, conclusion `F' = g_inv * F * g`, proof `h_transform`."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": "26",
+        "issue": "IsCompactOrientedManifold's `oriented` field has type `True` \u2014 a placeholder standing in for orientability. The class therefore asserts nothing about orientation; any compact space instantiates it. `IsCompactOrientedManifold.isCompact` is consequently just a renamed `CompactSpace` projection.",
+        "fix": "Replace `oriented : True` with a real orientation hypothesis (e.g. an `Orientation`/orientability statement on the manifold's tangent structure), or drop the class.",
+        "evidence": "Line 26: `oriented : True`; the only nontrivial field is `compact : CompactSpace M`."
+      }
+    ]
+  }
+}

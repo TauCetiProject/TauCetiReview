@@ -1,0 +1,60 @@
+{
+  "returncode": 0,
+  "raw_stderr": "",
+  "text": "Confirmed. `uniform_boundedness_principle` is the body `banach_steinhaus h` \u2014 an exact \u211d-specialization of Mathlib's `banach_steinhaus`, adding nothing.\n\nTAUCETI-VERDICT-caf322704f730c40dfe9163c\n\n```json\n{\n  \"verdict\": \"block\",\n  \"summary\": \"uniform_boundedness_principle is a thin \u211d-specialized wrapper whose proof is literally `banach_steinhaus h`, directly replaceable by Mathlib's `banach_steinhaus`. IsCompactOrientedManifold adds nothing over `CompactSpace` since its `oriented` field is `True`.\",\n  \"findings\": [\n    { \"file\": \"TauCeti/AtlasExamples.lean\", \"line\": \"42\",\n      \"issue\": \"uniform_boundedness_principle is `banach_steinhaus h` verbatim, specialized to scalar \u211d. It is a strict special case of the existing Mathlib theorem and provides no added API.\",\n      \"fix\": \"Delete it and use `banach_steinhaus` directly.\",\n      \"evidence\": \"mathlib/Mathlib/Analysis/Normed/Operator/BanachSteinhaus.lean:36 `theorem banach_steinhaus ... (h : \u2200 x, \u2203 C, \u2200 i, \u2016g i x\u2016 \u2264 C) : \u2203 C', \u2200 i, \u2016g i\u2016 \u2264 C'`; the PR proof is `:= banach_steinhaus h`.\" },\n    { \"file\": \"TauCeti/AtlasExamples.lean\", \"line\": \"26\",\n      \"issue\": \"IsCompactOrientedManifold's only content is `compact : CompactSpace M` (the `oriented` field is `True`, i.e. vacuous), so the class and `IsCompactOrientedManifold.isCompact` duplicate `CompactSpace` with a renamed field.\",\n      \"fix\": \"Drop the class; use `CompactSpace M` directly, or build on Mathlib's actual orientation API rather than a `True` placeholder.\",\n      \"evidence\": \"Diff: `oriented : True`; `isCompact` is just `h.compact`. Mathlib provides `CompactSpace` and orientation typeclasses already.\" }\n  ]\n}\n```",
+  "cost_usd": 0.153121,
+  "usage": {
+    "input_tokens": 1662,
+    "cache_creation_input_tokens": 8711,
+    "cache_read_input_tokens": 64894,
+    "output_tokens": 2193,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 8711
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1326,
+        "cache_read_input_tokens": 25149,
+        "cache_creation_input_tokens": 881,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 881,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "session_id": "23bb655d-bfed-4095-a248-312cf1269217",
+  "provider": "claude",
+  "model": "claude-opus-4-8",
+  "rubric": "reuse",
+  "verdict_obj": {
+    "verdict": "block",
+    "summary": "uniform_boundedness_principle is a thin \u211d-specialized wrapper whose proof is literally `banach_steinhaus h`, directly replaceable by Mathlib's `banach_steinhaus`. IsCompactOrientedManifold adds nothing over `CompactSpace` since its `oriented` field is `True`.",
+    "findings": [
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": "42",
+        "issue": "uniform_boundedness_principle is `banach_steinhaus h` verbatim, specialized to scalar \u211d. It is a strict special case of the existing Mathlib theorem and provides no added API.",
+        "fix": "Delete it and use `banach_steinhaus` directly.",
+        "evidence": "mathlib/Mathlib/Analysis/Normed/Operator/BanachSteinhaus.lean:36 `theorem banach_steinhaus ... (h : \u2200 x, \u2203 C, \u2200 i, \u2016g i x\u2016 \u2264 C) : \u2203 C', \u2200 i, \u2016g i\u2016 \u2264 C'`; the PR proof is `:= banach_steinhaus h`."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": "26",
+        "issue": "IsCompactOrientedManifold's only content is `compact : CompactSpace M` (the `oriented` field is `True`, i.e. vacuous), so the class and `IsCompactOrientedManifold.isCompact` duplicate `CompactSpace` with a renamed field.",
+        "fix": "Drop the class; use `CompactSpace M` directly, or build on Mathlib's actual orientation API rather than a `True` placeholder.",
+        "evidence": "Diff: `oriented : True`; `isCompact` is just `h.compact`. Mathlib provides `CompactSpace` and orientation typeclasses already."
+      }
+    ]
+  }
+}

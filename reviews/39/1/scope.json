@@ -1,0 +1,37 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-907037af0f966fc557f4574b\n{\"verdict\":\"block\",\"summary\":\"The PR is both explicitly off-roadmap and not a single coherent topic. It should not land without a roadmap target and substantial splitting.\",\"findings\":[{\"file\":\"\",\"line\":0,\"issue\":\"No roadmap target is identified; the PR description instead states the examples are deliberately off-roadmap and expected to be refused.\",\"fix\":\"Block until a human adds an appropriate roadmap item, or resubmit only material that advances a named roadmap file and node/heading.\",\"evidence\":\"PR description: \\\"It is deliberately off-roadmap and expected to be refused; nothing here is intended to land.\\\"\"},{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":0,\"issue\":\"The PR bundles three unrelated topics: a curvature gauge transformation theorem, a compact-oriented-manifold class, and uniform boundedness.\",\"fix\":\"Split into separate PRs, each tied to one roadmap target or one proximate prerequisite.\",\"evidence\":\"The new file contains `curvature_gauge_transformation` at line 17, `IsCompactOrientedManifold` at line 23, and `uniform_boundedness_principle` at line 36.\"}]}",
+  "usage": {
+    "input_tokens": 43516,
+    "cached_input_tokens": 38016,
+    "output_tokens": 1075,
+    "reasoning_output_tokens": 533
+  },
+  "session_id": "019e904f-8e41-7d71-ba30-1999dab64046",
+  "cost_usd": 0.065145,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "scope",
+  "verdict_obj": {
+    "verdict": "block",
+    "summary": "The PR is both explicitly off-roadmap and not a single coherent topic. It should not land without a roadmap target and substantial splitting.",
+    "findings": [
+      {
+        "file": "",
+        "line": 0,
+        "issue": "No roadmap target is identified; the PR description instead states the examples are deliberately off-roadmap and expected to be refused.",
+        "fix": "Block until a human adds an appropriate roadmap item, or resubmit only material that advances a named roadmap file and node/heading.",
+        "evidence": "PR description: \"It is deliberately off-roadmap and expected to be refused; nothing here is intended to land.\""
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 0,
+        "issue": "The PR bundles three unrelated topics: a curvature gauge transformation theorem, a compact-oriented-manifold class, and uniform boundedness.",
+        "fix": "Split into separate PRs, each tied to one roadmap target or one proximate prerequisite.",
+        "evidence": "The new file contains `curvature_gauge_transformation` at line 17, `IsCompactOrientedManifold` at line 23, and `uniform_boundedness_principle` at line 36."
+      }
+    ]
+  }
+}

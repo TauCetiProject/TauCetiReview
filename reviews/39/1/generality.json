@@ -1,0 +1,44 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-537f8c77e82eab0f244e4a09\n{\"verdict\":\"request_changes\",\"summary\":\"The added declarations are not at a natural Mathlib API level: they include unused or over-strong assumptions, an over-broad fake manifold class, and a special-case wrapper around existing Mathlib API.\",\"findings\":[{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":19,\"issue\":\"`curvature_gauge_transformation` assumes `[Ring R]` and `_hg : g_inv * g = 1`, but the proof uses only `h_transform` and the conclusion only needs multiplication.\",\"fix\":\"Remove the unused inverse hypothesis and weaken the algebraic context to the actual operations needed, or replace the tautological statement with a substantive gauge-transformation theorem at the intended structure level.\",\"evidence\":\"The theorem body is exactly `h_transform`; `_hg` is explicitly unused, and no ring operations beyond `*` occur in the conclusion.\"},{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":25,\"issue\":\"`IsCompactOrientedManifold` is over-generalized: it is defined for any `Type*` with `[TopologicalSpace M]`, while `oriented : True` carries no manifold or orientation structure.\",\"fix\":\"Do not introduce this class, or define it only with the actual manifold and orientation structures required by the intended API.\",\"evidence\":\"The class fields are only `compact : CompactSpace M` and `oriented : True`, so any compact topological space can satisfy a class named `...Manifold` without manifold data.\"},{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":38,\"issue\":\"`uniform_boundedness_principle` is an \u211d-specialized duplicate wrapper over the imported `banach_steinhaus` theorem.\",\"fix\":\"Use `banach_steinhaus` directly, or if TauCeti needs a named wrapper, state it at the same natural generality as the underlying Mathlib theorem rather than only over `\u211d`.\",\"evidence\":\"The proof is a single line `banach_steinhaus h`, showing the declaration adds only a special-case alias.\"}]}",
+  "usage": {
+    "input_tokens": 28720,
+    "cached_input_tokens": 23808,
+    "output_tokens": 2365,
+    "reasoning_output_tokens": 1419
+  },
+  "session_id": "019e9051-aee7-7c01-a228-8a4d01a59223",
+  "cost_usd": 0.05955,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "generality",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The added declarations are not at a natural Mathlib API level: they include unused or over-strong assumptions, an over-broad fake manifold class, and a special-case wrapper around existing Mathlib API.",
+    "findings": [
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 19,
+        "issue": "`curvature_gauge_transformation` assumes `[Ring R]` and `_hg : g_inv * g = 1`, but the proof uses only `h_transform` and the conclusion only needs multiplication.",
+        "fix": "Remove the unused inverse hypothesis and weaken the algebraic context to the actual operations needed, or replace the tautological statement with a substantive gauge-transformation theorem at the intended structure level.",
+        "evidence": "The theorem body is exactly `h_transform`; `_hg` is explicitly unused, and no ring operations beyond `*` occur in the conclusion."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 25,
+        "issue": "`IsCompactOrientedManifold` is over-generalized: it is defined for any `Type*` with `[TopologicalSpace M]`, while `oriented : True` carries no manifold or orientation structure.",
+        "fix": "Do not introduce this class, or define it only with the actual manifold and orientation structures required by the intended API.",
+        "evidence": "The class fields are only `compact : CompactSpace M` and `oriented : True`, so any compact topological space can satisfy a class named `...Manifold` without manifold data."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 38,
+        "issue": "`uniform_boundedness_principle` is an \u211d-specialized duplicate wrapper over the imported `banach_steinhaus` theorem.",
+        "fix": "Use `banach_steinhaus` directly, or if TauCeti needs a named wrapper, state it at the same natural generality as the underlying Mathlib theorem rather than only over `\u211d`.",
+        "evidence": "The proof is a single line `banach_steinhaus h`, showing the declaration adds only a special-case alias."
+      }
+    ]
+  }
+}

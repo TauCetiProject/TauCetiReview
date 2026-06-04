@@ -1,0 +1,30 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-e7dfecc18fcf05b975ddfdec\n\n{\"verdict\":\"request_changes\",\"summary\":\"The new material is placed in a generic catch-all file rather than canonical topic homes, and it mixes unrelated algebraic geometry/gauge, topology/manifold, and functional analysis declarations under one import context.\",\"findings\":[{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":0,\"issue\":\"`AtlasExamples.lean` is an omnibus example file containing unrelated declarations (`curvature_gauge_transformation`, `IsCompactOrientedManifold`, and `uniform_boundedness_principle`) rather than placing each result near its subject matter.\",\"fix\":\"Do not add a generic Atlas examples file; either drop the off-roadmap examples or split accepted material into canonical domain files with imports scoped to those declarations.\",\"evidence\":\"Diff creates only `TauCeti/AtlasExamples.lean`; lines 18, 24, and 36 introduce three unrelated declarations in that single file.\"}]}",
+  "usage": {
+    "input_tokens": 28608,
+    "cached_input_tokens": 19712,
+    "output_tokens": 992,
+    "reasoning_output_tokens": 481
+  },
+  "session_id": "019e9052-97c2-7230-903a-3b809b2aea96",
+  "cost_usd": 0.04568,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "placement",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The new material is placed in a generic catch-all file rather than canonical topic homes, and it mixes unrelated algebraic geometry/gauge, topology/manifold, and functional analysis declarations under one import context.",
+    "findings": [
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 0,
+        "issue": "`AtlasExamples.lean` is an omnibus example file containing unrelated declarations (`curvature_gauge_transformation`, `IsCompactOrientedManifold`, and `uniform_boundedness_principle`) rather than placing each result near its subject matter.",
+        "fix": "Do not add a generic Atlas examples file; either drop the off-roadmap examples or split accepted material into canonical domain files with imports scoped to those declarations.",
+        "evidence": "Diff creates only `TauCeti/AtlasExamples.lean`; lines 18, 24, and 36 introduce three unrelated declarations in that single file."
+      }
+    ]
+  }
+}

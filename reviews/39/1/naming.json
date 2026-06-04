@@ -1,0 +1,67 @@
+{
+  "returncode": 0,
+  "raw_stderr": "",
+  "text": "All three declarations are visible in the diff and I confirmed Mathlib's canonical name.\n\n**Naming findings:**\n\n1. `curvature_gauge_transformation` \u2014 the conclusion is `F' = g_inv * F * g`, which is verbatim the hypothesis `h_transform`. The name advertises a \"gauge transformation law for the curvature,\" but the statement contains no curvature and no gauge \u2014 only ring elements. The name describes intended content the statement does not have.\n\n2. `IsCompactOrientedManifold` \u2014 the name claims both \"Oriented\" (the `oriented` field is `True`, carrying no content) and \"Manifold\" (the only assumption is `TopologicalSpace M`; no manifold/smooth/charted structure). The name overstates the structure it bundles.\n\n3. `uniform_boundedness_principle` \u2014 Mathlib's established name for this exact result is `banach_steinhaus` (`mathlib/.../BanachSteinhaus.lean:36`, and it is the body of this proof). Introducing a differently-named alias diverges from Mathlib precedent for the same object.\n\nNo notation is introduced.\n\nTAUCETI-VERDICT-d81f80bbe4ec3988d72ae6ac\n\n```json\n{\n  \"verdict\": \"request_changes\",\n  \"summary\": \"All three names advertise mathematical content their statements lack: a curvature/gauge law that only restates a hypothesis, an \\\"oriented manifold\\\" class over a bare topological space with a vacuous orientation field, and a rename of Mathlib's banach_steinhaus.\",\n  \"findings\": [\n    { \"file\": \"TauCeti/AtlasExamples.lean\", \"line\": \"16\",\n      \"issue\": \"`curvature_gauge_transformation` names a \\\"gauge transformation law for the curvature,\\\" but the conclusion `F' = g_inv * F * g` is verbatim the hypothesis `h_transform`; there is no curvature or gauge, only ring elements. The name describes content the statement does not contain.\",\n      \"fix\": \"Rename to reflect the actual statement (none is needed, since it is `id` of the hypothesis), or restate so it proves a real transformation property worthy of the name.\",\n      \"evidence\": \"Diff: `(h_transform : F' = g_inv * F * g) : F' = g_inv * F * g := h_transform`.\" },\n    { \"file\": \"TauCeti/AtlasExamples.lean\", \"line\": \"23\",\n      \"issue\": \"`IsCompactOrientedManifold` names \\\"Oriented\\\" and \\\"Manifold\\\", but the `oriented` field is `True` (no content) and the only assumption is `[TopologicalSpace M]` \u2014 no manifold structure. The name overstates both orientation and manifold structure.\",\n      \"fix\": \"Drop the vacuous `oriented` field and the \\\"Oriented\\\"/\\\"Manifold\\\" parts of the name (it is just `CompactSpace`), or carry a real orientation and manifold structure.\",\n      \"evidence\": \"Diff: `class IsCompactOrientedManifold (M : Type*) [TopologicalSpace M]` with `oriented : True`.\" },\n    { \"file\": \"TauCeti/AtlasExamples.lean\", \"line\": \"39\",\n      \"issue\": \"`uniform_boundedness_principle` renames Mathlib's `banach_steinhaus`; the established Mathlib name for this result is `banach_steinhaus`, and it is the proof body here.\",\n      \"fix\": \"Use the Mathlib term `banach_steinhaus` if a re-export is wanted, or omit; do not introduce a divergent alias.\",\n      \"evidence\": \"mathlib/Mathlib/Analysis/Normed/Operator/BanachSteinhaus.lean:36 `theorem banach_steinhaus`; proof body is `banach_steinhaus h`.\" }\n  ]\n}\n```",
+  "cost_usd": 0.158696,
+  "usage": {
+    "input_tokens": 1660,
+    "cache_creation_input_tokens": 8916,
+    "cache_read_input_tokens": 39718,
+    "output_tokens": 2870,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 8916
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1845,
+        "cache_read_input_tokens": 22399,
+        "cache_creation_input_tokens": 3836,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 3836,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "session_id": "cff1b702-41a4-4112-aa16-23f93bbfdb96",
+  "provider": "claude",
+  "model": "claude-opus-4-8",
+  "rubric": "naming",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "All three names advertise mathematical content their statements lack: a curvature/gauge law that only restates a hypothesis, an \"oriented manifold\" class over a bare topological space with a vacuous orientation field, and a rename of Mathlib's banach_steinhaus.",
+    "findings": [
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": "16",
+        "issue": "`curvature_gauge_transformation` names a \"gauge transformation law for the curvature,\" but the conclusion `F' = g_inv * F * g` is verbatim the hypothesis `h_transform`; there is no curvature or gauge, only ring elements. The name describes content the statement does not contain.",
+        "fix": "Rename to reflect the actual statement (none is needed, since it is `id` of the hypothesis), or restate so it proves a real transformation property worthy of the name.",
+        "evidence": "Diff: `(h_transform : F' = g_inv * F * g) : F' = g_inv * F * g := h_transform`."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": "23",
+        "issue": "`IsCompactOrientedManifold` names \"Oriented\" and \"Manifold\", but the `oriented` field is `True` (no content) and the only assumption is `[TopologicalSpace M]` \u2014 no manifold structure. The name overstates both orientation and manifold structure.",
+        "fix": "Drop the vacuous `oriented` field and the \"Oriented\"/\"Manifold\" parts of the name (it is just `CompactSpace`), or carry a real orientation and manifold structure.",
+        "evidence": "Diff: `class IsCompactOrientedManifold (M : Type*) [TopologicalSpace M]` with `oriented : True`."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": "39",
+        "issue": "`uniform_boundedness_principle` renames Mathlib's `banach_steinhaus`; the established Mathlib name for this result is `banach_steinhaus`, and it is the proof body here.",
+        "fix": "Use the Mathlib term `banach_steinhaus` if a re-export is wanted, or omit; do not introduce a divergent alias.",
+        "evidence": "mathlib/Mathlib/Analysis/Normed/Operator/BanachSteinhaus.lean:36 `theorem banach_steinhaus`; proof body is `banach_steinhaus h`."
+      }
+    ]
+  }
+}

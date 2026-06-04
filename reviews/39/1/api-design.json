@@ -1,0 +1,41 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-192758678c0becee37d498a6\n{\"verdict\":\"request_changes\",\"summary\":\"The PR exposes public declarations that are either tautological, misleading, or duplicate existing Mathlib API. None has the characteristic public interface required for a downstream TauCeti target.\",\"findings\":[{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":17,\"issue\":\"`curvature_gauge_transformation` exposes a public theorem whose conclusion is exactly the hypothesis `h_transform`; `F`, `F'`, `g`, and `g_inv` are plain ring elements and `_hg` is unused, so this is not a usable curvature/gauge API.\",\"fix\":\"Remove it, or introduce the actual scoped curvature/gauge definitions and public characterization lemmas needed by the roadmap target, with helper statements kept private.\"},{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":24,\"issue\":\"`IsCompactOrientedManifold` is a public class with `oriented : True`, so the interface advertises orientation while carrying no orientation or manifold structure.\",\"fix\":\"Remove the class, or define it in terms of existing Mathlib manifold/orientation structures and expose only the projections/intro-elim lemmas needed downstream.\"},{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":36,\"issue\":\"`uniform_boundedness_principle` is a new public alias for Mathlib's `banach_steinhaus`; the body is just `banach_steinhaus h`, adding duplicate API without a new characteristic interface.\",\"fix\":\"Use `banach_steinhaus` directly, or keep a local/private wrapper only where a downstream proof specifically needs that spelling.\"}]}",
+  "usage": {
+    "input_tokens": 43852,
+    "cached_input_tokens": 14720,
+    "output_tokens": 1272,
+    "reasoning_output_tokens": 555
+  },
+  "session_id": "019e9051-5497-7191-ae29-9b8d93c553ec",
+  "cost_usd": 0.067535,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "api-design",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The PR exposes public declarations that are either tautological, misleading, or duplicate existing Mathlib API. None has the characteristic public interface required for a downstream TauCeti target.",
+    "findings": [
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 17,
+        "issue": "`curvature_gauge_transformation` exposes a public theorem whose conclusion is exactly the hypothesis `h_transform`; `F`, `F'`, `g`, and `g_inv` are plain ring elements and `_hg` is unused, so this is not a usable curvature/gauge API.",
+        "fix": "Remove it, or introduce the actual scoped curvature/gauge definitions and public characterization lemmas needed by the roadmap target, with helper statements kept private."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 24,
+        "issue": "`IsCompactOrientedManifold` is a public class with `oriented : True`, so the interface advertises orientation while carrying no orientation or manifold structure.",
+        "fix": "Remove the class, or define it in terms of existing Mathlib manifold/orientation structures and expose only the projections/intro-elim lemmas needed downstream."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 36,
+        "issue": "`uniform_boundedness_principle` is a new public alias for Mathlib's `banach_steinhaus`; the body is just `banach_steinhaus h`, adding duplicate API without a new characteristic interface.",
+        "fix": "Use `banach_steinhaus` directly, or keep a local/private wrapper only where a downstream proof specifically needs that spelling."
+      }
+    ]
+  }
+}

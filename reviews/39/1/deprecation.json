@@ -1,0 +1,45 @@
+{
+  "returncode": 0,
+  "raw_stderr": "",
+  "text": "This PR adds a single new file with three new declarations. Nothing existing is renamed, removed, restated, or weakened, and there is no Mathlib bump involved.\n\nFrom the deprecation / backward-compatibility angle there is nothing to flag: no public API is touched, so no aliases are required. The substantive issues here (the tautological `curvature_gauge_transformation`, the `oriented : True` no-op field, the thin `banach_steinhaus` wrapper) fall under other reviewers' angles.\n\nTAUCETI-VERDICT-0ed93f1464957b8d2f33e16e\n\n```json\n{\n  \"verdict\": \"approve\",\n  \"summary\": \"Purely additive PR introducing one new file; no existing public declaration is renamed, removed, or weakened, and there is no Mathlib bump. Nothing to flag on the deprecation/backward-compatibility angle.\",\n  \"findings\": []\n}\n```",
+  "cost_usd": 0.065553,
+  "usage": {
+    "input_tokens": 1658,
+    "cache_creation_input_tokens": 5078,
+    "cache_read_input_tokens": 17319,
+    "output_tokens": 552,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 5078
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 1658,
+        "output_tokens": 552,
+        "cache_read_input_tokens": 17319,
+        "cache_creation_input_tokens": 5078,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 5078,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "session_id": "f3d68910-05f9-4c00-8758-39b3495a8fd0",
+  "provider": "claude",
+  "model": "claude-opus-4-8",
+  "rubric": "deprecation",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "Purely additive PR introducing one new file; no existing public declaration is renamed, removed, or weakened, and there is no Mathlib bump. Nothing to flag on the deprecation/backward-compatibility angle.",
+    "findings": []
+  }
+}

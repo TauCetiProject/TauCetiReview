@@ -1,6 +1,7 @@
 {
   "days": {
-    "2026-06-03": 1.41115
+    "2026-06-03": 1.41115,
+    "2026-06-04": 1.107824
   },
   "prs": {
     "26": {
@@ -208,6 +209,367 @@
         }
       },
       "scoreboard_comment_id": 4617686715
+    },
+    "39": {
+      "rounds": [
+        {
+          "round": 1,
+          "ts": "2026-06-04T01:51:49.956121+00:00",
+          "mode": "commit",
+          "ran": [
+            "scope",
+            "correctness",
+            "reuse",
+            "attribution",
+            "api-design",
+            "generality",
+            "placement",
+            "naming",
+            "documentation",
+            "proof-quality",
+            "deprecation"
+          ],
+          "states": {
+            "scope": "blocking_block",
+            "correctness": "blocking_block",
+            "reuse": "blocking_block",
+            "attribution": "blocking_request",
+            "api-design": "blocking_request",
+            "generality": "blocking_request",
+            "placement": "blocking_request",
+            "naming": "blocking_request",
+            "documentation": "blocking_request",
+            "proof-quality": "blocking_request",
+            "deprecation": "green"
+          },
+          "cost": 1.107824,
+          "head_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "rubrics_version": "dccacfb6e0bf58e2"
+        }
+      ],
+      "state": {
+        "scope": {
+          "rubric": "scope",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "block",
+          "confidence": null,
+          "summary": "The PR is both explicitly off-roadmap and not a single coherent topic. It should not land without a roadmap target and substantial splitting.",
+          "findings": [
+            {
+              "file": "",
+              "line": 0,
+              "issue": "No roadmap target is identified; the PR description instead states the examples are deliberately off-roadmap and expected to be refused.",
+              "fix": "Block until a human adds an appropriate roadmap item, or resubmit only material that advances a named roadmap file and node/heading.",
+              "evidence": "PR description: \"It is deliberately off-roadmap and expected to be refused; nothing here is intended to land.\""
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 0,
+              "issue": "The PR bundles three unrelated topics: a curvature gauge transformation theorem, a compact-oriented-manifold class, and uniform boundedness.",
+              "fix": "Split into separate PRs, each tied to one roadmap target or one proximate prerequisite.",
+              "evidence": "The new file contains `curvature_gauge_transformation` at line 17, `IsCompactOrientedManifold` at line 23, and `uniform_boundedness_principle` at line 36."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952010,
+            "node_id": "PRRC_kwDOSup8rs7H2fzK",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "correctness": {
+          "rubric": "correctness",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "block",
+          "confidence": null,
+          "summary": "Two of the three declarations are logically defective: curvature_gauge_transformation's conclusion is its own hypothesis verbatim (pure tautology, the law is assumed), and IsCompactOrientedManifold encodes orientation as the placeholder field `oriented : True`. The third (uniform_boundedness_principle) is a faithful restatement of Mathlib's banach_steinhaus.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "16",
+              "issue": "curvature_gauge_transformation concludes `F' = g_inv * F * g` while taking that exact equation as hypothesis `h_transform`. The proof is `h_transform`; the statement is a tautology and the gauge law has been relocated into an assumption. `_hg` is unused, so even `g_inv*g=1` carries no weight.",
+              "fix": "State actual content: e.g. given a curvature defined from a connection/trivialisation, prove the transformed object equals `g_inv * F * g`; do not assume the equality you claim to prove.",
+              "evidence": "Lines 16-19: hypothesis `h_transform : F' = g_inv * F * g`, conclusion `F' = g_inv * F * g`, proof `h_transform`."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "26",
+              "issue": "IsCompactOrientedManifold's `oriented` field has type `True` \u2014 a placeholder standing in for orientability. The class therefore asserts nothing about orientation; any compact space instantiates it. `IsCompactOrientedManifold.isCompact` is consequently just a renamed `CompactSpace` projection.",
+              "fix": "Replace `oriented : True` with a real orientation hypothesis (e.g. an `Orientation`/orientability statement on the manifold's tangent structure), or drop the class.",
+              "evidence": "Line 26: `oriented : True`; the only nontrivial field is `compact : CompactSpace M`."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952038,
+            "node_id": "PRRC_kwDOSup8rs7H2fzm",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "reuse": {
+          "rubric": "reuse",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "block",
+          "confidence": null,
+          "summary": "uniform_boundedness_principle is a thin \u211d-specialized wrapper whose proof is literally `banach_steinhaus h`, directly replaceable by Mathlib's `banach_steinhaus`. IsCompactOrientedManifold adds nothing over `CompactSpace` since its `oriented` field is `True`.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "42",
+              "issue": "uniform_boundedness_principle is `banach_steinhaus h` verbatim, specialized to scalar \u211d. It is a strict special case of the existing Mathlib theorem and provides no added API.",
+              "fix": "Delete it and use `banach_steinhaus` directly.",
+              "evidence": "mathlib/Mathlib/Analysis/Normed/Operator/BanachSteinhaus.lean:36 `theorem banach_steinhaus ... (h : \u2200 x, \u2203 C, \u2200 i, \u2016g i x\u2016 \u2264 C) : \u2203 C', \u2200 i, \u2016g i\u2016 \u2264 C'`; the PR proof is `:= banach_steinhaus h`."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "26",
+              "issue": "IsCompactOrientedManifold's only content is `compact : CompactSpace M` (the `oriented` field is `True`, i.e. vacuous), so the class and `IsCompactOrientedManifold.isCompact` duplicate `CompactSpace` with a renamed field.",
+              "fix": "Drop the class; use `CompactSpace M` directly, or build on Mathlib's actual orientation API rather than a `True` placeholder.",
+              "evidence": "Diff: `oriented : True`; `isCompact` is just `h.compact`. Mathlib provides `CompactSpace` and orientation typeclasses already."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952097,
+            "node_id": "PRRC_kwDOSup8rs7H2f0h",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "attribution": {
+          "rubric": "attribution",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The Atlas source is credited in the module docstring and description, satisfying the core attribution requirement. But the file header stamps these adapted formalizations with 'Copyright (c) 2026 Lean FRO, LLC' under Apache 2.0, which misattributes copyright for material the PR itself says is adapted from Meta's facebookresearch/atlas-lean and may violate that project's own license.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "2",
+              "issue": "Header claims 'Copyright (c) 2026 Lean FRO, LLC' under Apache 2.0 for code the PR explicitly adapts from Meta's Atlas project (facebookresearch/atlas-lean). Copyright/authorship is attributed to a party that did not originate the material, and the upstream license is not acknowledged.",
+              "fix": "Preserve/cite the original Atlas (Meta Platforms) copyright and license in the header, or note 'adapted from facebookresearch/atlas-lean' in the Authors line; confirm Atlas's license permits the Apache-2.0 relicensing before stamping Lean FRO copyright.",
+              "evidence": "Header lines 2-4 vs. docstring/description stating the results are 'adapted from Meta's Atlas autoformalization project (facebookresearch/atlas-lean)'."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952130,
+            "node_id": "PRRC_kwDOSup8rs7H2f1C",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "api-design": {
+          "rubric": "api-design",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The PR exposes public declarations that are either tautological, misleading, or duplicate existing Mathlib API. None has the characteristic public interface required for a downstream TauCeti target.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 17,
+              "issue": "`curvature_gauge_transformation` exposes a public theorem whose conclusion is exactly the hypothesis `h_transform`; `F`, `F'`, `g`, and `g_inv` are plain ring elements and `_hg` is unused, so this is not a usable curvature/gauge API.",
+              "fix": "Remove it, or introduce the actual scoped curvature/gauge definitions and public characterization lemmas needed by the roadmap target, with helper statements kept private."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 24,
+              "issue": "`IsCompactOrientedManifold` is a public class with `oriented : True`, so the interface advertises orientation while carrying no orientation or manifold structure.",
+              "fix": "Remove the class, or define it in terms of existing Mathlib manifold/orientation structures and expose only the projections/intro-elim lemmas needed downstream."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 36,
+              "issue": "`uniform_boundedness_principle` is a new public alias for Mathlib's `banach_steinhaus`; the body is just `banach_steinhaus h`, adding duplicate API without a new characteristic interface.",
+              "fix": "Use `banach_steinhaus` directly, or keep a local/private wrapper only where a downstream proof specifically needs that spelling."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952168,
+            "node_id": "PRRC_kwDOSup8rs7H2f1o",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "generality": {
+          "rubric": "generality",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The added declarations are not at a natural Mathlib API level: they include unused or over-strong assumptions, an over-broad fake manifold class, and a special-case wrapper around existing Mathlib API.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 19,
+              "issue": "`curvature_gauge_transformation` assumes `[Ring R]` and `_hg : g_inv * g = 1`, but the proof uses only `h_transform` and the conclusion only needs multiplication.",
+              "fix": "Remove the unused inverse hypothesis and weaken the algebraic context to the actual operations needed, or replace the tautological statement with a substantive gauge-transformation theorem at the intended structure level.",
+              "evidence": "The theorem body is exactly `h_transform`; `_hg` is explicitly unused, and no ring operations beyond `*` occur in the conclusion."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 25,
+              "issue": "`IsCompactOrientedManifold` is over-generalized: it is defined for any `Type*` with `[TopologicalSpace M]`, while `oriented : True` carries no manifold or orientation structure.",
+              "fix": "Do not introduce this class, or define it only with the actual manifold and orientation structures required by the intended API.",
+              "evidence": "The class fields are only `compact : CompactSpace M` and `oriented : True`, so any compact topological space can satisfy a class named `...Manifold` without manifold data."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 38,
+              "issue": "`uniform_boundedness_principle` is an \u211d-specialized duplicate wrapper over the imported `banach_steinhaus` theorem.",
+              "fix": "Use `banach_steinhaus` directly, or if TauCeti needs a named wrapper, state it at the same natural generality as the underlying Mathlib theorem rather than only over `\u211d`.",
+              "evidence": "The proof is a single line `banach_steinhaus h`, showing the declaration adds only a special-case alias."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952200,
+            "node_id": "PRRC_kwDOSup8rs7H2f2I",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "placement": {
+          "rubric": "placement",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The new material is placed in a generic catch-all file rather than canonical topic homes, and it mixes unrelated algebraic geometry/gauge, topology/manifold, and functional analysis declarations under one import context.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 0,
+              "issue": "`AtlasExamples.lean` is an omnibus example file containing unrelated declarations (`curvature_gauge_transformation`, `IsCompactOrientedManifold`, and `uniform_boundedness_principle`) rather than placing each result near its subject matter.",
+              "fix": "Do not add a generic Atlas examples file; either drop the off-roadmap examples or split accepted material into canonical domain files with imports scoped to those declarations.",
+              "evidence": "Diff creates only `TauCeti/AtlasExamples.lean`; lines 18, 24, and 36 introduce three unrelated declarations in that single file."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952238,
+            "node_id": "PRRC_kwDOSup8rs7H2f2u",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "naming": {
+          "rubric": "naming",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "All three names advertise mathematical content their statements lack: a curvature/gauge law that only restates a hypothesis, an \"oriented manifold\" class over a bare topological space with a vacuous orientation field, and a rename of Mathlib's banach_steinhaus.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "16",
+              "issue": "`curvature_gauge_transformation` names a \"gauge transformation law for the curvature,\" but the conclusion `F' = g_inv * F * g` is verbatim the hypothesis `h_transform`; there is no curvature or gauge, only ring elements. The name describes content the statement does not contain.",
+              "fix": "Rename to reflect the actual statement (none is needed, since it is `id` of the hypothesis), or restate so it proves a real transformation property worthy of the name.",
+              "evidence": "Diff: `(h_transform : F' = g_inv * F * g) : F' = g_inv * F * g := h_transform`."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "23",
+              "issue": "`IsCompactOrientedManifold` names \"Oriented\" and \"Manifold\", but the `oriented` field is `True` (no content) and the only assumption is `[TopologicalSpace M]` \u2014 no manifold structure. The name overstates both orientation and manifold structure.",
+              "fix": "Drop the vacuous `oriented` field and the \"Oriented\"/\"Manifold\" parts of the name (it is just `CompactSpace`), or carry a real orientation and manifold structure.",
+              "evidence": "Diff: `class IsCompactOrientedManifold (M : Type*) [TopologicalSpace M]` with `oriented : True`."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "39",
+              "issue": "`uniform_boundedness_principle` renames Mathlib's `banach_steinhaus`; the established Mathlib name for this result is `banach_steinhaus`, and it is the proof body here.",
+              "fix": "Use the Mathlib term `banach_steinhaus` if a re-export is wanted, or omit; do not introduce a divergent alias.",
+              "evidence": "mathlib/Mathlib/Analysis/Normed/Operator/BanachSteinhaus.lean:36 `theorem banach_steinhaus`; proof body is `banach_steinhaus h`."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952274,
+            "node_id": "PRRC_kwDOSup8rs7H2f3S",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "documentation": {
+          "rubric": "documentation",
+          "provider": "codex",
+          "model": "gpt-5.5",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "The added file has module and declaration docstrings, but two of them materially overclaim what the Lean declarations state.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 16,
+              "issue": "The docstring calls `curvature_gauge_transformation` a gauge transformation law for curvature under a change of trivialisation, but the theorem is only the tautology `h_transform : F' = g_inv * F * g` restated in an arbitrary ring.",
+              "fix": "Either replace the declaration with an actual geometric curvature statement, or rewrite the docstring to honestly describe the current algebraic tautology.",
+              "evidence": "The theorem quantifies only `{R : Type*} [Ring R] (F F' g g_inv : R)` and proves exactly the hypothesis `h_transform`."
+            },
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": 22,
+              "issue": "The class docstring says `IsCompactOrientedManifold` is a compact, oriented manifold, but the class has no manifold structure and its `oriented` field is just `True`.",
+              "fix": "Add the required manifold and orientation data, or rename/document the class as only a `CompactSpace` wrapper with no orientation content.",
+              "evidence": "The class fields are `compact : CompactSpace M` and `oriented : True`; there is no charted/manifold/orientation structure."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952330,
+            "node_id": "PRRC_kwDOSup8rs7H2f4K",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "proof-quality": {
+          "rubric": "proof-quality",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "request_changes",
+          "confidence": null,
+          "summary": "Proofs are all single robust steps with no brittle chains, change/show, or defeq reliance. Only proof-quality defect: a redundant hypothesis in curvature_gauge_transformation.",
+          "findings": [
+            {
+              "file": "TauCeti/AtlasExamples.lean",
+              "line": "20",
+              "issue": "`_hg : g_inv * g = 1` is a redundant hypothesis; the proof is just `h_transform` and never uses it.",
+              "fix": "Drop `_hg` from the signature.",
+              "evidence": "Line 22 proof is `h_transform`, matching the goal `F' = g_inv * F * g` (line 21) verbatim; `_hg` is unreferenced."
+            }
+          ],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": {
+            "comment_id": 3352952370,
+            "node_id": "PRRC_kwDOSup8rs7H2f4y",
+            "path": "TauCeti/AtlasExamples.lean"
+          },
+          "author_replies": []
+        },
+        "deprecation": {
+          "rubric": "deprecation",
+          "provider": "claude",
+          "model": "claude-opus-4-8",
+          "verdict": "approve",
+          "confidence": null,
+          "summary": "Purely additive PR introducing one new file; no existing public declaration is renamed, removed, or weakened, and there is no Mathlib bump. Nothing to flag on the deprecation/backward-compatibility angle.",
+          "findings": [],
+          "reviewed_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "approved_sha": "8331841f9f7a2b18a035e50bed5b6582f9cf2fb5",
+          "thread": null,
+          "author_replies": []
+        }
+      },
+      "scoreboard_comment_id": 4618269206
     }
   }
 }

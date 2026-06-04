@@ -1,0 +1,37 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-3395aefb09cd68bd93b95def\n{\"verdict\":\"request_changes\",\"summary\":\"The added file has module and declaration docstrings, but two of them materially overclaim what the Lean declarations state.\",\"findings\":[{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":16,\"issue\":\"The docstring calls `curvature_gauge_transformation` a gauge transformation law for curvature under a change of trivialisation, but the theorem is only the tautology `h_transform : F' = g_inv * F * g` restated in an arbitrary ring.\",\"fix\":\"Either replace the declaration with an actual geometric curvature statement, or rewrite the docstring to honestly describe the current algebraic tautology.\" ,\"evidence\":\"The theorem quantifies only `{R : Type*} [Ring R] (F F' g g_inv : R)` and proves exactly the hypothesis `h_transform`.\"},{\"file\":\"TauCeti/AtlasExamples.lean\",\"line\":22,\"issue\":\"The class docstring says `IsCompactOrientedManifold` is a compact, oriented manifold, but the class has no manifold structure and its `oriented` field is just `True`.\",\"fix\":\"Add the required manifold and orientation data, or rename/document the class as only a `CompactSpace` wrapper with no orientation content.\",\"evidence\":\"The class fields are `compact : CompactSpace M` and `oriented : True`; there is no charted/manifold/orientation structure.\"}]}",
+  "usage": {
+    "input_tokens": 28353,
+    "cached_input_tokens": 23808,
+    "output_tokens": 928,
+    "reasoning_output_tokens": 427
+  },
+  "session_id": "019e9053-81ed-7401-a752-6e553959e5bb",
+  "cost_usd": 0.044721,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "documentation",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The added file has module and declaration docstrings, but two of them materially overclaim what the Lean declarations state.",
+    "findings": [
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 16,
+        "issue": "The docstring calls `curvature_gauge_transformation` a gauge transformation law for curvature under a change of trivialisation, but the theorem is only the tautology `h_transform : F' = g_inv * F * g` restated in an arbitrary ring.",
+        "fix": "Either replace the declaration with an actual geometric curvature statement, or rewrite the docstring to honestly describe the current algebraic tautology.",
+        "evidence": "The theorem quantifies only `{R : Type*} [Ring R] (F F' g g_inv : R)` and proves exactly the hypothesis `h_transform`."
+      },
+      {
+        "file": "TauCeti/AtlasExamples.lean",
+        "line": 22,
+        "issue": "The class docstring says `IsCompactOrientedManifold` is a compact, oriented manifold, but the class has no manifold structure and its `oriented` field is just `True`.",
+        "fix": "Add the required manifold and orientation data, or rename/document the class as only a `CompactSpace` wrapper with no orientation content.",
+        "evidence": "The class fields are `compact : CompactSpace M` and `oriented : True`; there is no charted/manifold/orientation structure."
+      }
+    ]
+  }
+}
