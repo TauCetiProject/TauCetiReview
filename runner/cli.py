@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -89,6 +90,32 @@ def gh_json(repo, pr, fields):
     r = run(["gh", "pr", "view", str(pr), "--repo", repo, "--json", fields],
             capture=True, quiet=True)
     return json.loads(r.stdout)
+
+
+def fetch_thread_replies(repo, pr):
+    """Gather author replies on the per-rubric review threads from GitHub, keyed by rubric, so a
+    re-review audits the author's contest rather than re-judging the diff blind. A thread root
+    carries a `<!--tauceti-rubric:NAME-->` marker; a reply is any review comment whose
+    `in_reply_to_id` points at such a root."""
+    r = run(["gh", "api", f"/repos/{repo}/pulls/{pr}/comments?per_page=100"],
+            capture=True, quiet=True, allow_fail=True)
+    try:
+        comments = json.loads(r.stdout)
+    except Exception:
+        return {}
+    root_rubric = {}
+    for c in comments:
+        if c.get("in_reply_to_id") is None:
+            m = re.search(r"tauceti-rubric:([a-z][a-z-]*?)\s*-->", c.get("body", ""))
+            if m:
+                root_rubric[c["id"]] = m.group(1)
+    replies = {}
+    for c in comments:
+        rubric = root_rubric.get(c.get("in_reply_to_id"))
+        if rubric:
+            replies.setdefault(rubric, []).append(
+                {"by": (c.get("user") or {}).get("login", "author"), "body": c.get("body", "")})
+    return replies
 
 
 def main():
@@ -208,6 +235,17 @@ def main():
         store = CACHE_DIR / "store" / a.repo.replace("/", "__")
     store.mkdir(parents=True, exist_ok=True)
     print(f"store: {store}{'  (fresh)' if a.fresh else ''}", file=sys.stderr)
+
+    # Read the author's replies on the rubric threads from GitHub and pass them to the engine, so a
+    # re-review audits the contest (e.g. a push-back on a finding) instead of re-judging the diff
+    # blind. This is the local equivalent of CI's reply-trigger flow.
+    replies = fetch_thread_replies(a.repo, a.pr)
+    replies_path = work / "replies.json"
+    replies_path.write_text(json.dumps(replies))
+    if replies:
+        print("author replies on threads: "
+              + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
+
     plan = work / "post_plan.json"
     cmd = [sys.executable, str(repo_dir / "runner" / "review.py"),
            "--repo", a.repo, "--pr", str(a.pr), "--mode", a.mode,
@@ -218,7 +256,8 @@ def main():
            "--store", str(store), "--head-sha", head, "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
            "--scoreboard-file", str(work / "scoreboard.md"),
-           "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan)]
+           "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
+           "--replies-json", str(replies_path)]
     if a.rubrics:
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",

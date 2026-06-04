@@ -396,6 +396,10 @@ def main():
                          "in-progress scoreboard immediately (no models), before the review runs")
     ap.add_argument("--reply-rubric", default="", help="reply mode: the single rubric to re-run")
     ap.add_argument("--reply-file", default="", help="reply mode: file with the author's reply")
+    ap.add_argument("--replies-json", default="",
+                    help="JSON map {rubric: [{by, body}, ...]} of author replies on the rubric "
+                         "threads (e.g. gathered from GitHub by the CLI). Folded into each rubric's "
+                         "case file so a re-run audits the author's contest, not just the diff")
     ap.add_argument("--scoreboard-file", default="",
                     help="write the scoreboard comment body here for the trusted post step")
     ap.add_argument("--threads-dir", default="",
@@ -444,6 +448,14 @@ def main():
     pr_state.setdefault("state", {})            # per-rubric case files (= scoreboard/staleness)
     pr_state.setdefault("scoreboard_comment_id", None)
     state_map = pr_state["state"]
+
+    # Fold author replies gathered from the PR's rubric threads into each rubric's case file, so a
+    # re-run sees the author's contest (untrusted argument) and re-adjudicates against it. Replaces
+    # rather than appends, so it always reflects the current thread state (idempotent across runs).
+    if a.replies_json and pathlib.Path(a.replies_json).exists():
+        for rubric, reps in json.loads(pathlib.Path(a.replies_json).read_text()).items():
+            if reps and rubric in candidates:
+                state_map.setdefault(rubric, {})["author_replies"] = reps
 
     # init mode: post an in-progress scoreboard immediately, before any model runs. No keys, no
     # diff, no ledger writes — just render the current states under a "running now" header and emit
