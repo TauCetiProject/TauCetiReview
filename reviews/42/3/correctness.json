@@ -1,0 +1,22 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-00fc02e11a48487cf5a14658\n{\"verdict\":\"approve\",\"summary\":\"No correctness or faithfulness issues found in the new based-path, SLSC, and universal-cover prelude declarations under this rubric.\",\"findings\":[]}",
+  "usage": {
+    "input_tokens": 107030,
+    "cached_input_tokens": 63232,
+    "output_tokens": 4261,
+    "reasoning_output_tokens": 3800
+  },
+  "session_id": "019e90d2-7d87-74f0-bb55-695d6a1d8f32",
+  "cost_usd": 0.176398,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "correctness",
+  "verdict_obj": {
+    "verdict": "approve",
+    "summary": "No correctness or faithfulness issues found in the new based-path, SLSC, and universal-cover prelude declarations under this rubric.",
+    "findings": []
+  }
+}

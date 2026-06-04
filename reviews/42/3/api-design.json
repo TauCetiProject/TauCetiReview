@@ -1,0 +1,51 @@
+{
+  "returncode": 0,
+  "raw_stderr": "Reading additional input from stdin...\n",
+  "text": "TAUCETI-VERDICT-1558b8da3c48f75fc61532af\n{\"verdict\":\"request_changes\",\"summary\":\"The PR exposes too much implementation detail and relies on unfolded bodies where characteristic API should be provided instead. Several core constructor endpoint lemmas are also missing normal-form simp annotations.\",\"findings\":[{\"file\":\"TauCeti/AlgebraicTopology/FundamentalGroupoid/UniversalCoverPrelude.lean\",\"line\":18,\"issue\":\"`@[expose] public section` exposes the bodies of all vendored prelude declarations, including helper definitions and proof lemmas such as `Path.subpathOn` internals and homotopy quotient helpers.\",\"fix\":\"Remove the section-wide `@[expose]`; expose only declarations that genuinely need computation, and provide public `*_apply`/quotient/characteristic lemmas for the rest.\",\"evidence\":\"The diff has `@[expose] public section` before `unitInterval.half`, partition lemmas, `Path.codRestrict`, `Path.subpathOn`, and homotopy helper lemmas.\"},{\"file\":\"TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean\",\"line\":50,\"issue\":\"The proposition definitions `SemilocallySimplyConnectedAt`, `SemilocallySimplyConnectedOn`, and `IsPathHomotopyTrivial` expose their bodies even though the file provides public iff/constructor API for using them.\",\"fix\":\"Drop `@[expose]` from these Prop definitions and make consumers use `semilocallySimplyConnectedAt_iff`, `semilocallySimplyConnectedOn_iff`, and the path-trivial API.\",\"evidence\":\"The diff marks `SemilocallySimplyConnectedAt`, `SemilocallySimplyConnectedOn`, and `IsPathHomotopyTrivial` with `@[expose] public def`.\"},{\"file\":\"TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean\",\"line\":128,\"issue\":\"`BasedPath.append` is exposed, but the public API only characterizes its endpoint; users who need the underlying path must unfold the definition.\",\"fix\":\"Remove `@[expose]` from `append` and add characteristic lemmas such as `toPath_append` or an `append_apply`/`append_toContinuousMap` lemma sufficient for downstream use.\",\"evidence\":\"The diff declares `@[expose] public noncomputable def append` and follows it only with `endpoint_append`.\"},{\"file\":\"TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean\",\"line\":113,\"issue\":\"Endpoint normal forms for constructors are not marked for automation: `endpoint_ofPath` and `endpoint_append` are characteristic simplification lemmas but lack `@[simp]`.\",\"fix\":\"Mark these endpoint lemmas `@[simp]` unless they create an actual loop, or document and provide an alternative simp-normal endpoint API.\",\"evidence\":\"The diff has `public theorem endpoint_ofPath ... : endpoint (ofPath \u03b3) = y` and `public theorem endpoint_append ... : endpoint (append \u03b3 \u03b4) = y` without `@[simp]`.\"}]}",
+  "usage": {
+    "input_tokens": 107236,
+    "cached_input_tokens": 63744,
+    "output_tokens": 3323,
+    "reasoning_output_tokens": 2247
+  },
+  "session_id": "019e90d6-28ab-7400-ae90-c70c201ad7a2",
+  "cost_usd": 0.167275,
+  "cost_estimated": true,
+  "provider": "codex",
+  "model": "gpt-5.5",
+  "rubric": "api-design",
+  "verdict_obj": {
+    "verdict": "request_changes",
+    "summary": "The PR exposes too much implementation detail and relies on unfolded bodies where characteristic API should be provided instead. Several core constructor endpoint lemmas are also missing normal-form simp annotations.",
+    "findings": [
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/UniversalCoverPrelude.lean",
+        "line": 18,
+        "issue": "`@[expose] public section` exposes the bodies of all vendored prelude declarations, including helper definitions and proof lemmas such as `Path.subpathOn` internals and homotopy quotient helpers.",
+        "fix": "Remove the section-wide `@[expose]`; expose only declarations that genuinely need computation, and provide public `*_apply`/quotient/characteristic lemmas for the rest.",
+        "evidence": "The diff has `@[expose] public section` before `unitInterval.half`, partition lemmas, `Path.codRestrict`, `Path.subpathOn`, and homotopy helper lemmas."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/SemilocallySimplyConnected.lean",
+        "line": 50,
+        "issue": "The proposition definitions `SemilocallySimplyConnectedAt`, `SemilocallySimplyConnectedOn`, and `IsPathHomotopyTrivial` expose their bodies even though the file provides public iff/constructor API for using them.",
+        "fix": "Drop `@[expose]` from these Prop definitions and make consumers use `semilocallySimplyConnectedAt_iff`, `semilocallySimplyConnectedOn_iff`, and the path-trivial API.",
+        "evidence": "The diff marks `SemilocallySimplyConnectedAt`, `SemilocallySimplyConnectedOn`, and `IsPathHomotopyTrivial` with `@[expose] public def`."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+        "line": 128,
+        "issue": "`BasedPath.append` is exposed, but the public API only characterizes its endpoint; users who need the underlying path must unfold the definition.",
+        "fix": "Remove `@[expose]` from `append` and add characteristic lemmas such as `toPath_append` or an `append_apply`/`append_toContinuousMap` lemma sufficient for downstream use.",
+        "evidence": "The diff declares `@[expose] public noncomputable def append` and follows it only with `endpoint_append`."
+      },
+      {
+        "file": "TauCeti/AlgebraicTopology/FundamentalGroupoid/BasedPath.lean",
+        "line": 113,
+        "issue": "Endpoint normal forms for constructors are not marked for automation: `endpoint_ofPath` and `endpoint_append` are characteristic simplification lemmas but lack `@[simp]`.",
+        "fix": "Mark these endpoint lemmas `@[simp]` unless they create an actual loop, or document and provide an alternative simp-normal endpoint API.",
+        "evidence": "The diff has `public theorem endpoint_ofPath ... : endpoint (ofPath \u03b3) = y` and `public theorem endpoint_append ... : endpoint (append \u03b3 \u03b4) = y` without `@[simp]`."
+      }
+    ]
+  }
+}
