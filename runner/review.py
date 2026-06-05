@@ -127,6 +127,24 @@ def rubrics_fingerprint(rubrics_dir):
     return h.hexdigest()[:16]
 
 
+def ci_status_block(build_status, head_sha):
+    """A runner-verified CI fact, prepended to each rubric's context as trusted ground truth
+    (unlike the author-provided diff and description). Asserted ONLY when CI's build check
+    actually succeeded; for any other status — pending, failed, unknown — we say nothing and the
+    rubric's generic "a green PR can still be wrong" framing stands. This exists because a weaker
+    reviewer can otherwise hallucinate a compile/elaboration failure and block a PR the Lean
+    kernel has already accepted, which then drives pointless fix work downstream."""
+    if (build_status or "").lower() != "success":
+        return ""
+    sha = (head_sha or "")[:12]
+    return ("\n## CI status (verified by the runner — trusted ground truth, not author-provided)\n"
+            f"Commit `{sha}` passed `lake build` and the axiom audit in CI: every proof in this "
+            "diff elaborates and closes its goal, and the build, axiom allowlist, and import "
+            "boundary are already enforced. Do not report that any proof fails to compile or "
+            "elaborate — if one looks broken, you have misread it. Judge only your rubric's "
+            "semantic angle.\n")
+
+
 def build_prompt(rubrics_dir, rubric, context, marker):
     common = (rubrics_dir / "_common.md").read_text()
     angle = (rubrics_dir / f"{rubric}.md").read_text()
@@ -456,6 +474,11 @@ def main():
     ap.add_argument("--head-sha", default="",
                     help="PR head commit; approvals are bound to it, so a new commit re-runs all "
                          "blocking rubrics instead of carrying forward stale approvals")
+    ap.add_argument("--ci-build", default="",
+                    help="conclusion of CI's build check for the head commit (e.g. 'success'), as "
+                         "fetched by the trusted caller. When 'success', the prompt asserts the "
+                         "code compiles so reviewers don't re-litigate the build the kernel already "
+                         "accepted; any other value injects nothing.")
     ap.add_argument("--auto-merge", action="store_true",
                     help="compute a merge decision: mergeable iff every rubric approves on the "
                          "current commit and the PR touches only --merge-path-prefix")
@@ -600,6 +623,7 @@ def main():
     base_context = (f"This is PR #{a.pr} on {a.repo}.\n"
                     f"The code at the PR head is at ./{a.code_path} and the roadmap repo at "
                     f"./{a.roadmap_path}; inspect them with your read-only tools (Read/Grep/Glob).\n"
+                    + ci_status_block(a.ci_build, head)
                     + (("\nSources you can grep:\n" + src) if src else "")
                     + desc_block
                     + f"\n## Diff\n```diff\n{diff}\n```")

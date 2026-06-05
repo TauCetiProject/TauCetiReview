@@ -204,6 +204,15 @@ def main():
             "propagated to the API yet; re-run in a moment to avoid reviewing a stale commit.")
     diff = run(["gh", "pr", "diff", str(a.pr), "--repo", a.repo], capture=True, quiet=True).stdout
     (work / "diff.txt").write_text(diff)
+    # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
+    # Passed to the engine so the prompt can assert the code compiles; best-effort (a fetch failure
+    # just leaves it blank, and the engine then injects nothing).
+    ci_build = ""
+    try:
+        rollup = gh_json(a.repo, a.pr, "statusCheckRollup").get("statusCheckRollup") or []
+        ci_build = next((c.get("conclusion", "") for c in rollup if c.get("name") == "build"), "")
+    except Exception:
+        ci_build = ""
     meta = gh_json(a.repo, a.pr, "title,body")
     (work / "pr_desc.txt").write_text(
         f"# {meta.get('title','')}\n\n{meta.get('body','') or ''}\n")
@@ -270,7 +279,7 @@ def main():
            "--code-path", "code", "--roadmap-path", "roadmap",
            *mathlib_args,
            "--diff-file", str(work / "diff.txt"), "--pr-desc-file", str(work / "pr_desc.txt"),
-           "--store", str(store), "--head-sha", head, "--auth", a.auth,
+           "--store", str(store), "--head-sha", head, "--ci-build", ci_build or "", "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
            "--scoreboard-file", str(work / "scoreboard.md"),
            "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
