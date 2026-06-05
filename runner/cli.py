@@ -137,7 +137,9 @@ def main():
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")
     ap.add_argument("--reviewer", default="",
-                    help="restrict to these reviewers (comma-separated: claude, codex). "
+                    help="restrict to these reviewers (comma-separated: claude, codex, "
+                         "deepseek, minimax). deepseek/minimax run an OpenRouter model through "
+                         "the `pi` agent and need `pi` on PATH + OPENROUTER_API_KEY. "
                          "Default: every one you have available")
     ap.add_argument("--no-mathlib", action="store_true",
                     help="skip fetching the pinned Mathlib source (faster; reuse checks weaker)")
@@ -160,21 +162,29 @@ def main():
 
     need("git", "Install git.")
     need("gh", "Install the GitHub CLI and run `gh auth login`.")
+    want = [p.strip() for p in a.reviewer.split(",") if p.strip()] if a.reviewer else []
     if a.auth == "subscription":
         avail = [p for p in ("claude", "codex") if shutil.which(p)]
-        if not avail:
-            die("need at least one of `claude` or `codex` on PATH (and logged in) for "
-                "subscription review. Install the Claude Code and/or Codex CLI, or pass --auth api.")
     else:  # api: draw only from providers whose key is in the environment
         avail = [p for p, k in (("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY"))
                  if os.environ.get(k)]
-        if not avail:
-            die("--auth api needs ANTHROPIC_API_KEY and/or OPENAI_API_KEY in the environment.")
-    if a.reviewer:
-        want = [p.strip() for p in a.reviewer.split(",") if p.strip()]
+    # OpenRouter reviewers (DeepSeek/MiniMax, driven by the `pi` agent) are pay-per-token, so they
+    # are NEVER drawn by default — they join the pool ONLY when you name them in --reviewer (the
+    # budget gate: no auto-dispatch), and then only if `pi` and OPENROUTER_API_KEY are present.
+    if shutil.which("pi") and os.environ.get("OPENROUTER_API_KEY"):
+        avail += [p for p in ("deepseek", "minimax") if p in want and p not in avail]
+    if not avail:
+        if a.auth == "subscription":
+            die("need at least one of `claude` / `codex` on PATH (and logged in), or `pi` + "
+                "OPENROUTER_API_KEY and `--reviewer deepseek|minimax` for an OpenRouter review. "
+                "Install the Claude Code and/or Codex CLI, or pass --auth api.")
+        die("--auth api needs ANTHROPIC_API_KEY / OPENAI_API_KEY, or `pi` + OPENROUTER_API_KEY "
+            "and `--reviewer deepseek|minimax`, in the environment.")
+    if want:
         avail = [p for p in avail if p in want]
         if not avail:
-            die(f"--reviewer {a.reviewer} matches none of the available reviewers.")
+            die(f"--reviewer {a.reviewer} matches none of the available reviewers (a DeepSeek/"
+                "MiniMax reviewer needs `pi` on PATH + OPENROUTER_API_KEY).")
     providers = ",".join(avail)
     print(f"reviewers: {providers}", file=sys.stderr)
 

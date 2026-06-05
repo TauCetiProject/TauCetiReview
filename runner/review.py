@@ -14,8 +14,35 @@ DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "attribution", "api-design",
                    "deprecation"]
 CLAUDE_MODEL = "claude-opus-4-8"
 CODEX_MODEL = "gpt-5.5"
+# OpenRouter models driven through the `pi` agent (badlogic/pi-mono): a third reviewer
+# family alongside claude/codex, selectable as --providers/--reviewer deepseek|minimax.
+# Pay-per-token, so they run only when explicitly named — never auto-drawn. Add a row here
+# and the provider is usable with no other change. Ids are env-overridable; each is its
+# provider's strongest agentic, tool-using model on OpenRouter. (DeepSeek-Prover-V2 /
+# ByteDance Seed-Prover are whole-proof search systems, not tool-using agents, and aren't
+# served on OpenRouter, so they cannot drive `pi`.)
+# Ids are env-overridable; the worker (round.sh) overrides the *authoring* model with
+# DEEPSEEK_MODEL / MINIMAX_MODEL, so accept those too (with a TAUCETI_-prefixed form taking
+# precedence) — a single `DEEPSEEK_MODEL=…` then pins both authoring and review to one id.
+OPENROUTER_MODELS = {
+    "deepseek": (os.environ.get("TAUCETI_DEEPSEEK_MODEL") or os.environ.get("DEEPSEEK_MODEL")
+                 or "deepseek/deepseek-v4-pro"),
+    "minimax": (os.environ.get("TAUCETI_MINIMAX_MODEL") or os.environ.get("MINIMAX_MODEL")
+                or "minimax/minimax-m3"),
+}
+# A pi reviewer's tools: read + grep + ls only — never bash/edit/write. This keeps the review
+# read-only (parity with claude's Read/Grep/Glob and codex's read-only sandbox), so a
+# prompt-injected reviewer has no shell to exfiltrate its key or mutate the workspace. The env
+# override exists only to widen *within* the read-only set; it FAILS CLOSED — anything outside
+# the allowlist (e.g. bash/edit/write) is rejected and the safe default is used instead.
+_RO_PI_TOOLS = {"read", "grep", "ls", "find"}
+_pi_tools_env = os.environ.get("TAUCETI_PI_TOOLS", "read,grep,ls")
+PI_TOOLS = (_pi_tools_env
+            if {t.strip() for t in _pi_tools_env.split(",") if t.strip()} <= _RO_PI_TOOLS
+            else "read,grep,ls")
 PRICES = {"claude-sonnet-4-6": (3.0, 15.0), "claude-opus-4-8": (15.0, 75.0),
-          "gpt-5.5": (1.25, 10.0)}
+          "gpt-5.5": (1.25, 10.0),
+          "deepseek/deepseek-v4-pro": (0.435, 0.87), "minimax/minimax-m3": (0.60, 2.40)}
 DEFAULT_PRICE = (3.0, 15.0)
 
 
@@ -61,6 +88,12 @@ def reviewer_env(provider, keys, subscription=False):
                 env["HOME"] = os.path.expanduser("~")  # fallback: keychain/other; less reproducible
         else:
             env["ANTHROPIC_API_KEY"] = keys["anthropic"]
+    elif provider in OPENROUTER_MODELS:
+        # OpenRouter via pi: there is no subscription/OAuth concept — it is always an API
+        # key, in both auth modes. The clean HOME carries ONLY this key, so a prompt-injected
+        # reviewer has nothing else to leak, and a read-only tool set (PI_TOOLS, no bash) means
+        # it has no shell to leak it with. Residual matches the others: it can read its own key.
+        env["OPENROUTER_API_KEY"] = keys.get("openrouter", "")
     else:
         codex_home = os.path.join(home, ".codex")
         os.makedirs(codex_home, exist_ok=True)  # codex requires CODEX_HOME to already exist
@@ -159,6 +192,66 @@ def run_codex(prompt, cwd, model, env):
         out["cost_usd"] = round((usage.get("input_tokens", 0) * pin
                                  + usage.get("output_tokens", 0) * pout) / 1e6, 6)
         out["cost_estimated"] = True
+    return out
+
+
+def run_pi(prompt, cwd, model, env):
+    """Drive an OpenRouter model through the `pi` agent (badlogic/pi-mono), read-only.
+
+    pi runs agentic loops with arbitrary models that the claude/codex CLIs can't drive, so
+    it is how DeepSeek/MiniMax (and any other OpenRouter model in OPENROUTER_MODELS) review.
+    Same isolation as the other reviewers: the clean HOME from reviewer_env carries only
+    OPENROUTER_API_KEY, and we disable project context files, skills, extensions, and prompt
+    templates and restrict tools to PI_TOOLS (read/grep/ls — no bash/edit/write), so the
+    untrusted diff cannot make the reviewer run shell, mutate the workspace, or reach anything
+    but its own key. `--mode json` emits a JSONL event stream; the final assistant `message_end`
+    carries the verdict text and pi-ai's own usage/cost, which we sum for the ledger."""
+    cmd = ["pi", "--provider", "openrouter", "--model", model, "--print", "--mode", "json",
+           "--no-session", "--no-context-files", "--no-skills", "--no-extensions",
+           "--no-prompt-templates", "--tools", PI_TOOLS, prompt]
+    r = sh(cmd, cwd=cwd, env=env)
+    out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
+    text, cost, in_tok, out_tok, err = "", 0.0, 0, 0, ""
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if ev.get("type") != "message_end":
+            continue
+        msg = ev.get("message") or {}
+        if msg.get("role") != "assistant":
+            continue
+        # Defensive: content shape is provider-dependent; tolerate strings / non-dict blocks /
+        # missing content rather than crashing the whole review on one odd event.
+        content = msg.get("content")
+        parts = ([c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+                 if isinstance(content, list) else [])
+        if parts:
+            text = "\n".join(parts)  # keep the last assistant text (carries the final verdict)
+        if msg.get("stopReason") == "error" and msg.get("errorMessage"):
+            err = msg["errorMessage"]  # pi exits 0 even on an API error in json mode; capture it
+        u = msg.get("usage") or {}
+        cost += (u.get("cost") or {}).get("total") or 0.0
+        in_tok += u.get("input") or 0
+        out_tok += u.get("output") or 0
+    # pi-ai prices most models itself (usage.cost.total). If it reported no cost, estimate from
+    # tokens × PRICES so the daily budget still accounts for the spend — and flag it as estimated
+    # so a real OpenRouter charge is distinguishable from a price-table fallback.
+    estimated = False
+    if cost == 0.0 and (in_tok or out_tok):
+        pin, pout = PRICES.get(model, DEFAULT_PRICE)
+        cost = (in_tok * pin + out_tok * pout) / 1e6
+        estimated = True
+    out.update(text=text, usage={"input_tokens": in_tok, "output_tokens": out_tok},
+               cost_usd=round(cost, 6), cost_estimated=estimated, session_id=None)
+    # Surface why pi produced no usable answer (pi returns 0 even when the model errored, so
+    # an empty text or a captured errorMessage is the real failure signal — keep it diagnosable).
+    if r.returncode != 0 or not text:
+        out.update(raw_stdout=r.stdout[-3000:], error_message=err)
     return out
 
 
@@ -374,9 +467,10 @@ def main():
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
     ap.add_argument("--codex-model", default=CODEX_MODEL)
     ap.add_argument("--providers", default="claude,codex",
-                    help="comma-separated reviewers to draw from (e.g. just 'claude' when only "
-                         "the Claude CLI is logged in). A rubric's prior provider is kept only if "
-                         "still listed; otherwise it is re-drawn from this set")
+                    help="comma-separated reviewers to draw from: claude, codex, and any "
+                         "OpenRouter model in OPENROUTER_MODELS (deepseek, minimax — via the `pi` "
+                         "agent, needs OPENROUTER_API_KEY). A rubric's prior provider is kept only "
+                         "if still listed; otherwise it is re-drawn from this set")
     ap.add_argument("--auto-subset", action="store_true",
                     help="re-review only rubrics whose last round was not approve")
     ap.add_argument("--auth", choices=["api", "subscription"], default="api",
@@ -384,8 +478,9 @@ def main():
                          "subscription: inherit the environment so a locally logged-in `claude` / "
                          "`codex` reviews on the runner's own subscription (no API key, no spend)")
     ap.add_argument("--keys-dir", default="",
-                    help="dir with files 'anthropic' and 'openai'; keys are passed only to the "
-                         "matching reviewer subprocess and never kept in this process's env")
+                    help="dir with files 'anthropic', 'openai', and/or 'openrouter'; each key is "
+                         "passed only to the matching reviewer subprocess and never kept in this "
+                         "process's env (OPENROUTER_API_KEY also falls back to the ambient env)")
     ap.add_argument("--comment-file", default="",
                     help="write the rendered review comment here for a separate post step")
     ap.add_argument("--no-post", action="store_true",
@@ -415,16 +510,23 @@ def main():
     elif a.keys_dir:
         kd = pathlib.Path(a.keys_dir)
         keys = {}
-        for name in ("anthropic", "openai"):
+        for name in ("anthropic", "openai", "openrouter"):
             f = kd / name
             keys[name] = f.read_text().strip() if f.exists() else ""
-            # Read into memory then remove from disk: neither key should sit on a filesystem a
+            # Read into memory then remove from disk: no key should sit on a filesystem a
             # reviewer can reach while it runs (a codex reviewer must not find the anthropic key).
             if f.exists():
                 f.unlink()
     else:  # local/dev fallback: read from this process's env
         keys = {"anthropic": os.environ.get("ANTHROPIC_API_KEY", ""),
                 "openai": os.environ.get("OPENAI_API_KEY", "")}
+
+    # OpenRouter (the pi reviewers) has no subscription/OAuth path — its credential is always an
+    # API key. Prefer a keys-dir file if CI supplied one (read + removed above); otherwise take it
+    # from the env, which is the worker's subscription-mode case (claude/codex use their OAuth
+    # logins there, but DeepSeek/MiniMax still need OPENROUTER_API_KEY).
+    if not keys.get("openrouter"):
+        keys["openrouter"] = os.environ.get("OPENROUTER_API_KEY", "")
 
     store = pathlib.Path(a.store)
     ledger_path = store / "ledger.json"
@@ -516,6 +618,9 @@ def main():
     outdir = store / "reviews" / str(a.pr) / str(round_num)
     outdir.mkdir(parents=True, exist_ok=True)
     runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model)}
+    # Every OpenRouter model is the same run_pi runner, differing only by model id.
+    for name, mid in OPENROUTER_MODELS.items():
+        runners[name] = (run_pi, mid)
     providers = [p.strip() for p in a.providers.split(",") if p.strip() in runners]
     if not providers:
         print(f"no usable providers in --providers={a.providers!r}", file=sys.stderr)

@@ -56,6 +56,7 @@ tauceti-review 42                       # review PR #42, PRINT the verdicts — 
 tauceti-review 42 --post                # also post the scoreboard + threads, as you
 tauceti-review 42 --rubrics scope,correctness,reuse
 tauceti-review 42 --reviewer claude     # use only Claude even if both are installed
+tauceti-review 42 --reviewer deepseek   # use DeepSeek via OpenRouter + the `pi` agent
 tauceti-review 42 --no-mathlib          # skip the Mathlib clone (faster; weaker reuse checks)
 ```
 
@@ -66,7 +67,7 @@ Add `--post` to publish. Useful flags:
 |---|---|
 | `--post` | post the scoreboard comment + per-rubric review threads to the PR, under your GitHub login |
 | `--rubrics a,b,c` | review only these rubrics (default: all of them) |
-| `--reviewer claude\|codex` | restrict to one reviewer (default: every one you have) |
+| `--reviewer claude\|codex\|deepseek\|minimax` | restrict to these reviewers (default: every one you have). `deepseek`/`minimax` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY` |
 | `--mode commit` | review only rubrics not already passing in the local store (default `manual` = all) |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `FormalFrontier/TauCeti`) |
@@ -78,12 +79,14 @@ Add `--post` to publish. Useful flags:
 1. Reads the PR head SHA, diff, and description via `gh`.
 2. Builds the same read-only reviewer workspace CI uses: the PR source at its head, the roadmap
    repo, and (unless `--no-mathlib`) the pinned Mathlib source for `reuse`/`naming` to grep.
-3. Runs each rubric through `claude -p` / `codex exec`, **read-only** (`Read`/`Grep`/`Glob` only),
-   in `--auth subscription` mode — no API key, so the CLIs use your logged-in subscription. Each
-   reviewer runs in a **clean room**: a throwaway HOME seeded with only your subscription
-   credential, so it authenticates as you but ignores your personal `CLAUDE.md` / `AGENTS.md`,
-   skills, plugins, and settings (and skills are disabled outright). The review depends on the
-   rubrics and the PR, not on who runs it.
+3. Runs each rubric through `claude -p` / `codex exec` (or, for `deepseek`/`minimax`, the `pi`
+   agent against OpenRouter), **read-only** (`Read`/`Grep`/`Glob`, or pi's `read`/`grep`/`ls` —
+   no shell, no writes), in `--auth subscription` mode — claude/codex use your logged-in
+   subscription with no API key; the OpenRouter reviewers are pay-per-token and use
+   `OPENROUTER_API_KEY`. Each reviewer runs in a **clean room**: a throwaway HOME seeded with only
+   its own credential, so it ignores your personal `CLAUDE.md` / `AGENTS.md`, skills, plugins, and
+   settings (and those are disabled outright). The review depends on the rubrics and the PR, not
+   on who runs it.
 4. Reads each verdict from a fresh one-time marker token, so nothing in the PR text can forge an
    `approve` (this anti-forgery channel is kept even though you are trusted).
 5. Prints the scoreboard + threads, and with `--post`, publishes them via `gh` as you.
