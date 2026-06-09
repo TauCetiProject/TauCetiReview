@@ -485,6 +485,10 @@ def main():
     ap.add_argument("--merge-path-prefix", default="TauCeti/",
                     help="auto-merge only PRs whose every changed path is under this prefix; "
                          "anything else (infra) is left for human merge")
+    ap.add_argument("--merge-allow-file", action="append", default=["TauCeti.lean"],
+                    help="extra exact paths (besides --merge-path-prefix) an auto-mergeable PR "
+                         "may touch; defaults to the root aggregator TauCeti.lean so a PR can make "
+                         "a new module reachable from the root. Repeatable.")
     ap.add_argument("--merge-decision-file", default="",
                     help="write the auto-merge decision JSON here for a separate merge step")
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
@@ -761,21 +765,26 @@ def main():
     if a.post_plan_file:
         pathlib.Path(a.post_plan_file).write_text(json.dumps(plan, indent=2))
 
-    # Merge gate: every rubric green on HEAD (fresh, not stale) and TauCeti/-only.
+    # Merge gate: every rubric green on HEAD (fresh, not stale), and every changed
+    # path under --merge-path-prefix or an allowed root file (--merge-allow-file,
+    # default TauCeti.lean — so a PR may make a new module reachable from the root).
     if a.merge_decision_file:
         merge_ok, reason = False, "auto-merge not enabled"
         if a.auto_merge:
             paths = changed_paths(diff_full)
-            code_only = bool(paths) and all(p.startswith(a.merge_path_prefix) for p in paths)
+            allow = set(a.merge_allow_file or [])
+            code_only = bool(paths) and all(
+                p.startswith(a.merge_path_prefix) or p in allow for p in paths)
             all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
             if not head:
                 reason = "no head_sha; refusing to merge"
             elif not all_green:
                 reason = f"not all rubrics green on HEAD: {[r for r in candidates if states[r] != 'green']}"
             elif not code_only:
-                reason = f"PR touches paths outside {a.merge_path_prefix}; needs human merge"
+                reason = (f"PR touches paths outside {a.merge_path_prefix} "
+                          f"(allowed extras: {sorted(allow)}); needs human merge")
             else:
-                merge_ok, reason = True, f"all rubrics green on {head[:7]}; {a.merge_path_prefix}-only"
+                merge_ok, reason = True, f"all rubrics green on {head[:7]}; {a.merge_path_prefix}+root only"
         pathlib.Path(a.merge_decision_file).write_text(
             json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
         print(f"[auto-merge] {merge_ok}: {reason}")
