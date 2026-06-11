@@ -9,7 +9,11 @@ round was not `approve`. The workflow commits the store after the run.
 """
 import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, shutil, subprocess, sys, tempfile
 
-DEFAULT_RUBRICS = ["scope", "correctness", "reuse", "attribution", "api-design",
+# Rubrics run in this order, and a `block` halts the round, so the block-capable integrity
+# angles go first, fail-fast style: ordered by observed block rate over cost (ledger data —
+# correctness and reuse block as often as scope but cost a third as much; attribution has
+# not blocked yet). The non-blocking style angles follow in their README order.
+DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
                    "generality", "placement", "naming", "documentation", "proof-quality",
                    "deprecation"]
 CLAUDE_MODEL = "claude-opus-4-8"
