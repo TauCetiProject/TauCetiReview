@@ -9,11 +9,14 @@ linter set, the import boundary) is already satisfied and no agent re-checks it.
 
 ## The angles
 
+The table is in review order: rubrics run one at a time and a `block` halts the round, so the
+block-capable integrity angles run first (cheapest, most-likely-to-block earliest).
+
 | Rubric | Question | Can block? |
 | --- | --- | --- |
-| [`scope`](scope.md) | Is this on the roadmap, and a single topic? | yes |
 | [`correctness`](correctness.md) | Do the statements and definitions say what they should? | yes |
 | [`reuse`](reuse.md) | Does it reuse Mathlib / TauCeti instead of reinventing? | yes (outright duplication) |
+| [`scope`](scope.md) | Is this on the roadmap, and a single topic? | yes |
 | [`attribution`](attribution.md) | Does it credit its formal and informal sources? | yes (clear missing credit) |
 | [`api-design`](api-design.md) | Minimal public surface, complete characteristic API? | no |
 | [`generality`](generality.md) | Weakest assumptions; natural level? | no |
