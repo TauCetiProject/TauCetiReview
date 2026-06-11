@@ -4,8 +4,9 @@
 Reviews a PR with agentic CLIs (claude / codex, random per rubric, read-only), posts an
 aggregated verdict, and records spend. State lives in a `--store` directory (a checkout of
 the `reviews` branch of TauCetiReview): `ledger.json` plus `reviews/<pr>/<round>/`. A daily
-USD budget halts spending. With `--auto-subset`, a re-review runs only the rubrics whose last
-round was not `approve`. The workflow commits the store after the run.
+USD budget halts spending, and a `block` verdict halts the round early — the rubrics not yet
+run stay deferred until the block clears. With `--auto-subset`, a re-review runs only the
+rubrics whose last round was not `approve`. The workflow commits the store after the run.
 """
 import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, shutil, subprocess, sys, tempfile
 
@@ -315,9 +316,14 @@ def state_of(cf, head_sha):
     return "error"
 
 
+def is_unresolved(state):
+    """States holding an adverse verdict (vs `absent`, which is merely not yet run)."""
+    return state in ("blocking_request", "blocking_block", "error")
+
+
 def is_blocking(state):
     """States that must be (re-)run before merge: unresolved findings or never-run rubrics."""
-    return state in ("blocking_request", "blocking_block", "error", "absent")
+    return is_unresolved(state) or state == "absent"
 
 
 def overall_label(states, stopped):
@@ -653,7 +659,7 @@ def main():
     if not providers:
         print(f"no usable providers in --providers={a.providers!r}", file=sys.stderr)
         sys.exit(1)
-    ran, stopped = [], None
+    ran, stopped, halted = [], None, None
 
     def run_one(rubric):
         nonlocal spent_today
@@ -700,30 +706,47 @@ def main():
               f"today=${spent_today:.2f}")
 
     # Phase 1: the queued rubrics. Reserve before spending so a call can't breach the cap.
+    # A `block` verdict halts the round: blocked code gets reworked or abandoned, and approvals
+    # bought on this commit go stale at the fix push anyway, so reviewing the remaining rubrics
+    # now is spend with nothing kept. They stay `absent` and queue again once the block clears.
     for rubric in queue:
         if spent_today + a.max_call_cost > a.daily_budget:
             stopped = rubric
             break
         run_one(rubric)
+        if state_of(state_map.get(rubric), head) == "blocking_block":
+            halted = rubric
+            break
 
-    # Phase 2: once nothing is blocking, sweep stale greens onto HEAD. A reply that clears the
-    # last blocker finalizes toward merge the same way.
-    if a.mode in ("commit", "manual", "reply") and not stopped:
-        while not any(is_blocking(state_of(state_map.get(r), head)) for r in candidates):
-            stale = [r for r in candidates if state_of(state_map.get(r), head) == "stale"]
-            if not stale:
+    # Phase 2: once no rubric holds an adverse verdict, run what is not yet judged on HEAD —
+    # never-run rubrics (deferred by an earlier block halt) and stale greens. A reply that
+    # clears the last blocker finalizes toward merge the same way. A fresh `block` halts this
+    # phase just like phase 1.
+    if a.mode in ("commit", "manual", "reply") and not stopped and not halted:
+        while not any(is_unresolved(state_of(state_map.get(r), head)) for r in candidates):
+            todo = [r for r in candidates
+                    if state_of(state_map.get(r), head) in ("absent", "stale")]
+            if not todo:
                 break
-            for rubric in stale:
+            for rubric in todo:
                 if spent_today + a.max_call_cost > a.daily_budget:
                     stopped = rubric
                     break
                 run_one(rubric)
-            if stopped:
+                if state_of(state_map.get(rubric), head) == "blocking_block":
+                    halted = rubric
+                    break
+            if stopped or halted:
                 break
 
     states = {r: state_of(state_map.get(r), head) for r in candidates}
     overall = overall_label(list(states.values()), stopped)
-    budget_note = f"Deferred {stopped} and after to the next run." if stopped else ""
+    if stopped:
+        budget_note = f"Deferred {stopped} and after to the next run."
+    elif halted and any(s in ("absent", "stale") for s in states.values()):
+        budget_note = f"Halted at the `{halted}` block; the deferred rubrics run once it clears."
+    else:
+        budget_note = ""
 
     # This PR's running review spend (across its rounds), in small text at the foot of the
     # scoreboard. The current round's spend is not yet in a round record, so add it in.
@@ -793,9 +816,10 @@ def main():
     pr_state["rounds"].append(
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "mode": a.mode, "ran": ran, "states": states, "cost": round_cost,
-         "head_sha": head, "rubrics_version": rubrics_version})
+         "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version})
     print(f"\nROUND {round_num} ({a.mode}) {overall}  (ran {len(ran)}: {ran}; "
-          f"cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
+          + (f"halted at {halted} block; " if halted else "")
+          + f"cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
 
     if a.dry_run:
         print("[dry-run] not writing ledger.")
