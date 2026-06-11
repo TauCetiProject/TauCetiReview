@@ -10,7 +10,10 @@ live in [TauCetiRoadmap](https://github.com/FormalFrontier/TauCetiRoadmap).
 Reviewers run only after a PR's CI is green, so the mechanical layer (build, the axiom
 allowlist, the Mathlib linter set, the import boundary) is already satisfied. Each PR is then
 judged by several independent agents, one per angle, which post `approve` / `request_changes`
-/ `block` verdicts with evidence. Only the integrity angles may block.
+/ `block` verdicts with evidence. Only the integrity angles may block. Rubrics run one at a
+time, and a `block` halts the round: blocked code gets reworked or abandoned, so the remaining
+rubrics wait until the block clears rather than reviewing a commit that won't survive. (A
+manual `/review` is exempt — it always re-reviews every rubric.)
 
 ## Rubrics
 
