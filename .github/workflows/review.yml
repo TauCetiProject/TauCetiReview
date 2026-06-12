@@ -187,7 +187,7 @@ jobs:
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
-            --rubrics-sha "$RUBRICS_SHA" \
+            --rubrics-sha "$RUBRICS_SHA" --archive-dir store/outbox \
             --ci-build "$CI_BUILD" $AM --merge-decision-file "$PWD/merge.json" \
             --keys-dir "$RUNNER_TEMP/keys" \
             --scoreboard-file "$PWD/scoreboard.md" --threads-dir "$PWD/threads" \
@@ -213,9 +213,36 @@ jobs:
         run: |
           if [ -s post_plan.json ]; then
             python3 runner/post.py --repo FormalFrontier/TauCeti --pr "$PR" \
-              --plan "$PWD/post_plan.json" --store store
+              --plan "$PWD/post_plan.json" --store store --archive-dir store/outbox
           else
             echo "no post plan (runner did not run, e.g. round cap); nothing to post"
+          fi
+
+      # ---- Archive sync: drain store/outbox into TauCetiData. Best-effort (the App may not
+      # ---- cover TauCetiData yet); on failure the outbox rides along in the reviews-branch
+      # ---- store commit below and syncs on a later run.
+      - name: Mint archive token (TauCetiData contents:write)
+        id: archive_token
+        if: always()
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: TauCetiData
+          permission-contents: write
+
+      - name: Sync archive to TauCetiData
+        if: always()
+        continue-on-error: true
+        env: { TOKEN: "${{ steps.archive_token.outputs.token }}" }
+        run: |
+          if [ -d store/outbox ] && [ -n "$TOKEN" ]; then
+            python3 runner/archive.py sync --store store --data-dir "$RUNNER_TEMP/tauceti-data" \
+              --remote "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiData"
+          else
+            echo "no outbox or no token; skipping archive sync"
           fi
 
       - name: Mint store token (TauCetiReview contents:write)

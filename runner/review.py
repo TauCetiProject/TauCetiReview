@@ -10,6 +10,8 @@ rubrics whose last round was not `approve`. The workflow commits the store after
 """
 import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, shutil, subprocess, sys, tempfile, time
 
+import archive
+
 # Rubrics run in this order, and a `block` halts the round, so the block-capable integrity
 # angles go first, fail-fast style: ordered by observed block rate over cost (ledger data —
 # correctness and reuse block as often as scope but cost a third as much; attribution has
@@ -599,6 +601,13 @@ def main():
     ap.add_argument("--rubrics-sha-approx", action="store_true",
                     help="mark --rubrics-sha as approximate (resolved from the remote main rather "
                          "than the actual checkout)")
+    ap.add_argument("--archive-dir", default="",
+                    help="outbox directory (usually <store>/outbox): write one durable archive "
+                         "record per run and per round here, for a later sync to TauCetiData. "
+                         "Empty disables archiving")
+    ap.add_argument("--arm", default="production",
+                    help="experiment arm recorded on archive records: production, or "
+                         "shadow:<label> for an A/B arm that must not touch the live PR")
     ap.add_argument("--ci-build", default="",
                     help="conclusion of CI's build check for the head commit (e.g. 'success'), as "
                          "fetched by the trusted caller. When 'success', the prompt asserts the "
@@ -726,7 +735,8 @@ def main():
         (outdir / "scoreboard.md").write_text(sb)
         if a.post_plan_file:
             pathlib.Path(a.post_plan_file).write_text(json.dumps(
-                {"head_sha": head, "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
+                {"head_sha": head, "round": round_num,
+                 "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
                  "scoreboard_body": str(sb_path), "threads": []}, indent=2))
         print("[init] wrote in-progress scoreboard + scoreboard-only post plan.")
         return
@@ -747,7 +757,8 @@ def main():
         (outdir / "scoreboard.md").write_text(sb)
         if a.post_plan_file:
             pathlib.Path(a.post_plan_file).write_text(json.dumps(
-                {"head_sha": head, "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
+                {"head_sha": head, "round": round_num,
+                 "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
                  "scoreboard_body": str(sb_path), "threads": []}, indent=2))
         if a.merge_decision_file:
             pathlib.Path(a.merge_decision_file).write_text(json.dumps(
@@ -861,6 +872,43 @@ def main():
         for fnd in (vo.get("findings") or []) if vo else []:
             if fnd.get("file"):
                 fnd["file"] = normalize_finding_path(fnd["file"], a.code_path)
+        # Durable archive record for this execution — an explicit allowlist of runner-verified
+        # fields (never session ids or raw stderr; the destination repo is public). The raw
+        # result still lands in the store outdir below, so a failed archive write loses nothing.
+        if a.archive_dir and not a.dry_run:
+            vo = res.get("verdict_obj") or {}
+            rec = {
+                "schema": "tauceti.run/v1", "run_id": res["run_id"],
+                "dedupe_key": "|".join([a.repo, str(a.pr), head, rubric, model,
+                                        rubrics_version, a.arm, str(round_num)]),
+                "source": "live" if a.arm == "production" else "shadow", "arm": a.arm,
+                "prompt_policy": "reactivation" if reblock else "fresh",
+                "repo": a.repo, "pr": int(a.pr), "round": round_num, "head_sha": head,
+                "base_ref_oid": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
+                "rubric": rubric, "rubrics_repo": a.rubrics_repo,
+                "rubrics_sha": a.rubrics_sha or None,
+                "rubrics_sha_approx": a.rubrics_sha_approx or None,
+                "rubrics_version": rubrics_version,
+                "provider": provider, "model": model, "mode": a.mode, "auth": a.auth,
+                "ci": bool(os.environ.get("GITHUB_ACTIONS")) or None,
+                "prompt_sha256": res["prompt_sha256"],
+                "diff_sha256": prov.get("diff_sha256"),
+                "diff_prompt_sha256": prov.get("diff_prompt_sha256"),
+                "diff_prompt_truncated": prov.get("diff_prompt_truncated"),
+                "started_at": started_at, "duration_s": res["duration_s"],
+                "attempts": [{k: v for k, v in at.items() if k != "session_id"}
+                             for at in attempts],
+                "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
+                "cost_estimated": res.get("cost_estimated"),
+                "verdict": vo.get("verdict") or "error", "confidence": vo.get("confidence"),
+                "summary": vo.get("summary"), "findings": vo.get("findings") or [],
+                "fidelity": "exact",
+            }
+            try:
+                archive.archive_run(a.archive_dir, {k: v for k, v in rec.items() if v is not None},
+                                    transcript_text=res.get("text"), diff_text=diff_full)
+            except Exception as e:
+                print(f"WARNING: archive write failed for {rubric}: {e}", file=sys.stderr)
         cf = update_case_file(state_map, rubric, res, head)
         if is_reply and reply_text:
             cf["author_replies"].append(
@@ -941,7 +989,8 @@ def main():
                          paths_sorted[0] if paths_sorted else "")
     threads_dir = pathlib.Path(a.threads_dir) if a.threads_dir else (outdir / "threads")
     threads_dir.mkdir(parents=True, exist_ok=True)
-    plan = {"head_sha": head, "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
+    plan = {"head_sha": head, "round": round_num,
+                 "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
             "scoreboard_body": str(sb_path), "threads": []}
     # Only act on threads for rubrics that ran this invocation; others are unchanged.
     for rubric in ran:
@@ -1001,6 +1050,26 @@ def main():
     print(f"\nROUND {round_num} ({a.mode}) {overall}  (ran {len(ran)}: {ran}; "
           + (f"halted at {halted} block; " if halted else "")
           + f"cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
+
+    if a.archive_dir and not a.dry_run:
+        suffix = "" if a.arm == "production" else "-" + a.arm.split(":", 1)[-1]
+        rrec = {"schema": "tauceti.round/v1", "round_id": f"{a.pr}-{round_num}{suffix}",
+                "repo": a.repo, "pr": int(a.pr), "round": round_num,
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "mode": a.mode, "arm": a.arm,
+                "source": "live" if a.arm == "production" else "shadow",
+                "head_sha": head, "base_ref_oid": a.base_sha or None,
+                "merge_base_sha": a.merge_base_sha or None,
+                "rubrics_sha": a.rubrics_sha or None, "rubrics_version": rubrics_version,
+                "diff_sha256": prov.get("diff_sha256"), "ran": ran,
+                "run_ids": [r.get("run_id") for r in run_results], "states": states,
+                "overall": overall, "cost": round_cost, "halted_at": halted,
+                "scoreboard_sha256": hashlib.sha256(scoreboard_md.encode()).hexdigest(),
+                "fidelity": "exact"}
+        try:
+            archive.archive_round(a.archive_dir, {k: v for k, v in rrec.items() if v is not None})
+        except Exception as e:
+            print(f"WARNING: archive round write failed: {e}", file=sys.stderr)
 
     if a.dry_run:
         print("[dry-run] not writing ledger.")

@@ -181,6 +181,12 @@ def main():
                     help="abort unless the PR head matches this commit (a prefix is fine). Use it "
                          "right after a push so a propagation lag can't make the review run against "
                          "a stale head")
+    ap.add_argument("--no-archive", action="store_true",
+                    help="skip writing durable archive records (and the TauCetiData sync). "
+                         "Default: every run is archived to <store>/outbox and synced")
+    ap.add_argument("--data-dir", default="",
+                    help="TauCetiData checkout the archive sync pushes through "
+                         "(default: a cached clone under the cache dir)")
     a = ap.parse_args()
 
     need("git", "Install git.")
@@ -298,6 +304,7 @@ def main():
               + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
 
     rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
+    outbox = "" if a.no_archive else str(store / "outbox")
     plan = work / "post_plan.json"
     cmd = [sys.executable, str(repo_dir / "runner" / "review.py"),
            "--repo", a.repo, "--pr", str(a.pr), "--mode", a.mode,
@@ -308,6 +315,7 @@ def main():
            "--store", str(store), "--head-sha", head, "--base-sha", base,
            "--merge-base-sha", merge_base_sha(a.repo, base, head),
            "--rubrics-sha", rub_sha, *(["--rubrics-sha-approx"] if rub_approx else []),
+           *(["--archive-dir", outbox] if outbox else []),
            "--ci-build", ci_build or "", "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
            "--scoreboard-file", str(work / "scoreboard.md"),
@@ -335,12 +343,23 @@ def main():
         print("posting scoreboard + threads to the PR as you…", file=sys.stderr)
         env = {**os.environ, "GH_TOKEN": token}
         run([sys.executable, str(repo_dir / "runner" / "post.py"),
-             "--repo", a.repo, "--pr", str(a.pr), "--plan", str(plan), "--store", str(store)],
+             "--repo", a.repo, "--pr", str(a.pr), "--plan", str(plan), "--store", str(store),
+             *(["--archive-dir", outbox] if outbox else [])],
             env=env)
         print("posted.", file=sys.stderr)
     else:
         print("dry run — nothing posted. Re-run with --post to publish this review.",
               file=sys.stderr)
+
+    # Drain the archive outbox into TauCetiData. Best-effort by design: a push outage keeps the
+    # records in <store>/outbox, and the next run (or `archive.py sync`) lands them.
+    if outbox and pathlib.Path(outbox).is_dir():
+        data_dir = a.data_dir or str(CACHE_DIR / "data" / "TauCetiData")
+        r = run([sys.executable, str(repo_dir / "runner" / "archive.py"), "sync",
+                 "--store", str(store), "--data-dir", data_dir], allow_fail=True)
+        if r.returncode != 0:
+            print("note: archive sync failed; records remain in the outbox and will sync "
+                  "on a later run.", file=sys.stderr)
 
     if not a.keep and not a.workdir:
         shutil.rmtree(work, ignore_errors=True)
