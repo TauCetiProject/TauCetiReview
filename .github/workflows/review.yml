@@ -51,6 +51,14 @@ jobs:
         run: |
           HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          # Provenance for the review comments and meta block: the PR base tip, the merge base
+          # (the actual left side of the three-dot diff below), and the rubrics+engine commit.
+          BASE_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json baseRefOid -q .baseRefOid)
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          MERGE_BASE=$(gh api "/repos/FormalFrontier/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
+            --jq '.merge_base_commit.sha' 2>/dev/null || echo "")
+          echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
+          echo "RUBRICS_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           # CI's build-check conclusion for this head (GitHub's own result, not author input): the
           # engine uses it to tell reviewers the code compiles so they don't re-litigate the build.
           CI_BUILD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
@@ -99,7 +107,8 @@ jobs:
         run: |
           python3 runner/review.py --repo FormalFrontier/TauCeti --pr "$PR" --mode init \
             --rubrics-dir rubrics --tool-cwd . --diff-file diff.txt --store store \
-            --head-sha "$HEAD_SHA" \
+            --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
+            --rubrics-sha "$RUBRICS_SHA" \
             --scoreboard-file "$PWD/scoreboard.md" --post-plan-file "$PWD/post_plan.json"
           python3 runner/post.py --repo FormalFrontier/TauCeti --pr "$PR" \
             --plan "$PWD/post_plan.json" --store store
@@ -177,7 +186,9 @@ jobs:
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
-            --head-sha "$HEAD_SHA" --ci-build "$CI_BUILD" $AM --merge-decision-file "$PWD/merge.json" \
+            --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
+            --rubrics-sha "$RUBRICS_SHA" \
+            --ci-build "$CI_BUILD" $AM --merge-decision-file "$PWD/merge.json" \
             --keys-dir "$RUNNER_TEMP/keys" \
             --scoreboard-file "$PWD/scoreboard.md" --threads-dir "$PWD/threads" \
             --post-plan-file "$PWD/post_plan.json"

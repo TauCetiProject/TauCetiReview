@@ -8,7 +8,7 @@ USD budget halts spending, and a `block` verdict halts the round early — the r
 run stay deferred until the block clears. With `--auto-subset`, a re-review runs only the
 rubrics whose last round was not `approve`. The workflow commits the store after the run.
 """
-import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, shutil, subprocess, sys, tempfile
+import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, shutil, subprocess, sys, tempfile, time
 
 # Rubrics run in this order, and a `block` halts the round, so the block-capable integrity
 # angles go first, fail-fast style: ordered by observed block rate over cost (ledger data —
@@ -130,6 +130,71 @@ def rubrics_fingerprint(rubrics_dir):
         h.update(p.name.encode())
         h.update(p.read_bytes())
     return h.hexdigest()[:16]
+
+
+def sanitize(text, limit=2000):
+    """Model-derived text rendered into a comment body is untrusted: strip HTML comments so a
+    prompt-injected reviewer cannot forge a `tauceti-meta`/`tauceti-rubric` marker, drop control
+    characters, and cap the length. Applied at render time only — stored records keep the raw
+    text."""
+    if not text:
+        return ""
+    t = re.sub(r"<!--.*?(-->|$)", "", str(text), flags=re.S)
+    t = "".join(ch for ch in t if ch == "\n" or ord(ch) >= 32)
+    return t[:limit]
+
+
+def meta_block(kind, **payload):
+    """Hidden machine-readable provenance, the LAST line of every rendered body. Values come only
+    from runner-verified inputs (sanitize() upstream keeps model text out of the comment-marker
+    namespace); a scraper trusts the block only on the final line of a bot-authored comment."""
+    obj = {"kind": kind}
+    obj.update((k, v) for k, v in payload.items() if v not in (None, "", []))
+    return "<!--tauceti-meta:v1 " + json.dumps(obj, separators=(",", ":"), sort_keys=True) + "-->"
+
+
+def fmt_tok(n):
+    """Token counts for the visible footer: 299202 -> '299k', 3407 -> '3.4k', 950 -> '950'."""
+    if not n:
+        return "0"
+    if n >= 1000:
+        s = f"{n / 1000:.1f}"
+        return (s[:-2] if s.endswith(".0") else s) + "k"
+    return str(n)
+
+
+def rubric_url(prov, rubric=None):
+    """Link to the rubrics pinned at the exact commit reviewed from, falling back to main."""
+    repo = (prov or {}).get("rubrics_repo", "FormalFrontier/TauCetiReview")
+    sha = (prov or {}).get("rubrics_sha")
+    if rubric:
+        return f"https://github.com/{repo}/blob/{sha or 'main'}/rubrics/{rubric}.md"
+    return f"https://github.com/{repo}/tree/{sha or 'main'}/rubrics"
+
+
+def diff_url(prov):
+    """The exact diff reviewed, as a three-dot compare (merge-base semantics — what `gh pr diff`
+    produces); both endpoint SHAs stay visible in the URL."""
+    if not (prov and prov.get("base_sha") and prov.get("head_sha")):
+        return ""
+    return (f"https://github.com/{prov['repo']}/compare/"
+            f"{prov['base_sha']}...{prov['head_sha']}")
+
+
+def run_meta(res):
+    """The per-run slice of the meta block: runner-verified execution facts, no model text."""
+    u = res.get("usage") or {}
+    tok = {k: v for k, v in
+           (("in", u.get("input_tokens")),
+            ("cin", u.get("cached_input_tokens") or u.get("cache_read_input_tokens")),
+            ("out", u.get("output_tokens"))) if v}
+    v = res.get("verdict_obj") or {}
+    return {k: val for k, val in
+            (("id", res.get("run_id")), ("rubric", res.get("rubric")),
+             ("provider", res.get("provider")), ("model", res.get("model")),
+             ("verdict", v.get("verdict") or "error"), ("secs", res.get("duration_s")),
+             ("tok", tok or None), ("usd", res.get("cost_usd")),
+             ("est", res.get("cost_estimated") or None)) if val is not None}
 
 
 def ci_status_block(build_status, head_sha):
@@ -357,7 +422,12 @@ def update_case_file(state_map, rubric, res, head_sha):
     cf.update(rubric=rubric, provider=res.get("provider"), model=res.get("model"),
               verdict=verdict, confidence=v.get("confidence"),
               summary=v.get("summary", ""), findings=v.get("findings") or [],
-              reviewed_sha=head_sha)
+              reviewed_sha=head_sha,
+              # Execution provenance, so a later renderer or analysis can surface runtime/tokens
+              # for this rubric even on a round that did not re-run it.
+              run_id=res.get("run_id"), started_at=res.get("started_at"),
+              duration_s=res.get("duration_s"), usage=res.get("usage"),
+              cost_usd=res.get("cost_usd"), cost_estimated=res.get("cost_estimated"))
     if verdict == "approve":
         cf["approved_sha"] = head_sha
     cf.setdefault("thread", None)
@@ -416,26 +486,45 @@ def pick_anchor(cf, fallback_path, changed=None):
     return fallback_path
 
 
-def render_thread(cf):
+def render_thread(cf, prov=None):
     """A blocking rubric's review-thread body. The hidden marker lets a reply map back to the
-    rubric (Stage 2)."""
+    rubric (Stage 2); the meta block at the end carries machine-readable provenance."""
     emoji = {"block": "⛔", "request_changes": "🟡", "error": "⚠️"}
     v = cf.get("verdict", "error")
     lines = [f"<!--tauceti-rubric:{cf['rubric']}-->",
              f"### {emoji.get(v, '•')} {cf['rubric']} — {v}  "
-             f"`{cf.get('provider')}/{cf.get('model')}`", "", cf.get("summary", ""), ""]
+             f"`{cf.get('provider')}/{cf.get('model')}`", "", sanitize(cf.get("summary", "")), ""]
     for f in (cf.get("findings") or []):
-        loc = (f.get("file") or "") + (f":{f['line']}" if f.get("line") else "")
-        lines.append(f"- {('`' + loc + '` — ') if loc else ''}{f.get('issue', '')}"
-                     + (f" _Fix:_ {f['fix']}" if f.get("fix") else ""))
+        loc = sanitize((f.get("file") or "") + (f":{f['line']}" if f.get("line") else ""), 300)
+        lines.append(f"- {('`' + loc + '` — ') if loc else ''}{sanitize(f.get('issue', ''))}"
+                     + (f" _Fix:_ {sanitize(f['fix'])}" if f.get("fix") else ""))
     if not cf.get("findings"):
         lines.append("(no parseable verdict this round)")
     lines.append("\nReply in this thread to contest a finding; that re-runs **only** this rubric. "
                  "(To fix it, just push a commit — that re-reviews on its own.)")
+    sub = [f"`{cf.get('provider')}/{cf.get('model')}`"]
+    if cf.get("duration_s"):
+        sub.append(f"{cf['duration_s']:.0f}s")
+    u = cf.get("usage") or {}
+    if u.get("input_tokens") or u.get("output_tokens"):
+        sub.append(f"{fmt_tok(u.get('input_tokens'))} in / {fmt_tok(u.get('output_tokens'))} out tokens")
+    if diff_url(prov):
+        sub.append(f"reviewing [this diff]({diff_url(prov)})")
+    sub.append(f"[rubric]({rubric_url(prov, cf['rubric'])})")
+    lines += ["", f"<sub>{' · '.join(sub)}</sub>", "",
+              meta_block("thread", rubric=cf["rubric"], **thread_meta(cf, prov))]
     return "\n".join(lines)
 
 
-def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cost_line=""):
+def thread_meta(cf, prov):
+    """Provenance payload shared by a thread body and its 'now passing' close note."""
+    return {**(prov or {}),
+            "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "runs": [run_meta({**cf, "verdict_obj": {"verdict": cf.get("verdict")}})]}
+
+
+def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cost_line="",
+                      prov=None, runs=None):
     icon = {"green": "✅", "stale": "♻️", "blocking_request": "🟡", "blocking_block": "⛔",
             "error": "⚠️", "absent": "▫️"}
     word = {"green": "approved", "stale": "stale (re-run pending)",
@@ -443,19 +532,31 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
             "error": "error", "absent": "not yet run"}
     lines = ["<!--tauceti-scoreboard-->", f"## AI review — {overall}", "",
              "Each rubric is judged independently by Opus or Codex; only integrity angles can "
-             "block. See the "
-             "[rubrics](https://github.com/FormalFrontier/TauCetiReview/tree/main/rubrics).", "",
+             f"block. See the [rubrics]({rubric_url(prov)}).", "",
              "| | rubric | state | judge | summary |", "|---|---|---|---|---|"]
     for r in candidates:
         cf = state_map.get(r) or {}
         s = state_of(cf, head_sha)
         judge = f"{cf.get('provider')}/{cf.get('model')}" if cf.get("provider") else "—"
-        summ = (cf.get("summary") or "").replace("\n", " ").replace("|", "\\|")
-        lines.append(f"| {icon[s]} | {r} | {word[s]} | `{judge}` | {summ} |")
+        summ = sanitize(cf.get("summary") or "").replace("\n", " ").replace("|", "\\|")
+        name = f"[{r}]({rubric_url(prov, r)})" if (prov or {}).get("rubrics_sha") else r
+        lines.append(f"| {icon[s]} | {name} | {word[s]} | `{judge}` | {summ} |")
     note = "♻️ = approved on an earlier commit, re-run before merge."
     lines += ["", f"{note}{(' ' + budget_note) if budget_note else ''}"]
+    sub = []
+    if diff_url(prov):
+        sub.append(f"Reviewing [this diff]({diff_url(prov)}) at head `{head_sha[:7]}`")
+    if (prov or {}).get("rubrics_sha"):
+        sha = prov["rubrics_sha"]
+        sub.append(f"rubrics @ [`{sha[:7]}`]({rubric_url(prov)})")
     if cost_line:
-        lines += ["", f"<sub>{cost_line}</sub>"]
+        sub.append(cost_line)
+    if sub:
+        lines += ["", f"<sub>{'. '.join(s.rstrip('.') for s in sub)}.</sub>"]
+    lines += ["", meta_block(
+        "scoreboard", **(prov or {}),
+        ts=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        runs=[run_meta(r) for r in (runs or [])])]
     return "\n".join(lines)
 
 
@@ -484,6 +585,20 @@ def main():
     ap.add_argument("--head-sha", default="",
                     help="PR head commit; approvals are bound to it, so a new commit re-runs all "
                          "blocking rubrics instead of carrying forward stale approvals")
+    ap.add_argument("--base-sha", default="",
+                    help="the PR base ref commit (baseRefOid), for the visible compare link and "
+                         "the meta block. NOT necessarily the merge base; see --merge-base-sha")
+    ap.add_argument("--merge-base-sha", default="",
+                    help="merge base of base and head — the actual left side of the reviewed "
+                         "diff (`gh pr diff` is three-dot). Recorded as provenance")
+    ap.add_argument("--rubrics-repo", default="FormalFrontier/TauCetiReview",
+                    help="owner/name the pinned rubric links point into")
+    ap.add_argument("--rubrics-sha", default="",
+                    help="git commit SHA of the rubrics+engine checkout, for pinned rubric links "
+                         "and the meta block (rubrics_version hashes content; this links it)")
+    ap.add_argument("--rubrics-sha-approx", action="store_true",
+                    help="mark --rubrics-sha as approximate (resolved from the remote main rather "
+                         "than the actual checkout)")
     ap.add_argument("--ci-build", default="",
                     help="conclusion of CI's build check for the head commit (e.g. 'success'), as "
                          "fetched by the trusted caller. When 'success', the prompt asserts the "
@@ -574,6 +689,14 @@ def main():
     candidates = [r.strip() for r in a.rubrics.split(",") if r.strip()]
     rubrics_version = rubrics_fingerprint(pathlib.Path(a.rubrics_dir))
     head = a.head_sha
+    # Provenance shared by every rendered body and the meta blocks: runner-verified facts about
+    # what is being reviewed and with which rubric version. Keys with empty values are dropped
+    # by meta_block, so partial provenance (e.g. no base sha) degrades gracefully.
+    prov = {"repo": a.repo, "pr": int(a.pr), "round": round_num, "mode": a.mode,
+            "head_sha": head, "base_sha": a.base_sha, "merge_base_sha": a.merge_base_sha,
+            "rubrics_repo": a.rubrics_repo, "rubrics_sha": a.rubrics_sha,
+            "rubrics_sha_approx": a.rubrics_sha_approx or None,
+            "rubrics_version": rubrics_version}
     pr_state = ledger["prs"].setdefault(str(a.pr), {})
     pr_state.setdefault("rounds", [])
     pr_state.setdefault("state", {})            # per-rubric case files (= scoreboard/staleness)
@@ -596,7 +719,8 @@ def main():
         outdir.mkdir(parents=True, exist_ok=True)
         pr_total = sum(r.get("cost", 0) for r in pr_state.get("rounds", []))
         cost_line = f"Review spend: ${pr_total:.2f}." if pr_total else ""
-        sb = render_scoreboard(candidates, state_map, head, "in progress — running now…", "", cost_line)
+        sb = render_scoreboard(candidates, state_map, head, "in progress — running now…", "",
+                               cost_line, prov=prov)
         sb_path = pathlib.Path(a.scoreboard_file) if a.scoreboard_file else (outdir / "scoreboard.md")
         sb_path.write_text(sb)
         (outdir / "scoreboard.md").write_text(sb)
@@ -617,7 +741,7 @@ def main():
         outdir.mkdir(parents=True, exist_ok=True)
         overall = (f"paused (daily round cap reached, {todays_rounds}/{a.max_rounds_per_day}; "
                    "reviews resume next UTC day)")
-        sb = render_scoreboard(candidates, state_map, head, overall, "")
+        sb = render_scoreboard(candidates, state_map, head, overall, "", prov=prov)
         sb_path = pathlib.Path(a.scoreboard_file) if a.scoreboard_file else (outdir / "scoreboard.md")
         sb_path.write_text(sb)
         (outdir / "scoreboard.md").write_text(sb)
@@ -636,9 +760,15 @@ def main():
     if a.reply_file and pathlib.Path(a.reply_file).exists():
         reply_text = pathlib.Path(a.reply_file).read_text()[:8000].strip()
 
-    # Base context shared by every rubric this invocation.
+    # Base context shared by every rubric this invocation. The prompt diff is capped, so record
+    # both hashes: diff_sha256 is the full reviewed artifact, diff_prompt_sha256 what the
+    # reviewers actually saw. They differ only when diff_prompt_truncated.
     diff_full = pathlib.Path(a.diff_file).read_text()
     diff = diff_full[:120000]
+    prov["diff_sha256"] = hashlib.sha256(diff_full.encode()).hexdigest()
+    if len(diff_full) > len(diff):
+        prov["diff_prompt_truncated"] = True
+        prov["diff_prompt_sha256"] = hashlib.sha256(diff.encode()).hexdigest()
     src = ""
     if a.mathlib_path:
         src += f"- Mathlib source: `./{a.mathlib_path}` (grep before claiming a declaration exists).\n"
@@ -680,7 +810,7 @@ def main():
     if not providers:
         print(f"no usable providers in --providers={a.providers!r}", file=sys.stderr)
         sys.exit(1)
-    ran, stopped, halted = [], None, None
+    ran, run_results, stopped, halted = [], [], None, None
 
     def run_one(rubric):
         nonlocal spent_today
@@ -695,13 +825,35 @@ def main():
         provider = (cf_prev.get("provider") if cf_prev and cf_prev.get("provider") in providers
                     else random.choice(providers))
         fn, model = runners[provider]
-        res = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys, subscription))
+        started_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        attempts, t0 = [], time.monotonic()
+
+        def attempt():
+            t = time.monotonic()
+            r = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys, subscription))
+            # Keep each attempt's execution facts: the retry path returns only the last result,
+            # but the first attempt's spend/usage/failure is provenance too.
+            attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
+                                               "usage", "session_id", "parse_error")
+                             if r.get(k) is not None} | {"secs": round(time.monotonic() - t, 1)})
+            return r
+
+        res = attempt()
         cost = res.get("cost_usd") or 0.0
         if res["returncode"] != 0 or extract_verdict(res.get("text", ""), marker) is None:
-            res = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys, subscription))  # one retry
+            res = attempt()  # one retry
             cost += res.get("cost_usd") or 0.0  # count every attempt
         res["cost_usd"] = round(cost, 6)
+        # A stable per-execution id: readable prefix + a short hash of the identifying fields.
+        rid = hashlib.sha256("|".join(
+            [a.repo, str(a.pr), head, rubric, model, rubrics_version, started_at]
+        ).encode()).hexdigest()[:6]
         res.update(provider=provider, model=model, rubric=rubric,
+                   run_id=(f"r-{started_at.translate(str.maketrans('', '', '-:'))}"
+                           f"-{a.pr}-{rubric}-{rid}"),
+                   started_at=started_at, duration_s=round(time.monotonic() - t0, 1),
+                   attempts=attempts,
+                   prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
                    verdict_obj=extract_verdict(res.get("text", ""), marker))
         # Normalize finding file paths to PR-relative (strip the reviewer-workspace prefix) so the
         # rendered locations and the thread anchor are valid PR paths.
@@ -716,6 +868,7 @@ def main():
                  "by": "author", "body": reply_text})
         spent_today += cost
         ran.append(rubric)
+        run_results.append(res)
         (outdir / f"{rubric}.json").write_text(json.dumps(res, indent=2))
         # Persist spend + state incrementally so a later crash cannot lose what was billed.
         ledger["days"][day] = round(spent_today, 6)
@@ -777,7 +930,8 @@ def main():
     cost_line = f"Review spend: ${pr_total:.2f}."
 
     # Emit the scoreboard body, per-rubric thread bodies, and a post plan for the trusted step.
-    scoreboard_md = render_scoreboard(candidates, state_map, head, overall, budget_note, cost_line)
+    scoreboard_md = render_scoreboard(candidates, state_map, head, overall, budget_note, cost_line,
+                                      prov=prov, runs=run_results)
     (outdir / "scoreboard.md").write_text(scoreboard_md)
     sb_path = pathlib.Path(a.scoreboard_file) if a.scoreboard_file else (outdir / "scoreboard.md")
     if a.scoreboard_file:
@@ -796,14 +950,15 @@ def main():
         thread = cf.get("thread")
         bpath = threads_dir / f"{rubric}.md"
         if s in ("blocking_request", "blocking_block", "error"):
-            bpath.write_text(render_thread(cf))
+            bpath.write_text(render_thread(cf, prov=prov))
             plan["threads"].append(
                 {"rubric": rubric, "action": "upsert", "body": str(bpath),
                  "comment_id": (thread or {}).get("comment_id"),
                  "path": pick_anchor(cf, fallback_path, set(paths_sorted))})
         elif s in ("green", "stale") and thread:
             bpath.write_text(f"<!--tauceti-rubric:{rubric}-->\n### ✅ {rubric} — now passing on "
-                             f"`{head[:7]}`.")
+                             f"`{head[:7]}`.\n\n"
+                             + meta_block("thread", rubric=rubric, **thread_meta(cf, prov)))
             plan["threads"].append(
                 {"rubric": rubric, "action": "close", "body": str(bpath),
                  "comment_id": thread.get("comment_id"), "node_id": thread.get("node_id")})
@@ -838,7 +993,11 @@ def main():
     pr_state["rounds"].append(
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "mode": a.mode, "ran": ran, "states": states, "cost": round_cost,
-         "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version})
+         "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
+         "base_sha": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
+         "rubrics_sha": a.rubrics_sha or None, "diff_sha256": prov.get("diff_sha256"),
+         "diff_prompt_truncated": prov.get("diff_prompt_truncated"),
+         "run_ids": [r.get("run_id") for r in run_results]})
     print(f"\nROUND {round_num} ({a.mode}) {overall}  (ran {len(ran)}: {ran}; "
           + (f"halted at {halted} block; " if halted else "")
           + f"cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")

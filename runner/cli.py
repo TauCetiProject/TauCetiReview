@@ -92,6 +92,29 @@ def gh_json(repo, pr, fields):
     return json.loads(r.stdout)
 
 
+def merge_base_sha(repo, base, head):
+    """The merge base of base...head, from the compare API — the actual left side of the diff
+    `gh pr diff` produces (baseRefOid is the branch tip, which may have moved on). Best-effort."""
+    if not (base and head):
+        return ""
+    r = run(["gh", "api", f"/repos/{repo}/compare/{base}...{head}",
+             "--jq", ".merge_base_commit.sha"], capture=True, quiet=True, allow_fail=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def rubrics_repo_sha(repo_dir):
+    """The commit the rubrics+engine checkout is at, so review comments can link the rubric text
+    that actually ran. Falls back to the remote main tip (approximate) when the engine runs from
+    an installed package tree rather than a git checkout."""
+    r = run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+            capture=True, quiet=True, allow_fail=True)
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip(), False
+    r = run(["gh", "api", f"/repos/{REVIEW_REPO}/git/refs/heads/main",
+             "--jq", ".object.sha"], capture=True, quiet=True, allow_fail=True)
+    return (r.stdout.strip() if r.returncode == 0 else ""), True
+
+
 def fetch_thread_replies(repo, pr):
     """Gather author replies on the per-rubric review threads from GitHub, keyed by rubric, so a
     re-review audits the author's contest rather than re-judging the diff blind. A thread root
@@ -196,8 +219,10 @@ def main():
     work.mkdir(parents=True, exist_ok=True)
     print(f"workspace: {work}", file=sys.stderr)
 
-    # PR head, diff, and description (author-provided context, no more trusted than the diff).
-    head = gh_json(a.repo, a.pr, "headRefOid")["headRefOid"]
+    # PR head, base, diff, and description (author-provided context, no more trusted than the
+    # diff). The base/merge-base SHAs are provenance: they pin exactly which diff was reviewed.
+    refs = gh_json(a.repo, a.pr, "headRefOid,baseRefOid")
+    head, base = refs["headRefOid"], refs.get("baseRefOid", "")
     print(f"PR #{a.pr} head: {head[:12]}", file=sys.stderr)
     if a.expect_head and not (head.startswith(a.expect_head) or a.expect_head.startswith(head)):
         die(f"PR #{a.pr} head is {head[:12]}, expected {a.expect_head[:12]}. The push may not have "
@@ -272,6 +297,7 @@ def main():
         print("author replies on threads: "
               + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
 
+    rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
     plan = work / "post_plan.json"
     cmd = [sys.executable, str(repo_dir / "runner" / "review.py"),
            "--repo", a.repo, "--pr", str(a.pr), "--mode", a.mode,
@@ -279,7 +305,10 @@ def main():
            "--code-path", "code", "--roadmap-path", "roadmap",
            *mathlib_args,
            "--diff-file", str(work / "diff.txt"), "--pr-desc-file", str(work / "pr_desc.txt"),
-           "--store", str(store), "--head-sha", head, "--ci-build", ci_build or "", "--auth", a.auth,
+           "--store", str(store), "--head-sha", head, "--base-sha", base,
+           "--merge-base-sha", merge_base_sha(a.repo, base, head),
+           "--rubrics-sha", rub_sha, *(["--rubrics-sha-approx"] if rub_approx else []),
+           "--ci-build", ci_build or "", "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
            "--scoreboard-file", str(work / "scoreboard.md"),
            "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
