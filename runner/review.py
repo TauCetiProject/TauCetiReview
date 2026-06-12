@@ -562,6 +562,32 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
     return "\n".join(lines)
 
 
+def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
+                       scoreboard_md, rubrics_version):
+    """Durable round record for the archive (production and shadow rounds alike)."""
+    if not a.archive_dir or a.dry_run:
+        return
+    round_num = prov["round"]
+    suffix = "" if a.arm == "production" else "-" + a.arm.split(":", 1)[-1]
+    rrec = {"schema": "tauceti.round/v1", "round_id": f"{a.pr}-{round_num}{suffix}",
+            "repo": a.repo, "pr": int(a.pr), "round": round_num,
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "mode": a.mode, "arm": a.arm,
+            "source": "live" if a.arm == "production" else "shadow",
+            "head_sha": head, "base_ref_oid": a.base_sha or None,
+            "merge_base_sha": a.merge_base_sha or None,
+            "rubrics_sha": a.rubrics_sha or None, "rubrics_version": rubrics_version,
+            "diff_sha256": prov.get("diff_sha256"), "ran": ran,
+            "run_ids": [r.get("run_id") for r in run_results], "states": states,
+            "overall": overall, "cost": round_cost, "halted_at": halted,
+            "scoreboard_sha256": hashlib.sha256(scoreboard_md.encode()).hexdigest(),
+            "fidelity": "exact"}
+    try:
+        archive.archive_round(a.archive_dir, {k: v for k, v in rrec.items() if v is not None})
+    except Exception as e:
+        print(f"WARNING: archive round write failed: {e}", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="FormalFrontier/TauCeti")
@@ -608,6 +634,12 @@ def main():
     ap.add_argument("--arm", default="production",
                     help="experiment arm recorded on archive records: production, or "
                          "shadow:<label> for an A/B arm that must not touch the live PR")
+    ap.add_argument("--shadow", action="store_true",
+                    help="A/B arm mode: run the requested rubrics fresh (manual semantics) and "
+                         "archive the results, but emit NO post plan, NO thread bodies, and NO "
+                         "merge decision — there is structurally nothing for a posting step to "
+                         "act on. Requires --archive-dir and --arm shadow:<label>, and the store "
+                         "must be a scratch directory, never the production ledger")
     ap.add_argument("--ci-build", default="",
                     help="conclusion of CI's build check for the head commit (e.g. 'success'), as "
                          "fetched by the trusted caller. When 'success', the prompt asserts the "
@@ -665,6 +697,17 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
+    if a.shadow:
+        # Shadow arms exist to be archived and compared, never posted. Enforce the contract up
+        # front; the render/post sections below are additionally skipped structurally.
+        if not a.archive_dir:
+            sys.exit("--shadow requires --archive-dir: an unarchived shadow run is pure spend")
+        if not a.arm.startswith("shadow:"):
+            sys.exit("--shadow requires --arm shadow:<label>")
+        if a.mode != "manual":
+            sys.exit("--shadow requires --mode manual: arms must judge every requested rubric "
+                     "fresh, with no carried-forward case files, to be comparable")
+
     subscription = a.auth == "subscription"
     if subscription:  # no keys: reviewers use the runner's logged-in claude/codex subscription
         keys = {"anthropic": "", "openai": ""}
@@ -692,6 +735,10 @@ def main():
     store = pathlib.Path(a.store)
     ledger_path = store / "ledger.json"
     ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {"days": {}, "prs": {}}
+    if a.shadow and ledger["prs"]:
+        sys.exit("--shadow refused: this store already holds review state. A shadow arm takes "
+                 "an EMPTY scratch --store — reusing any ledger would corrupt live review/"
+                 "staleness state or contaminate the arm with carried-forward case files.")
     pr_rounds = ledger["prs"].get(str(a.pr), {}).get("rounds", [])
     round_num = len(pr_rounds) + 1
 
@@ -984,6 +1031,22 @@ def main():
     sb_path = pathlib.Path(a.scoreboard_file) if a.scoreboard_file else (outdir / "scoreboard.md")
     if a.scoreboard_file:
         sb_path.write_text(scoreboard_md)
+    if a.shadow:
+        # Archive-only: no thread bodies, no post plan, no merge decision — nothing exists for
+        # a posting step to act on. The scoreboard above is informational (printed by the CLI).
+        shadow_cost = round(spent_today - spent_start, 6)
+        emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
+                           shadow_cost, scoreboard_md, rubrics_version)
+        pr_state["rounds"].append(
+            {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+             "mode": a.mode, "ran": ran, "states": states, "cost": shadow_cost,
+             "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
+             "arm": a.arm})
+        print(f"\nSHADOW ROUND ({a.arm}) {overall}  (ran {len(ran)}: {ran}; "
+              f"cost ${shadow_cost:.2f}) — archived, nothing posted.")
+        if not a.dry_run:
+            ledger_path.write_text(json.dumps(ledger, indent=2))
+        return
     paths_sorted = sorted(changed_paths(diff_full))
     fallback_path = next((p for p in paths_sorted if p.startswith(a.merge_path_prefix)),
                          paths_sorted[0] if paths_sorted else "")
@@ -1051,25 +1114,8 @@ def main():
           + (f"halted at {halted} block; " if halted else "")
           + f"cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
 
-    if a.archive_dir and not a.dry_run:
-        suffix = "" if a.arm == "production" else "-" + a.arm.split(":", 1)[-1]
-        rrec = {"schema": "tauceti.round/v1", "round_id": f"{a.pr}-{round_num}{suffix}",
-                "repo": a.repo, "pr": int(a.pr), "round": round_num,
-                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "mode": a.mode, "arm": a.arm,
-                "source": "live" if a.arm == "production" else "shadow",
-                "head_sha": head, "base_ref_oid": a.base_sha or None,
-                "merge_base_sha": a.merge_base_sha or None,
-                "rubrics_sha": a.rubrics_sha or None, "rubrics_version": rubrics_version,
-                "diff_sha256": prov.get("diff_sha256"), "ran": ran,
-                "run_ids": [r.get("run_id") for r in run_results], "states": states,
-                "overall": overall, "cost": round_cost, "halted_at": halted,
-                "scoreboard_sha256": hashlib.sha256(scoreboard_md.encode()).hexdigest(),
-                "fidelity": "exact"}
-        try:
-            archive.archive_round(a.archive_dir, {k: v for k, v in rrec.items() if v is not None})
-        except Exception as e:
-            print(f"WARNING: archive round write failed: {e}", file=sys.stderr)
+    emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
+                       scoreboard_md, rubrics_version)
 
     if a.dry_run:
         print("[dry-run] not writing ledger.")

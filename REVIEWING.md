@@ -111,3 +111,20 @@ Add `--post` to publish. Useful flags:
   your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
+
+## Shadow reviews (A/B arms)
+
+A shadow review runs the same PR through alternative rubrics and/or models, archives the
+results to [TauCetiData](https://github.com/FormalFrontier/TauCetiData), and posts **nothing**
+— the PR thread and the production review state are untouched. This is how review variants are
+evaluated against each other before being adopted.
+
+    tauceti-review 139 --shadow --label deepseek-arm --reviewer deepseek
+    tauceti-review 139 --shadow --label rubrics-v2 --rubrics-sha <TauCetiReview commit>
+
+`--rubrics-sha` pins the rubrics *and* the engine to that commit (a cached per-SHA checkout),
+so an arm reruns exactly the code that existed then. Arms always run every requested rubric
+fresh (`--mode manual` semantics, scratch store, no carried-forward case files) so that two
+arms over the same `(PR, head, rubric)` are comparable; records land with `arm: shadow:<label>`
+and pair up with the production run in TauCetiData's `ab_pairs` view. In CI, the
+`shadow-review` workflow (manual dispatch) does the same with API keys and a per-run budget.

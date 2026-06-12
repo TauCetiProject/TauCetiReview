@@ -1,0 +1,158 @@
+name: shadow-review
+
+# An A/B arm in CI: review a PR with a chosen provider set and a pinned rubrics+engine commit,
+# archive the records to TauCetiData, and post NOTHING. The reviewer phase mirrors review.yml
+# (tokenless, isolated keys, read-only); there is no post step, no store-branch commit, and no
+# auto-merge — structurally nothing that can touch the live PR.
+on:
+  workflow_dispatch:
+    inputs:
+      pr: { required: true, type: string, description: "PR number to shadow-review" }
+      label: { required: true, type: string, description: "arm label (recorded as shadow:<label>)" }
+      rubrics_sha: { required: false, type: string, default: main,
+                     description: "TauCetiReview ref to run (rubrics AND engine pinned together)" }
+      providers: { required: false, type: string, default: codex,
+                   description: "comma-separated: claude, codex, deepseek, minimax" }
+      rubrics: { required: false, type: string, default: "",
+                 description: "comma-separated rubric subset (default: all)" }
+      budget: { required: false, type: string, default: "10",
+                description: "USD cap for this arm" }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tauceti-shadow
+  cancel-in-progress: false
+
+jobs:
+  shadow:
+    runs-on: ubuntu-latest
+    env:
+      PR: ${{ inputs.pr }}
+      LABEL: ${{ inputs.label }}
+    steps:
+      # ---- Untrusted-input phase: NO tokens, NO provider keys reachable by PR code ----
+      - name: Checkout review repo (runner + rubrics, pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCetiReview
+          ref: ${{ inputs.rubrics_sha }}
+          persist-credentials: false
+
+      - name: Checkout roadmap (public)
+        uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCetiRoadmap
+          path: roadmap
+          persist-credentials: false
+
+      - name: Resolve PR head and fetch diff
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          BASE_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json baseRefOid -q .baseRefOid)
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          MERGE_BASE=$(gh api "/repos/FormalFrontier/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
+            --jq '.merge_base_commit.sha' 2>/dev/null || echo "")
+          echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
+          echo "RUBRICS_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          CI_BUILD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+            -q '[.statusCheckRollup[]? | select(.name=="build") | .conclusion] | first // ""')
+          echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
+          gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
+          gh pr view "$PR" --repo FormalFrontier/TauCeti --json title,body \
+            --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
+
+      - name: Checkout code at PR head (public, no credentials persisted)
+        uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCeti
+          ref: ${{ env.HEAD_SHA }}
+          path: code
+          persist-credentials: false
+
+      - name: Trusted Mathlib source for reviewer grep
+        # Rev from the BASE repo's manifest, never the PR's (same rationale as review.yml).
+        run: |
+          base=$(mktemp -d)
+          git clone --depth 1 https://github.com/FormalFrontier/TauCeti "$base/base"
+          MREV=$(jq -r '.packages[] | select(.name=="mathlib") | .rev' "$base/base/lake-manifest.json")
+          git init -q mathlib
+          git -C mathlib remote add origin https://github.com/leanprover-community/mathlib4
+          git -C mathlib fetch -q --depth 1 origin "$MREV"
+          git -C mathlib checkout -q FETCH_HEAD
+
+      - name: Setup Node and CLIs
+        uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Install Claude and Codex CLIs
+        run: npm install -g @anthropic-ai/claude-code @openai/codex
+
+      - name: Assemble clean reviewer workspace
+        run: |
+          REVROOT=$(mktemp -d)
+          rsync -a --exclude='.git' code/ "$REVROOT/code/"
+          rsync -a --exclude='.git' roadmap/ "$REVROOT/roadmap/"
+          mv mathlib "$REVROOT/mathlib"
+          cp diff.txt pr_desc.txt "$REVROOT/"
+          echo "REVROOT=$REVROOT" >> "$GITHUB_ENV"
+
+      - name: Stage provider keys to files (keys never enter the run step's env)
+        env:
+          ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}"
+          OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}"
+          OPENROUTER_API_KEY: "${{ secrets.OPENROUTER_API_KEY }}"
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$ANTHROPIC_API_KEY"  > "$RUNNER_TEMP/keys/anthropic"
+          printf '%s' "$OPENAI_API_KEY"     > "$RUNNER_TEMP/keys/openai"
+          printf '%s' "$OPENROUTER_API_KEY" > "$RUNNER_TEMP/keys/openrouter"
+          chmod 700 "$RUNNER_TEMP/keys"; chmod 600 "$RUNNER_TEMP/keys/"*
+
+      - name: Run shadow review
+        run: |
+          RUBRICS_ARGS=""
+          [ -n "${{ inputs.rubrics }}" ] && RUBRICS_ARGS="--rubrics ${{ inputs.rubrics }}"
+          mkdir -p store
+          python3 runner/review.py \
+            --repo FormalFrontier/TauCeti --pr "$PR" --mode manual \
+            --shadow --arm "shadow:${LABEL}" $RUBRICS_ARGS \
+            --rubrics-dir rubrics --tool-cwd "$REVROOT" \
+            --code-path code --roadmap-path roadmap --mathlib-path mathlib \
+            --diff-file diff.txt --pr-desc-file pr_desc.txt \
+            --store store --archive-dir store/outbox \
+            --daily-budget "${{ inputs.budget }}" \
+            --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
+            --rubrics-sha "$RUBRICS_SHA" --ci-build "$CI_BUILD" \
+            --providers "${{ inputs.providers }}" --keys-dir "$RUNNER_TEMP/keys"
+
+      # ---- Trusted phase: archive only. No PR-facing token is ever minted in this workflow ----
+      - name: Mint archive token (TauCetiData contents:write)
+        id: archive_token
+        if: always()
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: TauCetiData
+          permission-contents: write
+
+      - name: Sync archive to TauCetiData
+        id: sync
+        if: always()
+        env: { TOKEN: "${{ steps.archive_token.outputs.token }}" }
+        run: |
+          python3 runner/archive.py sync --store store --data-dir "$RUNNER_TEMP/tauceti-data" \
+            --remote "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiData"
+
+      - name: Keep outbox as an artifact if the sync failed
+        # The scratch store dies with the runner; a failed sync must not lose the arm's records.
+        if: always() && steps.sync.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-outbox-pr${{ inputs.pr }}-${{ inputs.label }}
+          path: store/outbox
+          retention-days: 30

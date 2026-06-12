@@ -86,6 +86,22 @@ def resolve_repo_dir(explicit):
     return clone
 
 
+def engine_at(sha):
+    """A cached checkout of TauCetiReview pinned at `sha` — rubrics AND engine together, so a
+    shadow arm reruns exactly the code+rubrics of that commit, not main's engine on old rubrics."""
+    dst = CACHE_DIR / "engines" / sha[:12]
+    if not (dst / "rubrics").is_dir():
+        dst.mkdir(parents=True, exist_ok=True)
+        run(["git", "init", "-q", str(dst)], quiet=True)
+        run(["git", "-C", str(dst), "remote", "add", "origin",
+             f"https://github.com/{REVIEW_REPO}"], quiet=True, allow_fail=True)
+        run(["git", "-C", str(dst), "fetch", "-q", "--depth", "1", "origin", sha])
+        run(["git", "-C", str(dst), "checkout", "-q", sha])
+    if not ((dst / "rubrics").is_dir() and (dst / "runner" / "review.py").is_file()):
+        die(f"checkout of {REVIEW_REPO}@{sha[:12]} is missing rubrics/ or runner/review.py")
+    return dst
+
+
 def gh_json(repo, pr, fields):
     r = run(["gh", "pr", "view", str(pr), "--repo", repo, "--json", fields],
             capture=True, quiet=True)
@@ -187,7 +203,24 @@ def main():
     ap.add_argument("--data-dir", default="",
                     help="TauCetiData checkout the archive sync pushes through "
                          "(default: a cached clone under the cache dir)")
+    ap.add_argument("--shadow", action="store_true",
+                    help="run an A/B arm: same PR, same diff, but the results are only archived "
+                         "to TauCetiData — nothing is posted and the production review state is "
+                         "untouched (scratch store). Requires --label; combine with --reviewer "
+                         "and/or --rubrics-sha to vary the arm")
+    ap.add_argument("--label", default="",
+                    help="shadow arm label, recorded as arm=shadow:<label> on every record")
+    ap.add_argument("--rubrics-sha", default="",
+                    help="run the rubrics AND engine pinned at this TauCetiReview commit "
+                         "(a cached per-SHA checkout), instead of the floating main")
     a = ap.parse_args()
+
+    if a.shadow and not a.label:
+        die("--shadow requires --label <name> (it tags every archived record).")
+    if a.shadow and a.post:
+        die("--shadow and --post are mutually exclusive: shadow arms are never posted.")
+    if a.shadow and a.no_archive:
+        die("--shadow without archiving is pure spend; drop --no-archive.")
 
     need("git", "Install git.")
     need("gh", "Install the GitHub CLI and run `gh auth login`.")
@@ -217,8 +250,9 @@ def main():
     providers = ",".join(avail)
     print(f"reviewers: {providers}", file=sys.stderr)
 
-    repo_dir = resolve_repo_dir(a.repo_dir)
-    print(f"engine + rubrics: {repo_dir}", file=sys.stderr)
+    repo_dir = engine_at(a.rubrics_sha) if a.rubrics_sha else resolve_repo_dir(a.repo_dir)
+    print(f"engine + rubrics: {repo_dir}"
+          + (f" (pinned @ {a.rubrics_sha[:12]})" if a.rubrics_sha else ""), file=sys.stderr)
 
     work = pathlib.Path(a.workdir) if a.workdir else pathlib.Path(tempfile.mkdtemp(
         prefix=f"tauceti-review-{a.pr}-"))
@@ -284,14 +318,19 @@ def main():
     # The store (ledger of scoreboard/thread comment ids + per-rubric verdicts) is PERSISTENT and
     # lives outside the throwaway workspace, so a re-review edits the same scoreboard and threads in
     # place instead of posting duplicates, and --mode commit can re-run only unresolved rubrics.
-    if a.store:
+    if a.shadow:
+        # Scratch store, always: a shadow arm must never read or write production review state
+        # (case files, staleness, comment ids). review.py refuses a production-looking store too.
+        store = work / "store"
+    elif a.store:
         store = pathlib.Path(a.store)
     elif a.fresh:
         store = work / "store"
     else:
         store = CACHE_DIR / "store" / a.repo.replace("/", "__")
     store.mkdir(parents=True, exist_ok=True)
-    print(f"store: {store}{'  (fresh)' if a.fresh else ''}", file=sys.stderr)
+    print(f"store: {store}{'  (scratch: shadow)' if a.shadow else '  (fresh)' if a.fresh else ''}",
+          file=sys.stderr)
 
     # Read the author's replies on the rubric threads from GitHub and pass them to the engine, so a
     # re-review audits the contest (e.g. a push-back on a finding) instead of re-judging the diff
@@ -304,10 +343,14 @@ def main():
               + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
 
     rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
-    outbox = "" if a.no_archive else str(store / "outbox")
+    # Shadow outbox lives under the PERSISTENT store, not the throwaway scratch one: if the
+    # sync at the end fails, the records must survive the workspace cleanup for a later sync.
+    outbox_store = (CACHE_DIR / "store" / a.repo.replace("/", "__")) if a.shadow else store
+    outbox = "" if a.no_archive else str(outbox_store / "outbox")
     plan = work / "post_plan.json"
     cmd = [sys.executable, str(repo_dir / "runner" / "review.py"),
-           "--repo", a.repo, "--pr", str(a.pr), "--mode", a.mode,
+           "--repo", a.repo, "--pr", str(a.pr), "--mode", "manual" if a.shadow else a.mode,
+           *(["--shadow", "--arm", f"shadow:{a.label}"] if a.shadow else []),
            "--rubrics-dir", str(repo_dir / "rubrics"), "--tool-cwd", str(work),
            "--code-path", "code", "--roadmap-path", "roadmap",
            *mathlib_args,
@@ -336,7 +379,9 @@ def main():
         print(t.read_text())
     print("=" * 72 + "\n")
 
-    if a.post:
+    if a.shadow:
+        print(f"shadow arm `{a.label}` complete — archived, nothing posted.", file=sys.stderr)
+    elif a.post:
         token = run(["gh", "auth", "token"], capture=True, quiet=True).stdout.strip()
         if not token:
             die("`gh auth token` returned nothing; run `gh auth login` first.")
@@ -356,7 +401,7 @@ def main():
     if outbox and pathlib.Path(outbox).is_dir():
         data_dir = a.data_dir or str(CACHE_DIR / "data" / "TauCetiData")
         r = run([sys.executable, str(repo_dir / "runner" / "archive.py"), "sync",
-                 "--store", str(store), "--data-dir", data_dir], allow_fail=True)
+                 "--store", str(outbox_store), "--data-dir", data_dir], allow_fail=True)
         if r.returncode != 0:
             print("note: archive sync failed; records remain in the outbox and will sync "
                   "on a later run.", file=sys.stderr)
