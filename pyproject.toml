@@ -10,6 +10,7 @@ dependencies = []
 
 [project.scripts]
 tauceti-review = "runner.cli:main"
+tauceti-review-costs = "runner.costs:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -19,4 +20,4 @@ build-backend = "setuptools.build_meta"
 packages = ["runner"]
 
 [tool.setuptools.package-data]
-runner = ["prices.json"]
+runner = ["prices.json", "prices-history.json"]

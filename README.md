@@ -30,9 +30,18 @@ bill. See [REVIEWING.md](REVIEWING.md):
 uvx --from git+https://github.com/FormalFrontier/TauCetiReview tauceti-review 42
 ```
 
+## Costs
+
+`tauceti-review-costs` reports the engine's review spend — tokens and imputed
+dollars, per merged line of code, per day, and split by PR outcome — reading the
+durable [TauCetiData](https://github.com/FormalFrontier/TauCetiData) archive
+(reproducible by anyone) or the local store. Costs are recomputed from token
+counts at the rate in effect on each run's date. See [runner/COSTS.md](runner/COSTS.md).
+
 ## Status
 
 - `rubrics/` — the per-angle prompts (live).
 - `runner/` — the review engine (`review.py` + `post.py`) and the `tauceti-review` CLI (live).
+- `runner/costs.py` — the `tauceti-review-costs` analytics CLI (live).
 - `runner/prices.json` — model rates; every dispatchable model must be priced (CI-enforced in `tests/`, and the engine fails fast on an unpriced model). Each archived run is stamped with a `prices_sha` so its cost is auditable.
 - The GitHub Actions workflows — review + `tests` (price coverage) — live.
