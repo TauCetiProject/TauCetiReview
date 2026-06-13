@@ -19,15 +19,25 @@ def test_every_dispatchable_model_is_priced():
         f"Add them to runner/prices.json (priced: {sorted(review.PRICES)})")
 
 
-def test_price_entries_are_well_formed():
+def test_price_windows_are_well_formed():
     bad = []
-    for model, p in review._PRICES_RAW.items():
-        for field in ("input", "output"):
-            if not isinstance(p.get(field), (int, float)):
-                bad.append(f"{model}.{field}")
-        if "cache_read" in p and not isinstance(p["cache_read"], (int, float)):
-            bad.append(f"{model}.cache_read")
-    assert not bad, f"malformed price fields (want numbers): {bad}"
+    for model, windows in review._PRICE_WINDOWS.items():
+        if not windows:
+            bad.append(f"{model}: no rate windows")
+            continue
+        for w in windows:
+            if not isinstance(w.get("effective"), str):
+                bad.append(f"{model}: window missing `effective` date")
+            for field in ("input", "output"):
+                if not isinstance(w.get(field), (int, float)):
+                    bad.append(f"{model}@{w.get('effective')}.{field}")
+            if "cache_read" in w and not isinstance(w["cache_read"], (int, float)):
+                bad.append(f"{model}@{w.get('effective')}.cache_read")
+        # windows must be in chronological order so "newest" / "as-of-date" resolution is correct
+        effs = [w.get("effective") for w in windows]
+        if effs != sorted(effs):
+            bad.append(f"{model}: windows not sorted by effective date {effs}")
+    assert not bad, f"malformed price windows: {bad}"
 
 
 def test_require_priced_rejects_unknown_model():
