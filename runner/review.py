@@ -83,6 +83,16 @@ def require_priced(models):
                          f"(known: {sorted(PRICES)})")
 
 
+def sum_usage(run_results):
+    """Token totals across a round's runs — stored alongside the round's `cost` in the ledger so
+    the dollar figure is reconstructable from the immutable fact (tokens) at any price table."""
+    t = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0}
+    for r in run_results:
+        for k in t:
+            t[k] += (r.get("usage") or {}).get(k, 0) or 0
+    return t
+
+
 def sh(cmd, cwd=None, env=None, stdin_text=None):
     return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, env=env,
                           input=stdin_text,
@@ -1079,6 +1089,7 @@ def main():
         pr_state["rounds"].append(
             {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
              "mode": a.mode, "ran": ran, "states": states, "cost": shadow_cost,
+             "tokens": sum_usage(run_results), "prices_sha": PRICES_SHA,
              "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
              "arm": a.arm})
         print(f"\nSHADOW ROUND ({a.arm}) {overall}  (ran {len(ran)}: {ran}; "
@@ -1144,6 +1155,7 @@ def main():
     pr_state["rounds"].append(
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "mode": a.mode, "ran": ran, "states": states, "cost": round_cost,
+         "tokens": sum_usage(run_results), "prices_sha": PRICES_SHA,
          "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
          "base_sha": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
          "rubrics_sha": a.rubrics_sha or None, "diff_sha256": prov.get("diff_sha256"),
