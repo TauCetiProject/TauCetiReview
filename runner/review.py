@@ -352,7 +352,7 @@ def run_pi(prompt, cwd, model, env):
            "--no-prompt-templates", "--tools", PI_TOOLS, prompt]
     r = sh(cmd, cwd=cwd, env=env)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
-    text, cost, in_tok, out_tok, err = "", 0.0, 0, 0, ""
+    text, cost, in_tok, out_tok, cached, err = "", 0.0, 0, 0, 0, ""
     for line in r.stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -379,16 +379,18 @@ def run_pi(prompt, cwd, model, env):
         cost += (u.get("cost") or {}).get("total") or 0.0
         in_tok += u.get("input") or 0
         out_tok += u.get("output") or 0
-    # pi-ai prices most models itself (usage.cost.total). If it reported no cost, estimate from
-    # tokens × PRICES so the daily budget still accounts for the spend — and flag it as estimated
-    # so a real OpenRouter charge is distinguishable from a price-table fallback.
-    estimated = False
-    if cost == 0.0 and (in_tok or out_tok):
-        pin, pout = PRICES.get(model, DEFAULT_PRICE)
-        cost = (in_tok * pin + out_tok * pout) / 1e6
-        estimated = True
-    out.update(text=text, usage={"input_tokens": in_tok, "output_tokens": out_tok},
-               cost_usd=round(cost, 6), cost_estimated=estimated, session_id=None)
+        cached += u.get("cacheRead") or 0  # pi reports `input` as FRESH tokens, cacheRead separate
+    # Cost from the single-source price table, cache-aware — NOT pi's self-reported usage.cost.total,
+    # which uses pi's own price table and over-states some models (e.g. minimax ~2.6x vs OpenRouter's
+    # actual rate). pi's `input` is fresh (non-cached) input with cacheRead alongside, so add them:
+    # fresh input + cached reads (at the cache rate) + output. Token counts are reliable; the price
+    # table is authoritative. pi's figure is kept as provider_cost_usd for cross-check.
+    pin, pout = PRICES.get(model, DEFAULT_PRICE)
+    computed = (in_tok * pin + cached * CACHE_READ.get(model, pin) + out_tok * pout) / 1e6
+    out.update(text=text,
+               usage={"input_tokens": in_tok, "cached_input_tokens": cached, "output_tokens": out_tok},
+               cost_usd=round(computed, 6), cost_estimated=True,
+               provider_cost_usd=round(cost, 6), session_id=None)
     # Surface why pi produced no usable answer (pi returns 0 even when the model errored, so
     # an empty text or a captured errorMessage is the real failure signal — keep it diagnosable).
     if r.returncode != 0 or not text:
