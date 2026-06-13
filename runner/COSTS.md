@@ -25,10 +25,29 @@ real `usage` block (`input_tokens`, `cached_input_tokens`, `output_tokens`,
 timestamps. `--source auto` (default) uses the store if present, else the logs —
 never both, so nothing is double-counted.
 
-**Tokens are measured; dollars are an estimate** — the engine flags ~89% of
-`cost_usd` as `cost_estimated` (price model inferred), and ~71% of input tokens
-are cache hits, so the dollar figure sits far below tokens×list-price. The report
-prints the estimated fraction.
+### Pricing — recomputed from `prices.json`
+
+[`runner/prices.json`](prices.json) is the single source of truth, and this tool
+**recomputes** every *estimated* cost from it rather than trusting the `cost_usd`
+the engine recorded at review time. Older records were written with stale rates
+(and, before the cache-aware fix, charged cache-read tokens at full input rate),
+so the as-recorded numbers are internally inconsistent. Recomputing values the
+*measured token counts* uniformly at current rates, using the same formula
+`review.py` applies to estimated costs:
+
+```
+cost = ((input − cached)·input_rate + cached·cache_read + output·output_rate) / 1e6
+```
+
+Real provider-billed costs (`cost_estimated: false` — e.g. the claude CLI's
+self-reported `total_cost_usd`) are kept as recorded. The report prints both the
+recomputed and as-recorded totals so price drift is visible, and warns on stderr
+if a record's model is missing from `prices.json` (it falls back to the engine's
+`DEFAULT_PRICE`).
+
+**Tokens are measured; dollars are an estimate** — ~89% of rounds are estimated
+(codex/pi, derived from `prices.json`), and ~71% of input tokens are cache hits,
+so the dollar figure sits far below tokens×list-price.
 
 > The durable archive ([TauCetiData](https://github.com/FormalFrontier/TauCetiData))
 > stores records in a different `records/runs/<pr>/<run_id>.json` layout; this tool
@@ -55,7 +74,7 @@ commits land under the contributor's account.
 
 ## Schema (for ad-hoc SQL)
 
-- `rubric_runs(pr, round_no, rubric, provider, model, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, cost_usd, cost_estimated, verdict, ts)` — finest grain (store only)
+- `rubric_runs(pr, round_no, rubric, provider, model, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, cost_usd, cost_recorded, cost_estimated, verdict, ts)` — finest grain (store only); `cost_usd` is recomputed from `prices.json` for estimated rows, `cost_recorded` is the engine's original
 - `review_rounds(key, source, pr, round_no, ts, day, verdict, rubrics_run, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, cost, est_frac)` — per-round aggregate
 - `prs(pr, state, additions, deletions, created_at, merged_at, closed_at, title, author_agent, author_name, fetched_at)`
 

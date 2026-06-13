@@ -61,7 +61,38 @@ CACHE = Path.home() / ".cache" / "tauceti-review"
 DEFAULT_DB = CACHE / "review-costs.db"
 DEFAULT_OUT = CACHE / "review-costs.svg"
 DEFAULT_REPO = "FormalFrontier/TauCeti"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# prices.json (sibling) is the single source of truth — the same file review.py loads.
+# We recompute every *estimated* cost from it so the report reflects current rates and the
+# cache-aware formula uniformly, rather than trusting cost_usd values written by older engine
+# versions (stale prices / no cache discount). Real provider-billed costs are kept as recorded.
+PRICES_PATH = Path(__file__).resolve().parent / "prices.json"
+DEFAULT_PRICE = (3.0, 15.0)  # mirrors review.py's fallback for an unpriced model
+
+
+def load_prices():
+    raw = {k: v for k, v in json.loads(PRICES_PATH.read_text()).items() if not k.startswith("_")}
+    pio = {m: (p["input"], p["output"]) for m, p in raw.items()}
+    cache = {m: p.get("cache_read", p["input"]) for m, p in raw.items()}
+    return pio, cache
+
+
+def recompute_cost(model, inp, cached, out, prices, cache_read):
+    """The exact formula review.py uses for estimated (codex/pi) costs, applied with the
+    current prices.json: cached_input is a subset of input billed at the cache-read rate."""
+    pin, pout = prices.get(model, DEFAULT_PRICE)
+    cr = cache_read.get(model, pin)
+    return ((inp - cached) * pin + cached * cr + out * pout) / 1e6
+
+HEADER_RE = re.compile(r"round: reviewing PR #(?P<pr>\d+) @ (?P<sha>[0-9a-f]+)")
+TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
+FNAME_TS_RE = re.compile(r"task-(\d{8})-(\d{6})\.log$")
+COST_RE = re.compile(
+    r"^ROUND (?P<n>\d+) \(commit\) (?P<verdict>approved|changes requested|blocked)\s+"
+    r"\(ran (?P<k>\d+):.*?;\s*cost \$(?P<cost>[0-9.]+),\s*today \$(?P<today>[0-9.]+)",
+    re.MULTILINE,
+)
 
 HEADER_RE = re.compile(r"round: reviewing PR #(?P<pr>\d+) @ (?P<sha>[0-9a-f]+)")
 TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
@@ -108,7 +139,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS rubric_runs (
             pr INTEGER, round_no INTEGER, rubric TEXT, provider TEXT, model TEXT,
             input_tokens INTEGER, cached_input_tokens INTEGER, output_tokens INTEGER,
-            reasoning_tokens INTEGER, cost_usd REAL, cost_estimated INTEGER,
+            reasoning_tokens INTEGER, cost_usd REAL, cost_recorded REAL, cost_estimated INTEGER,
             verdict TEXT, ts TEXT,
             PRIMARY KEY (pr, round_no, rubric)
         );
@@ -144,6 +175,8 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
                 ts_map[(int(pr), rd.get("round"))] = rd.get("ts")
     con.execute("DELETE FROM rubric_runs")
     con.execute("DELETE FROM review_rounds WHERE source='store'")
+    prices, cache_read = load_prices()
+    unpriced: dict[str, int] = {}
     agg: dict[tuple[int, int], dict] = {}
     nrub = 0
     for f in sorted(reviews.glob("*/*/*.json")):
@@ -166,16 +199,26 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
         ct = u.get("cached_input_tokens", 0) or u.get("cache_read_input_tokens", 0) or 0
         ot = u.get("output_tokens", 0) or 0
         rt = u.get("reasoning_output_tokens", 0) or 0
-        cost = d.get("cost_usd", 0) or 0
+        recorded = d.get("cost_usd", 0) or 0
         est = 1 if d.get("cost_estimated") else 0
+        model = d.get("model")
+        # Estimated costs (codex/pi, derived from prices.json) are recomputed from current
+        # prices.json so the report is uniform and not skewed by stale historical rates;
+        # real provider-billed costs (cost_estimated=false, e.g. claude self-reported) are kept.
+        if est:
+            cost = recompute_cost(model, it, ct, ot, prices, cache_read)
+            if model not in prices:
+                unpriced[model] = unpriced.get(model, 0) + 1
+        else:
+            cost = recorded
         verdict = (d.get("verdict_obj") or {}).get("verdict") or d.get("verdict")
         raw_ts = ts_map.get((pr, rd))
         ts = (_norm_ts(raw_ts) if raw_ts
               else datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
         con.execute(
-            "INSERT OR REPLACE INTO rubric_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (pr, rd, rubric, d.get("provider"), d.get("model"), it, ct, ot, rt,
-             cost, est, verdict, ts),
+            "INSERT OR REPLACE INTO rubric_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (pr, rd, rubric, d.get("provider"), model, it, ct, ot, rt,
+             cost, recorded, est, verdict, ts),
         )
         nrub += 1
         a = agg.setdefault((pr, rd), dict(it=0, ct=0, ot=0, rt=0, cost=0.0, est=0,
@@ -197,6 +240,10 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
              a["est"] / a["n"] if a["n"] else None),
         )
     con.commit()
+    if unpriced:
+        miss = ", ".join(f"{m or '?'}×{n}" for m, n in sorted(unpriced.items()))
+        print(f"  warning: {sum(unpriced.values())} rubric run(s) used a model absent from "
+              f"prices.json (fell back to {DEFAULT_PRICE}): {miss}", file=sys.stderr)
     return len(agg), nrub
 
 
@@ -437,6 +484,12 @@ def report(con, window="day", csv_path=None):
               f"{100*tc/ti:.0f}%) · output {fmt_tok(to)} · reasoning {fmt_tok(tr)}")
         print(f"DOLLARS  {fmt_money(s['total'])} imputed "
               f"({100*(est or 0):.0f}% of rounds' cost is *estimated*, tokens are measured)")
+        rec = con.execute("SELECT SUM(cost_usd), SUM(cost_recorded) FROM rubric_runs").fetchone()
+        if rec and rec[1] is not None:
+            delta = (rec[0] or 0) - (rec[1] or 0)
+            print(f"         recomputed from prices.json vs as-recorded by the engine: "
+                  f"{fmt_money(rec[0])} vs {fmt_money(rec[1])} "
+                  f"({'+' if delta >= 0 else '−'}{fmt_money(abs(delta))})")
     else:
         print(f"DOLLARS  {fmt_money(s['total'])} imputed  (no token data — log source)")
 
