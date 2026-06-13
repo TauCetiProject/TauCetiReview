@@ -49,15 +49,15 @@ _pi_tools_env = os.environ.get("TAUCETI_PI_TOOLS", "read,grep,ls")
 PI_TOOLS = (_pi_tools_env
             if {t.strip() for t in _pi_tools_env.split(",") if t.strip()} <= _RO_PI_TOOLS
             else "read,grep,ls")
-# (input, output) USD per 1M tokens. Anthropic models: platform.claude.com list price;
-# OpenRouter-routed models (gpt-5.5 is OpenAI's list price, mirrored on OpenRouter): the
-# openrouter.ai/api/v1/models pricing. Keep these in sync with the real rates — the daily
-# budget and every archived run's cost_usd are derived from them.
-PRICES = {"claude-opus-4-8": (5.0, 25.0), "claude-sonnet-4-6": (3.0, 15.0),
-          "claude-fable-5": (10.0, 50.0), "claude-haiku-4-5": (1.0, 5.0),
-          "gpt-5.5": (5.0, 30.0),
-          "deepseek/deepseek-v4-pro": (0.435, 0.87), "minimax/minimax-m3": (0.30, 1.20),
-          "x-ai/grok-4.3": (1.25, 2.50)}
+# Model pricing is loaded from prices.json (the single source of truth — edit there, never
+# here). review.py runs from the engine checkout, so the file always sits beside it; downstream
+# analysis (TauCetiData) fetches the same file. The daily budget and every archived run's
+# cost_usd derive from these rates.
+_PRICES_RAW = {k: v for k, v in
+               json.loads((pathlib.Path(__file__).resolve().parent / "prices.json").read_text())
+               .items() if not k.startswith("_")}
+PRICES = {m: (p["input"], p["output"]) for m, p in _PRICES_RAW.items()}
+CACHE_READ = {m: p.get("cache_read", p["input"]) for m, p in _PRICES_RAW.items()}
 DEFAULT_PRICE = (3.0, 15.0)
 
 
@@ -287,7 +287,11 @@ def run_codex(prompt, cwd, model, env):
         out.update(event_types=events, error_events=errors[:5], raw_stdout=r.stdout[-3000:])
     if usage:
         pin, pout = PRICES.get(model, DEFAULT_PRICE)
-        out["cost_usd"] = round((usage.get("input_tokens", 0) * pin
+        # cached_input_tokens is a subset of input_tokens billed at the cache-read rate (~10%);
+        # charging it at full input rate over-counts (most of an agentic review is cache reads).
+        inp = usage.get("input_tokens", 0)
+        cached = usage.get("cached_input_tokens", 0)
+        out["cost_usd"] = round(((inp - cached) * pin + cached * CACHE_READ.get(model, pin)
                                  + usage.get("output_tokens", 0) * pout) / 1e6, 6)
         out["cost_estimated"] = True
     return out
