@@ -36,6 +36,8 @@ OPENROUTER_MODELS = {
                  or "deepseek/deepseek-v4-pro"),
     "minimax": (os.environ.get("TAUCETI_MINIMAX_MODEL") or os.environ.get("MINIMAX_MODEL")
                 or "minimax/minimax-m3"),
+    "grok": (os.environ.get("TAUCETI_GROK_MODEL") or os.environ.get("GROK_MODEL")
+             or "x-ai/grok-4.3"),
 }
 # A pi reviewer's tools: read + grep + ls only — never bash/edit/write. This keeps the review
 # read-only (parity with claude's Read/Grep/Glob and codex's read-only sandbox), so a
@@ -47,9 +49,15 @@ _pi_tools_env = os.environ.get("TAUCETI_PI_TOOLS", "read,grep,ls")
 PI_TOOLS = (_pi_tools_env
             if {t.strip() for t in _pi_tools_env.split(",") if t.strip()} <= _RO_PI_TOOLS
             else "read,grep,ls")
-PRICES = {"claude-sonnet-4-6": (3.0, 15.0), "claude-opus-4-8": (15.0, 75.0),
-          "gpt-5.5": (1.25, 10.0),
-          "deepseek/deepseek-v4-pro": (0.435, 0.87), "minimax/minimax-m3": (0.60, 2.40)}
+# (input, output) USD per 1M tokens. Anthropic models: platform.claude.com list price;
+# OpenRouter-routed models (gpt-5.5 is OpenAI's list price, mirrored on OpenRouter): the
+# openrouter.ai/api/v1/models pricing. Keep these in sync with the real rates — the daily
+# budget and every archived run's cost_usd are derived from them.
+PRICES = {"claude-opus-4-8": (5.0, 25.0), "claude-sonnet-4-6": (3.0, 15.0),
+          "claude-fable-5": (10.0, 50.0), "claude-haiku-4-5": (1.0, 5.0),
+          "gpt-5.5": (5.0, 30.0),
+          "deepseek/deepseek-v4-pro": (0.435, 0.87), "minimax/minimax-m3": (0.30, 1.20),
+          "x-ai/grok-4.3": (1.25, 2.50)}
 DEFAULT_PRICE = (3.0, 15.0)
 
 
@@ -83,7 +91,7 @@ def reviewer_env(provider, keys, subscription=False):
     home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=base)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": home,
            "LANG": os.environ.get("LANG", "C.UTF-8"), "CI": "1"}
-    if provider == "claude":
+    if provider in ("claude", "sonnet"):
         if subscription:
             # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
             src = os.path.expanduser("~/.claude/.credentials.json")
@@ -860,7 +868,10 @@ def main():
     spent_start = spent_today
     outdir = store / "reviews" / str(a.pr) / str(round_num)
     outdir.mkdir(parents=True, exist_ok=True)
-    runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model)}
+    runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model),
+               # sonnet is the same claude CLI runner pinned to Sonnet — a cheaper claude-family
+               # A/B arm, selected explicitly (never auto-drawn) via --reviewer sonnet.
+               "sonnet": (run_claude, "claude-sonnet-4-6")}
     # Every OpenRouter model is the same run_pi runner, differing only by model id.
     for name, mid in OPENROUTER_MODELS.items():
         runners[name] = (run_pi, mid)

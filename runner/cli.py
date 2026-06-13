@@ -176,10 +176,12 @@ def main():
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")
     ap.add_argument("--reviewer", default="",
-                    help="restrict to these reviewers (comma-separated: claude, codex, "
-                         "deepseek, minimax). deepseek/minimax run an OpenRouter model through "
-                         "the `pi` agent and need `pi` on PATH + OPENROUTER_API_KEY. "
-                         "Default: every one you have available")
+                    help="restrict to these reviewers (comma-separated: claude, codex, sonnet, "
+                         "deepseek, minimax, grok). sonnet is the claude CLI pinned to Sonnet; "
+                         "deepseek/minimax/grok run an OpenRouter model through the `pi` agent and "
+                         "need `pi` on PATH + OPENROUTER_API_KEY. sonnet/deepseek/minimax/grok are "
+                         "explicit-only (never auto-drawn). Default: every auto-drawn reviewer you "
+                         "have available (claude, codex)")
     ap.add_argument("--no-mathlib", action="store_true",
                     help="skip fetching the pinned Mathlib source (faster; reuse checks weaker)")
     ap.add_argument("--repo-dir", default="",
@@ -230,11 +232,16 @@ def main():
     else:  # api: draw only from providers whose key is in the environment
         avail = [p for p, k in (("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY"))
                  if os.environ.get(k)]
-    # OpenRouter reviewers (DeepSeek/MiniMax, driven by the `pi` agent) are pay-per-token, so they
-    # are NEVER drawn by default — they join the pool ONLY when you name them in --reviewer (the
-    # budget gate: no auto-dispatch), and then only if `pi` and OPENROUTER_API_KEY are present.
+    # sonnet is a cheaper claude-family A/B arm: same `claude` binary / ANTHROPIC_API_KEY as
+    # claude, but explicit-only (never auto-drawn) so default reviews stay on Opus.
+    claude_ok = shutil.which("claude") if a.auth == "subscription" else os.environ.get("ANTHROPIC_API_KEY")
+    if "sonnet" in want and claude_ok and "sonnet" not in avail:
+        avail.append("sonnet")
+    # OpenRouter reviewers (DeepSeek/MiniMax/Grok, driven by the `pi` agent) are pay-per-token, so
+    # they are NEVER drawn by default — they join the pool ONLY when you name them in --reviewer
+    # (the budget gate: no auto-dispatch), and then only if `pi` and OPENROUTER_API_KEY are present.
     if shutil.which("pi") and os.environ.get("OPENROUTER_API_KEY"):
-        avail += [p for p in ("deepseek", "minimax") if p in want and p not in avail]
+        avail += [p for p in ("deepseek", "minimax", "grok") if p in want and p not in avail]
     if not avail:
         if a.auth == "subscription":
             die("need at least one of `claude` / `codex` on PATH (and logged in), or `pi` + "
