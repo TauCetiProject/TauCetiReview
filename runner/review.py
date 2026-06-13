@@ -49,15 +49,22 @@ _pi_tools_env = os.environ.get("TAUCETI_PI_TOOLS", "read,grep,ls")
 PI_TOOLS = (_pi_tools_env
             if {t.strip() for t in _pi_tools_env.split(",") if t.strip()} <= _RO_PI_TOOLS
             else "read,grep,ls")
-# Model pricing is loaded from prices.json (the single source of truth — edit there, never
-# here). review.py runs from the engine checkout, so the file always sits beside it; downstream
-# analysis (TauCetiData) fetches the same file. The daily budget and every archived run's
-# cost_usd derive from these rates.
-_PRICES_RAW = {k: v for k, v in
-               json.loads((pathlib.Path(__file__).resolve().parent / "prices.json").read_text())
-               .items() if not k.startswith("_")}
-PRICES = {m: (p["input"], p["output"]) for m, p in _PRICES_RAW.items()}
-CACHE_READ = {m: p.get("cache_read", p["input"]) for m, p in _PRICES_RAW.items()}
+# Model pricing is loaded from prices.json (the single source of truth — edit there, never here).
+# It is a DATED table: each model maps to a list of rate windows. The engine bills at the *newest*
+# window per model; the analysis (tauceti-review-costs) prices each past run at the window covering
+# its run date. review.py runs from the engine checkout, so the file always sits beside it. The
+# daily budget and every archived run's cost_usd derive from these rates.
+_PRICE_WINDOWS = json.loads(
+    (pathlib.Path(__file__).resolve().parent / "prices.json").read_text())["models"]
+
+
+def _current_window(windows):
+    return max(windows, key=lambda w: w["effective"])
+
+
+_PRICES_NOW = {m: _current_window(ws) for m, ws in _PRICE_WINDOWS.items()}
+PRICES = {m: (p["input"], p["output"]) for m, p in _PRICES_NOW.items()}
+CACHE_READ = {m: p.get("cache_read", p["input"]) for m, p in _PRICES_NOW.items()}
 DEFAULT_PRICE = (3.0, 15.0)  # last-resort fallback; require_priced() makes it unreachable in practice
 # The exact prices.json that produced this run's costs — stamped onto every archived run so a
 # stored cost_usd is auditable and its staleness is detectable (rates change; the tokens don't).

@@ -66,22 +66,16 @@ SCHEMA_VERSION = 5
 # Cost is DERIVED, not a stored fact. We recompute every *estimated* (codex/pi) review from the
 # token counts — the only immutable fact — applying the cache-aware formula. Crucially we price
 # each run AS OF ITS OWN DATE, not today's prices: a faithful answer to "what did this run cost?"
-# must use the rate that was in effect when it ran. prices-history.json is that dated table;
-# prices.json (the engine's runtime snapshot) is used only for the explicit "at today's prices"
-# forecast. Real provider-billed costs (cost_estimated=false) are kept as recorded.
+# must use the rate that was in effect when it ran. prices.json is a single DATED table (the same
+# file the engine bills from) — there is no separate history file to drift against. Real
+# provider-billed costs (cost_estimated=false) are kept as recorded.
 PRICES_PATH = Path(__file__).resolve().parent / "prices.json"
-HISTORY_PATH = Path(__file__).resolve().parent / "prices-history.json"
 DEFAULT_PRICE = {"input": 3.0, "output": 15.0, "cache_read": 3.0}  # review.py's unpriced fallback
 
 
 def load_history() -> dict:
-    return json.loads(HISTORY_PATH.read_text()).get("models", {})
-
-
-def load_prices() -> dict:
-    """Current snapshot (prices.json HEAD), normalised to the same per-model rate dict shape."""
-    raw = json.loads(PRICES_PATH.read_text())
-    return {m: p for m, p in raw.items() if not m.startswith("_")}
+    """The dated price table: {model: [window, ...]} straight from prices.json."""
+    return json.loads(PRICES_PATH.read_text()).get("models", {})
 
 
 def price_window(history: dict, model: str, date: str) -> dict | None:
@@ -104,31 +98,6 @@ def cost_from_window(win: dict, inp: int, cached: int, out: int) -> float:
     cr = rates.get("cache_read", pin)
     return ((inp - cached) * pin + cached * cr + out * pout) / 1e6
 
-
-def _warn_history_drift(history: dict, current: dict) -> None:
-    """The newest window per model should equal prices.json; if not, the dated table and the
-    runtime snapshot have drifted (someone edited one and not the other) — flag it loudly."""
-    for model, p in current.items():
-        windows = history.get(model)
-        if not windows:
-            print(f"  warning: {model} is in prices.json but missing from prices-history.json",
-                  file=sys.stderr)
-            continue
-        head = windows[-1]
-        if any(head.get(k) != p.get(k) for k in ("input", "output", "cache_read")):
-            print(f"  warning: prices-history.json head for {model} != prices.json "
-                  f"(history {head.get('input')}/{head.get('output')} vs "
-                  f"current {p.get('input')}/{p.get('output')}) — add a dated window or sync",
-                  file=sys.stderr)
-
-HEADER_RE = re.compile(r"round: reviewing PR #(?P<pr>\d+) @ (?P<sha>[0-9a-f]+)")
-TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
-FNAME_TS_RE = re.compile(r"task-(\d{8})-(\d{6})\.log$")
-COST_RE = re.compile(
-    r"^ROUND (?P<n>\d+) \(commit\) (?P<verdict>approved|changes requested|blocked)\s+"
-    r"\(ran (?P<k>\d+):.*?;\s*cost \$(?P<cost>[0-9.]+),\s*today \$(?P<today>[0-9.]+)",
-    re.MULTILINE,
-)
 
 HEADER_RE = re.compile(r"round: reviewing PR #(?P<pr>\d+) @ (?P<sha>[0-9a-f]+)")
 TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
@@ -252,7 +221,7 @@ def _warn_unpriced(unpriced):
     if unpriced:
         miss = ", ".join(f"{m or '?'}×{n}" for m, n in sorted(unpriced.items()))
         print(f"  warning: {sum(unpriced.values())} rubric run(s) used a model absent from "
-              f"prices-history.json (fell back to {DEFAULT_PRICE['input']}/{DEFAULT_PRICE['output']}"
+              f"prices.json (fell back to {DEFAULT_PRICE['input']}/{DEFAULT_PRICE['output']}"
               f"): {miss}", file=sys.stderr)
 
 
@@ -270,7 +239,6 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
     con.execute("DELETE FROM rubric_runs")
     con.execute("DELETE FROM review_rounds WHERE source='store'")
     history = load_history()
-    _warn_history_drift(history, load_prices())
     today = datetime.now().strftime("%Y-%m-%d")
     unpriced: dict[str, int] = {}
     agg: dict[tuple[int, int], dict] = {}
@@ -315,7 +283,6 @@ def ingest_data(con: sqlite3.Connection, data_dir: Path, include_shadows: bool =
     con.execute("DELETE FROM rubric_runs")
     con.execute("DELETE FROM review_rounds WHERE source='data'")
     history = load_history()
-    _warn_history_drift(history, load_prices())
     today = datetime.now().strftime("%Y-%m-%d")
     unpriced: dict[str, int] = {}
     agg: dict[tuple[int, int], dict] = {}

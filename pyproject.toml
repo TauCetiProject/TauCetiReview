@@ -20,4 +20,4 @@ build-backend = "setuptools.build_meta"
 packages = ["runner"]
 
 [tool.setuptools.package-data]
-runner = ["prices.json", "prices-history.json"]
+runner = ["prices.json"]

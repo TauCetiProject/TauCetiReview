@@ -62,23 +62,24 @@ are kept as recorded.
 
 **Each run is priced as of its own date, not today's prices.** "What did this run
 cost?" must use the rate in effect when it ran — repricing a May run at June rates
-is wrong. So the rates come from [`prices-history.json`](prices-history.json), a
-**dated** table: each model maps to windows with an `effective` date. A genuine
-provider price change *adds* a dated window (old runs keep the old rate); a
-correction of a wrong past table *edits* the window covering the affected dates.
-`prices.json` stays the engine's runtime snapshot and is used only for the explicit
-"at today's prices" forecast; the tool warns if the two drift apart.
+is wrong. The rates come from [`prices.json`](prices.json), which is a single
+**dated** table (the *same* file the engine bills from): each model maps to windows
+with an `effective` date. A genuine provider price change *adds* a dated window (old
+runs keep the old rate); a correction of a wrong past table *edits* the window
+covering the affected dates. The engine bills at the newest window; the analysis
+prices each run at the window covering its run date. Because there is only one file,
+there is nothing to drift against.
 
 Three lenses, all derived, never stored as authoritative:
 
 | Lens | Rates used | Answers |
 |------|-----------|---------|
-| **faithful** (`cost_usd`, the headline) | history, as of the run's date | "what did this run cost?" |
-| **forecast** (`cost_today`) | `prices.json` HEAD | "what would this cost today?" |
+| **faithful** (`cost_usd`, the headline) | the window covering the run's date | "what did this run cost?" |
+| **forecast** (`cost_today`) | the newest window | "what would this cost today?" |
 | **as-recorded** (`cost_recorded`) | whatever the engine wrote then | "what did the budget gate see?" |
 
 The report prints all three totals so drift between them is explicit, and warns on
-stderr if a record's model is missing from `prices-history.json` (it falls back to
+stderr if a record's model is missing from `prices.json` (it falls back to
 `DEFAULT_PRICE`). **Tokens are measured; dollars are imputed** — ~89% of rounds are
 derived from the price table, and ~70% of input tokens are cache hits, so the
 figure sits far below tokens×list-price.
