@@ -25,29 +25,46 @@ real `usage` block (`input_tokens`, `cached_input_tokens`, `output_tokens`,
 timestamps. `--source auto` (default) uses the store if present, else the logs —
 never both, so nothing is double-counted.
 
-### Pricing — recomputed from `prices.json`
+### Pricing — cost is derived from tokens, priced as of each run's date
 
-[`runner/prices.json`](prices.json) is the single source of truth, and this tool
-**recomputes** every *estimated* cost from it rather than trusting the `cost_usd`
-the engine recorded at review time. Older records were written with stale rates
-(and, before the cache-aware fix, charged cache-read tokens at full input rate),
-so the as-recorded numbers are internally inconsistent. Recomputing values the
-*measured token counts* uniformly at current rates, using the same formula
-`review.py` applies to estimated costs:
+Cost is **not a stored fact** — it is `f(tokens, prices)`. The immutable fact is
+the token count; the engine's recorded `cost_usd` was computed at review time with
+whatever `prices.json` was live then (older records used stale rates and, before
+the cache-aware fix, charged cache-read tokens at full input rate), so it can't be
+trusted. This tool **recomputes** every *estimated* (codex/pi) cost from tokens,
+using the same cache-aware formula `review.py` applies:
 
 ```
 cost = ((input − cached)·input_rate + cached·cache_read + output·output_rate) / 1e6
 ```
 
-Real provider-billed costs (`cost_estimated: false` — e.g. the claude CLI's
-self-reported `total_cost_usd`) are kept as recorded. The report prints both the
-recomputed and as-recorded totals so price drift is visible, and warns on stderr
-if a record's model is missing from `prices.json` (it falls back to the engine's
-`DEFAULT_PRICE`).
+escalating the whole request to the long-context tier when input crosses a model's
+threshold (e.g. gpt-5.5 above 272K). Real provider-billed costs
+(`cost_estimated: false` — e.g. the claude CLI's self-reported `total_cost_usd`)
+are kept as recorded.
 
-**Tokens are measured; dollars are an estimate** — ~89% of rounds are estimated
-(codex/pi, derived from `prices.json`), and ~71% of input tokens are cache hits,
-so the dollar figure sits far below tokens×list-price.
+**Each run is priced as of its own date, not today's prices.** "What did this run
+cost?" must use the rate in effect when it ran — repricing a May run at June rates
+is wrong. So the rates come from [`prices-history.json`](prices-history.json), a
+**dated** table: each model maps to windows with an `effective` date. A genuine
+provider price change *adds* a dated window (old runs keep the old rate); a
+correction of a wrong past table *edits* the window covering the affected dates.
+`prices.json` stays the engine's runtime snapshot and is used only for the explicit
+"at today's prices" forecast; the tool warns if the two drift apart.
+
+Three lenses, all derived, never stored as authoritative:
+
+| Lens | Rates used | Answers |
+|------|-----------|---------|
+| **faithful** (`cost_usd`, the headline) | history, as of the run's date | "what did this run cost?" |
+| **forecast** (`cost_today`) | `prices.json` HEAD | "what would this cost today?" |
+| **as-recorded** (`cost_recorded`) | whatever the engine wrote then | "what did the budget gate see?" |
+
+The report prints all three totals so drift between them is explicit, and warns on
+stderr if a record's model is missing from `prices-history.json` (it falls back to
+`DEFAULT_PRICE`). **Tokens are measured; dollars are imputed** — ~89% of rounds are
+derived from the price table, and ~70% of input tokens are cache hits, so the
+figure sits far below tokens×list-price.
 
 > The durable archive ([TauCetiData](https://github.com/FormalFrontier/TauCetiData))
 > stores records in a different `records/runs/<pr>/<run_id>.json` layout; this tool
@@ -74,7 +91,7 @@ commits land under the contributor's account.
 
 ## Schema (for ad-hoc SQL)
 
-- `rubric_runs(pr, round_no, rubric, provider, model, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, cost_usd, cost_recorded, cost_estimated, verdict, ts)` — finest grain (store only); `cost_usd` is recomputed from `prices.json` for estimated rows, `cost_recorded` is the engine's original
+- `rubric_runs(pr, round_no, rubric, provider, model, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, cost_usd, cost_today, cost_recorded, cost_estimated, verdict, ts)` — finest grain (store only); `cost_usd` = faithful (priced as of `ts`'s date), `cost_today` = forecast (today's prices), `cost_recorded` = engine's original
 - `review_rounds(key, source, pr, round_no, ts, day, verdict, rubrics_run, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, cost, est_frac)` — per-round aggregate
 - `prs(pr, state, additions, deletions, created_at, merged_at, closed_at, title, author_agent, author_name, fetched_at)`
 

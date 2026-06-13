@@ -61,29 +61,65 @@ CACHE = Path.home() / ".cache" / "tauceti-review"
 DEFAULT_DB = CACHE / "review-costs.db"
 DEFAULT_OUT = CACHE / "review-costs.svg"
 DEFAULT_REPO = "FormalFrontier/TauCeti"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
-# prices.json (sibling) is the single source of truth — the same file review.py loads.
-# We recompute every *estimated* cost from it so the report reflects current rates and the
-# cache-aware formula uniformly, rather than trusting cost_usd values written by older engine
-# versions (stale prices / no cache discount). Real provider-billed costs are kept as recorded.
+# Cost is DERIVED, not a stored fact. We recompute every *estimated* (codex/pi) review from the
+# token counts — the only immutable fact — applying the cache-aware formula. Crucially we price
+# each run AS OF ITS OWN DATE, not today's prices: a faithful answer to "what did this run cost?"
+# must use the rate that was in effect when it ran. prices-history.json is that dated table;
+# prices.json (the engine's runtime snapshot) is used only for the explicit "at today's prices"
+# forecast. Real provider-billed costs (cost_estimated=false) are kept as recorded.
 PRICES_PATH = Path(__file__).resolve().parent / "prices.json"
-DEFAULT_PRICE = (3.0, 15.0)  # mirrors review.py's fallback for an unpriced model
+HISTORY_PATH = Path(__file__).resolve().parent / "prices-history.json"
+DEFAULT_PRICE = {"input": 3.0, "output": 15.0, "cache_read": 3.0}  # review.py's unpriced fallback
 
 
-def load_prices():
-    raw = {k: v for k, v in json.loads(PRICES_PATH.read_text()).items() if not k.startswith("_")}
-    pio = {m: (p["input"], p["output"]) for m, p in raw.items()}
-    cache = {m: p.get("cache_read", p["input"]) for m, p in raw.items()}
-    return pio, cache
+def load_history() -> dict:
+    return json.loads(HISTORY_PATH.read_text()).get("models", {})
 
 
-def recompute_cost(model, inp, cached, out, prices, cache_read):
-    """The exact formula review.py uses for estimated (codex/pi) costs, applied with the
-    current prices.json: cached_input is a subset of input billed at the cache-read rate."""
-    pin, pout = prices.get(model, DEFAULT_PRICE)
-    cr = cache_read.get(model, pin)
+def load_prices() -> dict:
+    """Current snapshot (prices.json HEAD), normalised to the same per-model rate dict shape."""
+    raw = json.loads(PRICES_PATH.read_text())
+    return {m: p for m, p in raw.items() if not m.startswith("_")}
+
+
+def price_window(history: dict, model: str, date: str) -> dict | None:
+    """The rate window in effect for `model` on `date` ('YYYY-MM-DD'); None if unpriced."""
+    windows = history.get(model)
+    if not windows:
+        return None
+    eligible = [w for w in windows if w["effective"] <= date]
+    return eligible[-1] if eligible else windows[0]  # before the first window: earliest known
+
+
+def cost_from_window(win: dict, inp: int, cached: int, out: int) -> float:
+    """Cache-aware cost (cached_input is a subset of input billed at the cache-read rate),
+    escalating the WHOLE request to the long-context tier when input crosses its threshold."""
+    rates = win
+    lc = win.get("long_context")
+    if lc and inp > lc["threshold"]:
+        rates = lc
+    pin, pout = rates["input"], rates["output"]
+    cr = rates.get("cache_read", pin)
     return ((inp - cached) * pin + cached * cr + out * pout) / 1e6
+
+
+def _warn_history_drift(history: dict, current: dict) -> None:
+    """The newest window per model should equal prices.json; if not, the dated table and the
+    runtime snapshot have drifted (someone edited one and not the other) — flag it loudly."""
+    for model, p in current.items():
+        windows = history.get(model)
+        if not windows:
+            print(f"  warning: {model} is in prices.json but missing from prices-history.json",
+                  file=sys.stderr)
+            continue
+        head = windows[-1]
+        if any(head.get(k) != p.get(k) for k in ("input", "output", "cache_read")):
+            print(f"  warning: prices-history.json head for {model} != prices.json "
+                  f"(history {head.get('input')}/{head.get('output')} vs "
+                  f"current {p.get('input')}/{p.get('output')}) — add a dated window or sync",
+                  file=sys.stderr)
 
 HEADER_RE = re.compile(r"round: reviewing PR #(?P<pr>\d+) @ (?P<sha>[0-9a-f]+)")
 TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
@@ -139,8 +175,11 @@ def connect(db_path: Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS rubric_runs (
             pr INTEGER, round_no INTEGER, rubric TEXT, provider TEXT, model TEXT,
             input_tokens INTEGER, cached_input_tokens INTEGER, output_tokens INTEGER,
-            reasoning_tokens INTEGER, cost_usd REAL, cost_recorded REAL, cost_estimated INTEGER,
-            verdict TEXT, ts TEXT,
+            reasoning_tokens INTEGER,
+            cost_usd REAL,        -- faithful: priced as of the run's own date (the headline metric)
+            cost_today REAL,      -- forecast: the same tokens valued at today's prices.json
+            cost_recorded REAL,   -- what the engine wrote at review time (stale rates / old formula)
+            cost_estimated INTEGER, verdict TEXT, ts TEXT,
             PRIMARY KEY (pr, round_no, rubric)
         );
         CREATE TABLE IF NOT EXISTS prs (
@@ -175,7 +214,10 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
                 ts_map[(int(pr), rd.get("round"))] = rd.get("ts")
     con.execute("DELETE FROM rubric_runs")
     con.execute("DELETE FROM review_rounds WHERE source='store'")
-    prices, cache_read = load_prices()
+    history = load_history()
+    current = load_prices()
+    _warn_history_drift(history, current)
+    today = datetime.now().strftime("%Y-%m-%d")
     unpriced: dict[str, int] = {}
     agg: dict[tuple[int, int], dict] = {}
     nrub = 0
@@ -202,23 +244,26 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
         recorded = d.get("cost_usd", 0) or 0
         est = 1 if d.get("cost_estimated") else 0
         model = d.get("model")
-        # Estimated costs (codex/pi, derived from prices.json) are recomputed from current
-        # prices.json so the report is uniform and not skewed by stale historical rates;
-        # real provider-billed costs (cost_estimated=false, e.g. claude self-reported) are kept.
-        if est:
-            cost = recompute_cost(model, it, ct, ot, prices, cache_read)
-            if model not in prices:
-                unpriced[model] = unpriced.get(model, 0) + 1
-        else:
-            cost = recorded
         verdict = (d.get("verdict_obj") or {}).get("verdict") or d.get("verdict")
         raw_ts = ts_map.get((pr, rd))
         ts = (_norm_ts(raw_ts) if raw_ts
               else datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
+        # Estimated (codex/pi) costs are derived from tokens: faithfully at the run's own date,
+        # plus a forecast at today's prices. Real provider-billed costs are kept as recorded.
+        if est:
+            win = price_window(history, model, ts[:10])
+            now = price_window(history, model, today)
+            if win is None:
+                win = now = {**DEFAULT_PRICE}
+                unpriced[model] = unpriced.get(model, 0) + 1
+            cost = cost_from_window(win, it, ct, ot)
+            cost_today = cost_from_window(now, it, ct, ot)
+        else:
+            cost = cost_today = recorded
         con.execute(
-            "INSERT OR REPLACE INTO rubric_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO rubric_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (pr, rd, rubric, d.get("provider"), model, it, ct, ot, rt,
-             cost, recorded, est, verdict, ts),
+             cost, cost_today, recorded, est, verdict, ts),
         )
         nrub += 1
         a = agg.setdefault((pr, rd), dict(it=0, ct=0, ot=0, rt=0, cost=0.0, est=0,
@@ -243,7 +288,8 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
     if unpriced:
         miss = ", ".join(f"{m or '?'}×{n}" for m, n in sorted(unpriced.items()))
         print(f"  warning: {sum(unpriced.values())} rubric run(s) used a model absent from "
-              f"prices.json (fell back to {DEFAULT_PRICE}): {miss}", file=sys.stderr)
+              f"prices-history.json (fell back to {DEFAULT_PRICE['input']}/{DEFAULT_PRICE['output']}"
+              f"): {miss}", file=sys.stderr)
     return len(agg), nrub
 
 
@@ -482,14 +528,19 @@ def report(con, window="day", csv_path=None):
         est = con.execute("SELECT AVG(est_frac) FROM review_rounds WHERE est_frac IS NOT NULL").fetchone()[0]
         print(f"\nTOKENS   input {fmt_tok(ti)} (cached {fmt_tok(tc)}, "
               f"{100*tc/ti:.0f}%) · output {fmt_tok(to)} · reasoning {fmt_tok(tr)}")
-        print(f"DOLLARS  {fmt_money(s['total'])} imputed "
-              f"({100*(est or 0):.0f}% of rounds' cost is *estimated*, tokens are measured)")
-        rec = con.execute("SELECT SUM(cost_usd), SUM(cost_recorded) FROM rubric_runs").fetchone()
-        if rec and rec[1] is not None:
-            delta = (rec[0] or 0) - (rec[1] or 0)
-            print(f"         recomputed from prices.json vs as-recorded by the engine: "
-                  f"{fmt_money(rec[0])} vs {fmt_money(rec[1])} "
-                  f"({'+' if delta >= 0 else '−'}{fmt_money(abs(delta))})")
+        print(f"DOLLARS  {fmt_money(s['total'])} imputed — each run priced as of its own date "
+              f"(faithful; {100*(est or 0):.0f}% of rounds derived from tokens, tokens measured)")
+        rec = con.execute("SELECT SUM(cost_usd), SUM(cost_today), SUM(cost_recorded) "
+                          "FROM rubric_runs").fetchone()
+        if rec and rec[2] is not None:
+            faithful, fc, recorded = rec[0] or 0, rec[1] or 0, rec[2] or 0
+            d = faithful - recorded
+            print(f"         vs at today's prices.json (forecast): {fmt_money(fc)}"
+                  + ("  (same — no provider price changes on record yet)"
+                     if abs(fc - faithful) < 0.01 else ""))
+            print(f"         vs engine's as-recorded total: {fmt_money(recorded)} "
+                  f"({'+' if d >= 0 else '−'}{fmt_money(abs(d))} — old runs used a stale table "
+                  f"with no cache discount, since fixed)")
     else:
         print(f"DOLLARS  {fmt_money(s['total'])} imputed  (no token data — log source)")
 
