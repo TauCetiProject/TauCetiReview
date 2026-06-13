@@ -58,7 +58,29 @@ _PRICES_RAW = {k: v for k, v in
                .items() if not k.startswith("_")}
 PRICES = {m: (p["input"], p["output"]) for m, p in _PRICES_RAW.items()}
 CACHE_READ = {m: p.get("cache_read", p["input"]) for m, p in _PRICES_RAW.items()}
-DEFAULT_PRICE = (3.0, 15.0)
+DEFAULT_PRICE = (3.0, 15.0)  # last-resort fallback; require_priced() makes it unreachable in practice
+# The exact prices.json that produced this run's costs — stamped onto every archived run so a
+# stored cost_usd is auditable and its staleness is detectable (rates change; the tokens don't).
+PRICES_SHA = hashlib.sha256(
+    (pathlib.Path(__file__).resolve().parent / "prices.json").read_bytes()).hexdigest()[:12]
+# Sonnet is a cheaper claude-family A/B arm (the claude CLI pinned to Sonnet); a named constant so
+# the price-coverage guard and its test see the same id the dispatcher uses.
+SONNET_MODEL = "claude-sonnet-4-6"
+
+
+def dispatch_models(claude_model=CLAUDE_MODEL, codex_model=CODEX_MODEL):
+    """Every model id the engine can dispatch — the set that must be priced."""
+    return {claude_model, codex_model, SONNET_MODEL, *OPENROUTER_MODELS.values()}
+
+
+def require_priced(models):
+    """Fail fast (before spending any tokens) if a model the run will dispatch has no price —
+    an unpriced model silently mis-charges the daily budget. prices.json must stay in sync with
+    the model registry (a CI test enforces it for the defaults)."""
+    missing = sorted(m for m in models if m not in PRICES)
+    if missing:
+        raise SystemExit(f"unpriced model(s) {missing}: add them to prices.json "
+                         f"(known: {sorted(PRICES)})")
 
 
 def sh(cmd, cwd=None, env=None, stdin_text=None):
@@ -875,7 +897,7 @@ def main():
     runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model),
                # sonnet is the same claude CLI runner pinned to Sonnet — a cheaper claude-family
                # A/B arm, selected explicitly (never auto-drawn) via --reviewer sonnet.
-               "sonnet": (run_claude, "claude-sonnet-4-6")}
+               "sonnet": (run_claude, SONNET_MODEL)}
     # Every OpenRouter model is the same run_pi runner, differing only by model id.
     for name, mid in OPENROUTER_MODELS.items():
         runners[name] = (run_pi, mid)
@@ -883,6 +905,8 @@ def main():
     if not providers:
         print(f"no usable providers in --providers={a.providers!r}", file=sys.stderr)
         sys.exit(1)
+    # Fail before spending if any provider we'll actually dispatch has an unpriced model.
+    require_priced({runners[p][1] for p in providers})
     ran, run_results, stopped, halted = [], [], None, None
 
     def run_one(rubric):
@@ -961,7 +985,7 @@ def main():
                 "attempts": [{k: v for k, v in at.items() if k != "session_id"}
                              for at in attempts],
                 "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
-                "cost_estimated": res.get("cost_estimated"),
+                "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,
                 "verdict": vo.get("verdict") or "error", "confidence": vo.get("confidence"),
                 "summary": vo.get("summary"), "findings": vo.get("findings") or [],
                 "fidelity": "exact",

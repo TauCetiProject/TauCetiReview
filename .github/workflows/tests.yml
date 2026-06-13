@@ -1,0 +1,22 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Engine is dependency-free — no install step. Byte-compile, then run the price-coverage
+      # checks (every dispatchable model must be priced; prices.json must be well-formed).
+      - run: python -m py_compile runner/*.py
+      - run: python tests/test_prices.py

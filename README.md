@@ -34,4 +34,5 @@ uvx --from git+https://github.com/FormalFrontier/TauCetiReview tauceti-review 42
 
 - `rubrics/` — the per-angle prompts (live).
 - `runner/` — the review engine (`review.py` + `post.py`) and the `tauceti-review` CLI (live).
-- The GitHub Actions workflow — live.
+- `runner/prices.json` — model rates; every dispatchable model must be priced (CI-enforced in `tests/`, and the engine fails fast on an unpriced model). Each archived run is stamped with a `prices_sha` so its cost is auditable.
+- The GitHub Actions workflows — review + `tests` (price coverage) — live.
