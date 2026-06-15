@@ -5,6 +5,10 @@ The review rubrics and the machinery that runs review for
 downstream of Mathlib. Humans own these rubrics; AIs author the code; the human roadmaps
 live in [TauCetiRoadmap](https://github.com/FormalFrontier/TauCetiRoadmap).
 
+Tau Ceti is being incubated jointly by the [Lean FRO](https://lean-lang.org/fro/) and the
+[Mathlib Initiative](https://mathlib-initiative.org/), in partnership with academic and
+industry groups.
+
 ## How review works
 
 Reviewers run only after a PR's CI is green, so the mechanical layer (build, the axiom
@@ -29,6 +33,22 @@ bill. See [REVIEWING.md](REVIEWING.md):
 ```bash
 uvx --from git+https://github.com/FormalFrontier/TauCetiReview tauceti-review 42
 ```
+
+## Meta-review
+
+We A/B-test the reviews themselves, to measure and improve review quality. `judge.py` (in
+[TauCetiData](https://github.com/FormalFrontier/TauCetiData)) takes two review runs of the
+same `(pr, head_sha, rubric)` — production vs a `--shadow` arm with a different model or
+rubric version — and has AI judges pick the better one, grounded in the actual checked-out
+code (a fluent hallucinated finding should lose to a terse real one), in both presentation
+orders, with a cross-family panel to dilute self-preference bias. Hard and audit-sampled
+cases escalate to human meta-reviewers via `label.py`. The judgments and decisions feed
+win-rates per model and rubric version, and judge–human agreement.
+
+So far: several thousand archived review runs, a few hundred A/B pairs, and over a thousand AI
+judgments across five judge models and three judge-prompt versions, plus a first round of human
+decisions and preliminary calibration. All of it lives in
+[TauCetiData](https://github.com/FormalFrontier/TauCetiData); see its `docs/` for the design.
 
 ## Costs
 
