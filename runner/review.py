@@ -704,10 +704,17 @@ def main():
     ap.add_argument("--merge-path-prefix", default="TauCeti/",
                     help="auto-merge only PRs whose every changed path is under this prefix; "
                          "anything else (infra) is left for human merge")
-    ap.add_argument("--merge-allow-file", action="append", default=["TauCeti.lean"],
+    ap.add_argument("--merge-allow-file", action="append",
+                    default=["TauCeti.lean", "lake-manifest.json", "lean-toolchain"],
                     help="extra exact paths (besides --merge-path-prefix) an auto-mergeable PR "
-                         "may touch; defaults to the root aggregator TauCeti.lean so a PR can make "
-                         "a new module reachable from the root. Repeatable.")
+                         "may touch; defaults to the root aggregator TauCeti.lean (so a PR can make "
+                         "a new module reachable from the root) and the two machine-validated Lake "
+                         "pins lake-manifest.json / lean-toolchain (a forward bump — see --bump-guard). "
+                         "Repeatable.")
+    ap.add_argument("--bump-guard", default="",
+                    help="the bump-guard check conclusion for HEAD (GitHub's own result). When the PR "
+                         "touches a Lake pin (lake-manifest.json / lean-toolchain), auto-merge requires "
+                         "this to be SUCCESS — i.e. CI confirmed a forward-only bump. Ignored otherwise.")
     ap.add_argument("--merge-decision-file", default="",
                     help="write the auto-merge decision JSON here for a separate merge step")
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
@@ -1144,6 +1151,9 @@ def main():
         if a.auto_merge:
             paths = changed_paths(diff_full)
             allow = set(a.merge_allow_file or [])
+            # The two Lake pins may auto-merge only as a CI-validated forward bump.
+            pin_files = {"lake-manifest.json", "lean-toolchain"}
+            touches_pin = bool(paths & pin_files)
             code_only = bool(paths) and all(
                 p.startswith(a.merge_path_prefix) or p in allow for p in paths)
             all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
@@ -1154,6 +1164,9 @@ def main():
             elif not code_only:
                 reason = (f"PR touches paths outside {a.merge_path_prefix} "
                           f"(allowed extras: {sorted(allow)}); needs human merge")
+            elif touches_pin and a.bump_guard.upper() != "SUCCESS":
+                reason = (f"PR changes a Lake pin but bump-guard is not green "
+                          f"(={a.bump_guard or 'missing'}); needs human merge")
             else:
                 merge_ok, reason = True, f"all rubrics green on {head[:7]}; {a.merge_path_prefix}+root only"
         pathlib.Path(a.merge_decision_file).write_text(

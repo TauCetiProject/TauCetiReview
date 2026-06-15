@@ -64,6 +64,11 @@ jobs:
           CI_BUILD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.name=="build") | .conclusion] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
+          # bump-guard's conclusion for this head: required green before a PR that changes a
+          # Lake pin (lake-manifest.json / lean-toolchain) may auto-merge (see runner/review.py).
+          BUMP_GUARD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+            -q '[.statusCheckRollup[]? | select(.name=="bump-guard") | .conclusion] | first // ""')
+          echo "BUMP_GUARD=$BUMP_GUARD" >> "$GITHUB_ENV"
           gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
           # The PR title+body: the author's stated intent, sources, and dependencies. The
@@ -188,7 +193,7 @@ jobs:
             --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
             --rubrics-sha "$RUBRICS_SHA" --archive-dir store/outbox \
-            --ci-build "$CI_BUILD" $AM --merge-decision-file "$PWD/merge.json" \
+            --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" $AM --merge-decision-file "$PWD/merge.json" \
             --keys-dir "$RUNNER_TEMP/keys" \
             --scoreboard-file "$PWD/scoreboard.md" --threads-dir "$PWD/threads" \
             --post-plan-file "$PWD/post_plan.json"
