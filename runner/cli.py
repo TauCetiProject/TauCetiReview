@@ -60,6 +60,23 @@ def need(tool, hint):
         die(f"`{tool}` not found on PATH. {hint}")
 
 
+def stage_tree(src, dst, *, ignore_extra=()):
+    """Copy a pre-staged input tree (roadmap / Mathlib) into the workspace. symlinks=True so a symlink
+    in the staged tree is copied AS a symlink, never dereferenced — a malicious/stray link can't pull
+    host files into the reviewer workspace (and transcripts). Skip .git and heavy non-source dirs so a
+    plain dev checkout doesn't blow disk/time. Fail loudly instead of tracebacking."""
+    src_p, dst_p = pathlib.Path(src).resolve(), pathlib.Path(dst).resolve()
+    if not src_p.is_dir():
+        die(f"--*-dir source is not a directory: {src}")
+    if src_p == dst_p or dst_p.is_relative_to(src_p) or src_p.is_relative_to(dst_p):
+        die(f"staged source/dest overlap: {src_p} vs {dst_p}")
+    try:
+        shutil.copytree(src_p, dst_p, symlinks=True,
+                        ignore=shutil.ignore_patterns(".git", *ignore_extra))
+    except (OSError, shutil.Error) as e:
+        die(f"failed to stage {src_p} -> {dst_p}: {e}")
+
+
 def resolve_repo_dir(explicit):
     """Locate a TauCetiReview checkout providing rubrics/ and runner/ — engine and rubrics
     together, so they never drift. Order: --repo-dir, $TAUCETI_REVIEW_DIR, this source tree if it
@@ -184,6 +201,13 @@ def main():
                          "have available (claude, codex)")
     ap.add_argument("--no-mathlib", action="store_true",
                     help="skip fetching the pinned Mathlib source (faster; reuse checks weaker)")
+    ap.add_argument("--roadmap-dir", default="",
+                    help="use a pre-staged roadmap tree (copied into the workspace) instead of cloning "
+                         "--roadmap-repo. For sandboxes whose network can't reach a second repo "
+                         "(e.g. a repo-scoped review bubble): stage the roadmap on the host and mount it.")
+    ap.add_argument("--mathlib-dir", default="",
+                    help="use a pre-staged Mathlib source tree (copied into the workspace) instead of "
+                         "fetching it. Same motivation as --roadmap-dir; ignored with --no-mathlib.")
     ap.add_argument("--repo-dir", default="",
                     help="path to a TauCetiReview checkout (default: auto-detect / cached clone)")
     ap.add_argument("--workdir", default="", help="workspace dir (default: a fresh temp dir)")
@@ -295,12 +319,19 @@ def main():
     run(["git", "-C", str(work / "code"), "fetch", "-q", "--depth", "1", "origin", head], quiet=True)
     run(["git", "-C", str(work / "code"), "checkout", "-q", head], quiet=True)
     shutil.rmtree(work / "code" / ".git", ignore_errors=True)
-    run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.roadmap_repo}",
-         str(work / "roadmap")])
-    shutil.rmtree(work / "roadmap" / ".git", ignore_errors=True)
+    if a.roadmap_dir:   # pre-staged (e.g. mounted into a network-restricted bubble); copy, don't clone
+        stage_tree(a.roadmap_dir, work / "roadmap")
+    else:
+        run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.roadmap_repo}",
+             str(work / "roadmap")])
+        shutil.rmtree(work / "roadmap" / ".git", ignore_errors=True)
 
     mathlib_args = []
-    if not a.no_mathlib:
+    if not a.no_mathlib and a.mathlib_dir:   # pre-staged Mathlib source; copy into the workspace
+        stage_tree(a.mathlib_dir, work / "mathlib",
+                   ignore_extra=(".lake", "build", ".cache", ".elan"))
+        mathlib_args = ["--mathlib-path", "mathlib"]
+    elif not a.no_mathlib:
         # Mathlib rev comes from the PR head's own manifest here (local trusted use); CI instead
         # pins it from the base repo to avoid evaluating attacker-controlled manifests.
         manifest = work / "code" / "lake-manifest.json"
