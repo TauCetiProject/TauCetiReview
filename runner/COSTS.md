@@ -84,10 +84,6 @@ stderr if a record's model is missing from `prices.json` (it falls back to
 derived from the price table, and ~70% of input tokens are cache hits, so the
 figure sits far below tokens×list-price.
 
-> The durable archive ([TauCetiData](https://github.com/FormalFrontier/TauCetiData))
-> stores records in a different `records/runs/<pr>/<run_id>.json` layout; this tool
-> reads the live engine store. A TauCetiData reader is a clean follow-up.
-
 ## Usage
 
 ```bash

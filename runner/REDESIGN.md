@@ -25,7 +25,6 @@ object. One per (PR, rubric), stored on the `reviews` branch in `ledger.json`:
   "rubric": "placement",
   "provider": "claude", "model": "claude-opus-4-8",   // pinned after first run
   "verdict": "request_changes",                        // approve|request_changes|block|error
-  "confidence": "medium",
   "reviewed_sha": "<sha this verdict was produced on>",
   "approved_sha": "<sha of the last approve, or null>", // staleness compares this to HEAD
   "summary": "<neutral one-liner of what was checked>",

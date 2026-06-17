@@ -475,7 +475,7 @@ def update_case_file(state_map, rubric, res, head_sha):
     verdict = v.get("verdict") or "error"
     cf = state_map.setdefault(rubric, {})
     cf.update(rubric=rubric, provider=res.get("provider"), model=res.get("model"),
-              verdict=verdict, confidence=v.get("confidence"),
+              verdict=verdict,
               summary=v.get("summary", ""), findings=v.get("findings") or [],
               reviewed_sha=head_sha,
               # Execution provenance, so a later renderer or analysis can surface runtime/tokens
@@ -499,7 +499,7 @@ def build_reactivation_block(cf, reply_text=None):
            "This is the last verdict recorded for this rubric, made on an earlier commit. Treat "
            "it as evidence to AUDIT, not authority to preserve: re-adjudicate from the current "
            "code and diff, and do not keep the previous verdict for consistency.",
-           f"- prior verdict: {cf['verdict']} (confidence: {cf.get('confidence')})",
+           f"- prior verdict: {cf['verdict']}",
            f"- prior summary: {cf.get('summary')}"]
     for f in (cf.get("findings") or []):
         loc = (f.get("file") or "") + (f":{f['line']}" if f.get("line") else "")
@@ -1021,7 +1021,7 @@ def main():
                              for at in attempts],
                 "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
                 "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,
-                "verdict": vo.get("verdict") or "error", "confidence": vo.get("confidence"),
+                "verdict": vo.get("verdict") or "error",
                 "summary": vo.get("summary"), "findings": vo.get("findings") or [],
                 "fidelity": "exact",
             }
