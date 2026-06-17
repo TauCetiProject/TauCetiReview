@@ -36,14 +36,10 @@ Usage (installed as the ``tauceti-review-costs`` console script, or
 ``python3 -m runner.costs``)::
 
     tauceti-review-costs all                 # ingest + refresh PRs + report
-    tauceti-review-costs ingest [--source auto|store|logs] [--store PATH]
+    tauceti-review-costs ingest [--source auto|data|store|logs] [--data-dir PATH] [--store PATH]
     tauceti-review-costs prs                  # PR outcomes/LOC from GitHub (cached)
     tauceti-review-costs report [--window day|week] [--csv FILE]
     tauceti-review-costs graph [--out FILE]   # dependency-free SVG
-
-The durable archive repo (FormalFrontier/TauCetiData) stores records in a
-different ``records/runs/<pr>/<run_id>.json`` layout; this reads the live engine
-store. A TauCetiData reader would be a clean follow-up.
 """
 from __future__ import annotations
 
