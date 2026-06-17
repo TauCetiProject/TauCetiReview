@@ -717,6 +717,15 @@ def main():
                          "this to be SUCCESS — i.e. CI confirmed a forward-only bump. Ignored otherwise.")
     ap.add_argument("--merge-decision-file", default="",
                     help="write the auto-merge decision JSON here for a separate merge step")
+    ap.add_argument("--review-budget", type=int, default=8,
+                    help="lifetime budget of full review passes per PR: once a PR has been through "
+                         "this many full review rounds (reply rounds and dollar-budget-truncated "
+                         "rounds do not count) without reaching all-green, it is 'budget spent'. The "
+                         "review workflow turns that into a label the library's housekeeping CI closes "
+                         "on. Keep this in step with the worker's MAX_REVIEW_ROUNDS.")
+    ap.add_argument("--budget-file", default="",
+                    help="write the budget signal JSON ({budget_spent, round, all_green, ...}) here, "
+                         "for a separate step that reconciles the review-budget-spent label")
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
     ap.add_argument("--codex-model", default=CODEX_MODEL)
     ap.add_argument("--providers", default="claude,codex",
@@ -1076,6 +1085,9 @@ def main():
 
     states = {r: state_of(state_map.get(r), head) for r in candidates}
     overall = overall_label(list(states.values()), stopped)
+    # Every blocking rubric green on this head (fresh, not stale). Drives both the auto-merge gate
+    # and the budget signal below.
+    all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
     if stopped:
         budget_note = f"Deferred {stopped} and after to the next run."
     elif halted and any(s in ("absent", "stale") for s in states.values()):
@@ -1156,7 +1168,6 @@ def main():
             touches_pin = bool(paths & pin_files)
             code_only = bool(paths) and all(
                 p.startswith(a.merge_path_prefix) or p in allow for p in paths)
-            all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
             if not head:
                 reason = "no head_sha; refusing to merge"
             elif not all_green:
@@ -1172,6 +1183,24 @@ def main():
         pathlib.Path(a.merge_decision_file).write_text(
             json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
         print(f"[auto-merge] {merge_ok}: {reason}")
+
+    # Budget signal: a PR that has been through its full review budget without going green is "spent".
+    # A separate trusted step turns this into the review-budget-spent label, and the library's
+    # housekeeping CI closes spent PRs. Written on real review rounds only (init / daily-cap returned
+    # earlier), so the label reconciles to current review state every time a PR is actually reviewed.
+    # Count only full review passes: a reply re-runs a single contested rubric, so an author's back-
+    # and-forth must not burn the budget, and a round cut short by the daily dollar budget (`stopped`)
+    # is an incomplete pass that should not count either.
+    if a.budget_file:
+        prior_full = sum(1 for r in pr_state.get("rounds", []) if r.get("mode") != "reply")
+        full_rounds = prior_full + (0 if a.mode == "reply" else 1)
+        budget_spent = full_rounds >= a.review_budget and not all_green and not stopped
+        pathlib.Path(a.budget_file).write_text(json.dumps(
+            {"budget_spent": budget_spent, "round": round_num, "full_rounds": full_rounds,
+             "all_green": all_green, "stopped": bool(stopped), "budget": a.review_budget,
+             "head_sha": head}))
+        print(f"[budget] full_rounds {full_rounds}/{a.review_budget} (round {round_num}), "
+              f"all_green={all_green}, stopped={bool(stopped)}, spent={budget_spent}")
 
     round_cost = round(spent_today - spent_start, 6)
     pr_state["rounds"].append(
