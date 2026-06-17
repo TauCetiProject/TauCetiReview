@@ -67,7 +67,7 @@ Add `--post` to publish. Useful flags:
 |---|---|
 | `--post` | post the scoreboard comment + per-rubric review threads to the PR, under your GitHub login |
 | `--rubrics a,b,c` | review only these rubrics (default: all of them) |
-| `--reviewer claude\|codex\|deepseek\|minimax` | restrict to these reviewers (default: every one you have). `deepseek`/`minimax` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY` |
+| `--reviewer claude\|codex\|sonnet\|deepseek\|minimax\|grok` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). `claude`/`codex` are drawn per rubric like CI. `sonnet` is the `claude` CLI pinned to Sonnet. `deepseek`/`minimax`/`grok` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. `sonnet`/`deepseek`/`minimax`/`grok` are explicit-only (never auto-drawn) |
 | `--mode commit` | review only rubrics not already passing in the local store (default `manual` = all) |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `FormalFrontier/TauCeti`) |
