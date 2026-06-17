@@ -194,12 +194,12 @@ jobs:
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
             --rubrics-sha "$RUBRICS_SHA" --archive-dir store/outbox \
             --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" $AM --merge-decision-file "$PWD/merge.json" \
-            --keys-dir "$RUNNER_TEMP/keys" \
+            --keys-dir "$RUNNER_TEMP/keys" --budget-file "$PWD/budget.json" \
             --scoreboard-file "$PWD/scoreboard.md" --threads-dir "$PWD/threads" \
             --post-plan-file "$PWD/post_plan.json"
 
       # ---- Trusted phase: reviewers are done; mint scoped tokens only now ----
-      - name: Mint comment token (TauCeti pull-requests:write)
+      - name: Mint comment token (TauCeti pull-requests + issues:write)
         id: comment_token
         if: always()
         uses: actions/create-github-app-token@v1
@@ -209,6 +209,8 @@ jobs:
           owner: FormalFrontier
           repositories: TauCeti
           permission-pull-requests: write
+          # issues:write so the budget-label step can create the repo label on first use.
+          permission-issues: write
 
       - name: Post review (scoreboard + threads)
         # Executes the runner's post plan: upsert the in-place scoreboard and the per-rubric
@@ -221,6 +223,35 @@ jobs:
               --plan "$PWD/post_plan.json" --store store --archive-dir store/outbox
           else
             echo "no post plan (runner did not run, e.g. round cap); nothing to post"
+          fi
+
+      - name: Reconcile review-budget-spent label
+        # The runner writes budget.json on a real review round. When a PR has used its full review
+        # budget without going green it gets the `review-budget-spent` label; otherwise the label is
+        # cleared (a later round that fixes the PR removes it). The library's housekeeping CI closes
+        # labelled PRs, so this is a server-side signal it can query without re-reading every
+        # scoreboard. No budget.json (init / daily-cap) means the label is left untouched.
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.comment_token.outputs.token }}
+          LABEL: review-budget-spent
+        run: |
+          set -euo pipefail
+          if [ ! -f budget.json ]; then echo "no budget.json; leaving labels untouched"; exit 0; fi
+          R=FormalFrontier/TauCeti
+          if [ "$(jq -r '.budget_spent' budget.json)" = "true" ]; then
+            # Create the label only if it is missing, so a real failure surfaces instead of being hidden.
+            if ! gh label list --repo "$R" --search "$LABEL" --json name --jq '.[].name' \
+                 | grep -qx "$LABEL"; then
+              gh label create "$LABEL" --repo "$R" --color B60205 \
+                --description "Review budget spent without reaching green; housekeeping CI may close it"
+            fi
+            echo "marking #$PR $LABEL (full_rounds $(jq -r .full_rounds budget.json)/$(jq -r .budget budget.json))"
+            gh pr edit "$PR" --repo "$R" --add-label "$LABEL"
+          else
+            # Clear a previously-applied label once a later round fixes the PR. Removing an absent
+            # label is a harmless no-op we tolerate.
+            gh pr edit "$PR" --repo "$R" --remove-label "$LABEL" 2>/dev/null || true
           fi
 
       # ---- Archive sync: drain store/outbox into TauCetiData. Best-effort (the App may not
