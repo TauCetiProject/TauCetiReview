@@ -60,6 +60,23 @@ def need(tool, hint):
         die(f"`{tool}` not found on PATH. {hint}")
 
 
+def stage_tree(src, dst, *, ignore_extra=()):
+    """Copy a pre-staged input tree (roadmap / Mathlib) into the workspace. symlinks=True so a symlink
+    in the staged tree is copied AS a symlink, never dereferenced — a malicious/stray link can't pull
+    host files into the reviewer workspace (and transcripts). Skip .git and heavy non-source dirs so a
+    plain dev checkout doesn't blow disk/time. Fail loudly instead of tracebacking."""
+    src_p, dst_p = pathlib.Path(src).resolve(), pathlib.Path(dst).resolve()
+    if not src_p.is_dir():
+        die(f"--*-dir source is not a directory: {src}")
+    if src_p == dst_p or dst_p.is_relative_to(src_p) or src_p.is_relative_to(dst_p):
+        die(f"staged source/dest overlap: {src_p} vs {dst_p}")
+    try:
+        shutil.copytree(src_p, dst_p, symlinks=True,
+                        ignore=shutil.ignore_patterns(".git", *ignore_extra))
+    except (OSError, shutil.Error) as e:
+        die(f"failed to stage {src_p} -> {dst_p}: {e}")
+
+
 def resolve_repo_dir(explicit):
     """Locate a TauCetiReview checkout providing rubrics/ and runner/ — engine and rubrics
     together, so they never drift. Order: --repo-dir, $TAUCETI_REVIEW_DIR, this source tree if it
@@ -303,7 +320,7 @@ def main():
     run(["git", "-C", str(work / "code"), "checkout", "-q", head], quiet=True)
     shutil.rmtree(work / "code" / ".git", ignore_errors=True)
     if a.roadmap_dir:   # pre-staged (e.g. mounted into a network-restricted bubble); copy, don't clone
-        shutil.copytree(a.roadmap_dir, work / "roadmap", ignore=shutil.ignore_patterns(".git"))
+        stage_tree(a.roadmap_dir, work / "roadmap")
     else:
         run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.roadmap_repo}",
              str(work / "roadmap")])
@@ -311,7 +328,8 @@ def main():
 
     mathlib_args = []
     if not a.no_mathlib and a.mathlib_dir:   # pre-staged Mathlib source; copy into the workspace
-        shutil.copytree(a.mathlib_dir, work / "mathlib", ignore=shutil.ignore_patterns(".git"))
+        stage_tree(a.mathlib_dir, work / "mathlib",
+                   ignore_extra=(".lake", "build", ".cache", ".elan"))
         mathlib_args = ["--mathlib-path", "mathlib"]
     elif not a.no_mathlib:
         # Mathlib rev comes from the PR head's own manifest here (local trusted use); CI instead
@@ -402,14 +420,9 @@ def main():
     if a.shadow:
         print(f"shadow arm `{a.label}` complete — archived, nothing posted.", file=sys.stderr)
     elif a.post:
-        token = run(["gh", "auth", "token"], capture=True, quiet=True, allow_fail=True).stdout.strip()
+        token = run(["gh", "auth", "token"], capture=True, quiet=True).stdout.strip()
         if not token:
-            # A sandbox may authenticate `gh` via an ambient GH_TOKEN (e.g. a repo-scoped bubble proxy
-            # token in /etc/profile.d) without `gh auth token` echoing it. Fall back to that.
-            token = os.environ.get("GH_TOKEN", "")
-        if not token:
-            die("no GitHub token: `gh auth token` returned nothing and GH_TOKEN is unset; "
-                "run `gh auth login` first.")
+            die("`gh auth token` returned nothing; run `gh auth login` first.")
         print("posting scoreboard + threads to the PR as you…", file=sys.stderr)
         env = {**os.environ, "GH_TOKEN": token}
         run([sys.executable, str(repo_dir / "runner" / "post.py"),
