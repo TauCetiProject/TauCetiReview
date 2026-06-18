@@ -678,6 +678,11 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
         # has the complete verdict without re-deriving it from the rendered table. green == approved
         # at head_sha; anything else is not mergeable.
         states={r: state_of(state_map.get(r), head_sha) for r in candidates},
+        # The highest author-reply comment id adjudicated across all rubrics. GitHub comment ids are
+        # monotonic, so the worker can trigger a contest re-review precisely on `newest_reply_id >
+        # replies_through` — second-resolution timestamps would conflate two replies in one second.
+        replies_through=max((state_map.get(r, {}).get("last_reply_seen") or 0
+                             for r in candidates), default=0),
         runs=[run_meta(r) for r in (runs or [])])]
     return "\n".join(lines)
 
@@ -1187,6 +1192,10 @@ def main():
                  "by": "author", "body": reply_text})
         # Watermark the newest author reply this rubric has now adjudicated, so the same contest
         # never re-runs the model (the strict `>` in has_new_contest reads this back next round).
+        # This advances on the MODEL verdict, which is the substantive answer: the verdict lands on
+        # the scoreboard and the thread root (edited in place) regardless of the direct reply. The
+        # in-thread "Re: your reply" notification posted by post.py is best-effort — a rare partial
+        # post failure skips only that courtesy comment, not the adjudication itself.
         nr = newest_reply_id(cf)
         if nr is not None:
             cf["last_reply_seen"] = nr
