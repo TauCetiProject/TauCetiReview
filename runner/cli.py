@@ -226,6 +226,17 @@ def main():
     ap.add_argument("--no-archive", action="store_true",
                     help="skip writing durable archive records (and the TauCetiData sync). "
                          "Default: every run is archived to <store>/outbox and synced")
+    ap.add_argument("--no-sync", action="store_true",
+                    help="archive records to <store>/outbox but do NOT push them to TauCetiData. "
+                         "Use when a trusted caller drains the outbox afterwards with --sync-only, "
+                         "e.g. a network-restricted review bubble whose host syncs for it.")
+    ap.add_argument("--sync-only", action="store_true",
+                    help="do not review: just drain <store>/outbox into TauCetiData and exit "
+                         "(nonzero exit on push failure). Pairs with a prior --no-sync run.")
+    ap.add_argument("--submitted-by", default="",
+                    help="GitHub login to stamp on records as the publisher (metadata only — NOT "
+                         "part of any record's content identity/hash). Default: the gh-authenticated "
+                         "login, or $GITHUB_ACTOR in CI.")
     ap.add_argument("--data-dir", default="",
                     help="TauCetiData checkout the archive sync pushes through "
                          "(default: a cached clone under the cache dir)")
@@ -241,12 +252,41 @@ def main():
                          "(a cached per-SHA checkout), instead of the floating main")
     a = ap.parse_args()
 
+    # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
+    # host runs this after a --no-sync review (e.g. a bubble) to publish with its own creds. Loud:
+    # `run` (no allow_fail) exits nonzero if archive.py sync fails after its retries.
+    if a.sync_only:
+        need("git", "Install git.")
+        if not a.store:
+            die("--sync-only requires --store <dir>.")
+        outbox = pathlib.Path(a.store) / "outbox"
+        if not outbox.is_dir() or not any(p.is_file() for p in outbox.rglob("*")):
+            print("tauceti-review --sync-only: outbox empty; nothing to sync")
+            return
+        repo_dir = engine_at(a.rubrics_sha) if a.rubrics_sha else resolve_repo_dir(a.repo_dir)
+        data_dir = a.data_dir or str(CACHE_DIR / "data" / "TauCetiData")
+        run([sys.executable, str(repo_dir / "runner" / "archive.py"), "sync",
+             "--store", str(a.store), "--data-dir", data_dir])
+        return
+
+    # Who published this review (metadata only). Auto-detect unless the caller set it (incl. empty).
+    # Guard on `gh` existing: run() with allow_fail catches a nonzero exit but not a missing binary.
+    if not a.submitted_by and not any(
+            arg == "--submitted-by" or arg.startswith("--submitted-by=") for arg in sys.argv):
+        a.submitted_by = (os.environ.get("GITHUB_ACTOR")
+                          or (run(["gh", "api", "user", "--jq", ".login"],
+                                  capture=True, quiet=True, allow_fail=True).stdout.strip()
+                              if shutil.which("gh") else ""))
+
     if a.shadow and not a.label:
         die("--shadow requires --label <name> (it tags every archived record).")
     if a.shadow and a.post:
         die("--shadow and --post are mutually exclusive: shadow arms are never posted.")
     if a.shadow and a.no_archive:
         die("--shadow without archiving is pure spend; drop --no-archive.")
+    if a.shadow and a.no_sync:
+        die("--shadow with --no-sync archives to the cache, not <store>/outbox, so a host-side "
+            "--sync-only could not drain it; a shadow arm syncs itself — drop --no-sync.")
 
     need("git", "Install git.")
     need("gh", "Install the GitHub CLI and run `gh auth login`.")
@@ -397,6 +437,7 @@ def main():
            "--merge-base-sha", merge_base_sha(a.repo, base, head),
            "--rubrics-sha", rub_sha, *(["--rubrics-sha-approx"] if rub_approx else []),
            *(["--archive-dir", outbox] if outbox else []),
+           *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
            "--ci-build", ci_build or "", "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
            "--scoreboard-file", str(work / "scoreboard.md"),
@@ -435,8 +476,10 @@ def main():
               file=sys.stderr)
 
     # Drain the archive outbox into TauCetiData. Best-effort by design: a push outage keeps the
-    # records in <store>/outbox, and the next run (or `archive.py sync`) lands them.
-    if outbox and pathlib.Path(outbox).is_dir():
+    # records in <store>/outbox, and the next run (or `archive.py sync` / `--sync-only`) lands them.
+    # --no-sync skips this push: the records stay in the outbox for a trusted caller (the worker
+    # host) to drain with --sync-only, which is how a network-restricted bubble publishes.
+    if outbox and not a.no_sync and pathlib.Path(outbox).is_dir():
         data_dir = a.data_dir or str(CACHE_DIR / "data" / "TauCetiData")
         r = run([sys.executable, str(repo_dir / "runner" / "archive.py"), "sync",
                  "--store", str(outbox_store), "--data-dir", data_dir], allow_fail=True)
