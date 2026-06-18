@@ -227,9 +227,11 @@ def main():
             parent = t.get("in_reply_to") or (cf.get("thread") or {}).get("comment_id")
             if not parent or already_replied(a.repo, a.pr, rubric, t.get("reply_dedupe"), me):
                 continue
-            resp = gh_api("POST", f"/repos/{a.repo}/pulls/{a.pr}/comments",
-                          fields={"in_reply_to": parent}, body_file=t["body"],
-                          failures=failures, action=f"thread reply {rubric}")
+            # Use the dedicated "create a reply" endpoint (comment id in the PATH, body only) — the
+            # generic create-comment endpoint with `in_reply_to` rejects the field sent as a string
+            # ("not a number") via gh's raw -f, and needs commit_id/path it must omit for a reply.
+            resp = gh_api("POST", f"/repos/{a.repo}/pulls/{a.pr}/comments/{parent}/replies",
+                          body_file=t["body"], failures=failures, action=f"thread reply {rubric}")
             if resp and resp.get("id"):
                 posted_threads[f"{rubric}:reply"] = resp["id"]
             continue
