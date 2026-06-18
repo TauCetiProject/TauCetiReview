@@ -1,0 +1,128 @@
+name: merge-only
+
+# A cheap, no-dispatch auto-merge: read the EXISTING review ledger (reviews branch) and merge a
+# green PR if it is all-green and TauCeti/-only. Generates NO reviews, stages NO provider keys, and
+# runs NO reviewer — the reviews themselves are produced by people running tauceti-review locally;
+# CI just reads what is already on the ledger and merges. This keeps auto-merge automatic with the
+# expensive review API spend turned off (see runner/review.py --mode merge).
+
+on:
+  workflow_call:
+    inputs:
+      pr: { required: true, type: string }
+    secrets:
+      # Only the App credentials the merge needs — the caller passes these explicitly rather than
+      # inheriting all of TauCeti's secrets into this public-triggerable path.
+      APP_ID: { required: true }
+      APP_PRIVATE_KEY: { required: true }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tauceti-merge-${{ inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    env:
+      PR: ${{ inputs.pr }}
+    steps:
+      # No provider keys, no reviewer step — nothing here runs PR-influenced code, so the
+      # security posture is simpler than review.yml: only trusted GitHub-derived inputs.
+      - name: Checkout review repo (runner + rubrics)
+        uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCetiReview
+          ref: main
+          persist-credentials: false
+
+      - name: Checkout roadmap (public)
+        uses: actions/checkout@v4
+        with:
+          repository: FormalFrontier/TauCetiRoadmap
+          path: roadmap
+          persist-credentials: false
+
+      - name: Resolve PR head and fetch diff
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          BASE_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json baseRefOid -q .baseRefOid)
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          MERGE_BASE=$(gh api "/repos/FormalFrontier/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
+            --jq '.merge_base_commit.sha' 2>/dev/null || echo "")
+          echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
+          echo "RUBRICS_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          # `build` and `bump-guard` are the authoritative commit STATUSES that pr-build / bump-guard
+          # POST (state encodes scope + diff-size + audit), so read them by `.context`/`.state`, not
+          # the job CheckRun (whose name differs — bump-guard's job is "guard"). Missing -> "" -> the
+          # engine refuses to merge. Posted by the trusted base-repo CI; external authors cannot write
+          # statuses to the base repo.
+          CI_BUILD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+            -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="build") | .state] | first // ""')
+          echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
+          BUMP_GUARD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+            -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="bump-guard") | .state] | first // ""')
+          echo "BUMP_GUARD=$BUMP_GUARD" >> "$GITHUB_ENV"
+          gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
+          echo "diff lines: $(wc -l < diff.txt)"
+
+      - name: Prepare review store (reviews branch; public read, no token on disk)
+        # Read side only: clone the reviews-branch ledger so --mode merge can read it. This
+        # workflow never writes the ledger back (it dispatches nothing), so no store token is minted.
+        run: |
+          git clone --depth 1 --branch reviews --single-branch \
+            https://github.com/FormalFrontier/TauCetiReview store 2>/dev/null \
+            || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
+
+      - name: Compute merge decision from the existing ledger (no dispatch, no spend)
+        run: |
+          python3 runner/review.py \
+            --repo FormalFrontier/TauCeti --pr "$PR" --mode merge \
+            --rubrics-dir rubrics --tool-cwd . \
+            --diff-file diff.txt --store store \
+            --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
+            --rubrics-sha "$RUBRICS_SHA" \
+            --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" \
+            --merge-decision-file "$PWD/merge.json"
+
+      # ---- Auto-merge: mint the scoped merge token only now, and merge iff the decision is green.
+      # ---- The App must be a ruleset bypass actor and hold TauCeti contents:write for it to land.
+      - name: Mint merge token (TauCeti contents + pull-requests write)
+        id: merge_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: FormalFrontier
+          repositories: TauCeti
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Auto-merge if all rubrics approve and PR is TauCeti/-only
+        env: { GH_TOKEN: "${{ steps.merge_token.outputs.token }}" }
+        run: |
+          set -euo pipefail
+          if [ ! -f merge.json ] || [ "$(jq -r .merge merge.json)" != "true" ]; then
+            echo "not auto-merging: $(jq -r '.reason // "no decision file"' merge.json 2>/dev/null || echo 'no decision file')"
+            exit 0
+          fi
+          # Re-read state right before merging: the decision was computed for HEAD_SHA against a
+          # then-current base, but the App bypasses branch protection, so we re-verify here.
+          read -r CUR_HEAD STATE < <(gh pr view "$PR" --repo FormalFrontier/TauCeti \
+            --json headRefOid,mergeStateStatus -q '.headRefOid + " " + .mergeStateStatus')
+          if [ "$CUR_HEAD" != "$HEAD_SHA" ]; then
+            echo "head moved ($HEAD_SHA -> $CUR_HEAD) since the decision; skipping (a fresh build will re-trigger)."
+            exit 0
+          fi
+          if [ "$STATE" = "BEHIND" ]; then
+            echo "PR is behind base (not built against current main); skipping until it is rebased + rebuilt."
+            exit 0
+          fi
+          echo "auto-merging: $(jq -r .reason merge.json)"
+          # --match-head-commit binds the merge to exactly the reviewed commit: if the head races
+          # forward between this check and the merge, GitHub rejects it rather than merging untested code.
+          gh pr merge "$PR" --repo FormalFrontier/TauCeti --squash --match-head-commit "$HEAD_SHA"
