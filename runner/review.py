@@ -641,6 +641,10 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
     lines += ["", meta_block(
         "scoreboard", **(prov or {}),
         ts=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # Full per-rubric state at this head (not just this round's runs), so a reader (the merge gate)
+        # has the complete verdict without re-deriving it from the rendered table. green == approved
+        # at head_sha; anything else is not mergeable.
+        states={r: state_of(state_map.get(r), head_sha) for r in candidates},
         runs=[run_meta(r) for r in (runs or [])])]
     return "\n".join(lines)
 
