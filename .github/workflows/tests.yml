@@ -20,3 +20,4 @@ jobs:
       # checks (every dispatchable model must be priced; prices.json must be well-formed).
       - run: python -m py_compile runner/*.py
       - run: python tests/test_prices.py
+      - run: python tests/test_post.py

@@ -42,6 +42,91 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
         return {}
 
 
+SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
+TRUSTED_ASSOC = {"OWNER", "MEMBER", "COLLABORATOR"}
+REVIEW_BOT = "tauceti-review-bot[bot]"
+
+
+def current_login():
+    """Who this token acts as: the operator for a user token, or the review bot for an installation
+    token (which cannot read /user). We only ever edit/delete comments authored by this login, so a
+    write-scoped token never overwrites or removes a comment belonging to someone else."""
+    r = subprocess.run(["gh", "api", "user", "--jq", ".login"], text=True, capture_output=True)
+    login = (r.stdout or "").strip()
+    return login if (r.returncode == 0 and login) else REVIEW_BOT
+
+
+def find_scoreboard_comments(repo, pr):
+    """Trusted scoreboard comments on the PR as {id, login, ...}, newest first.
+
+    So a review run whose local store does not know the scoreboard's comment id (the PR was last
+    scored by CI or another machine) can edit the existing comment in place instead of posting a
+    duplicate. Trust mirrors the consumer side: the scoreboard marker AND a repo-associated author
+    (or the review bot) — a forged scoreboard from an untrusted commenter is ignored. `@json` forces
+    one compact object per line so parsing is robust. Best-effort: returns [] on any API error."""
+    r = subprocess.run(
+        ["gh", "api", "--paginate", f"/repos/{repo}/issues/{pr}/comments", "--jq",
+         '.[] | select((.body // "") | contains("' + SCOREBOARD_MARKER + '")) '
+         '| {id, login: (.user.login // ""), assoc: (.author_association // ""), '
+         'updated_at: (.updated_at // "")} | @json'],
+        text=True, capture_output=True)
+    if r.returncode != 0:
+        print(f"scoreboard lookup failed: {r.stderr[-300:]}", file=sys.stderr)
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            c = json.loads(line)
+        except Exception:
+            continue
+        if c.get("assoc") in TRUSTED_ASSOC or c.get("login") == REVIEW_BOT:
+            out.append(c)
+    out.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
+    return out
+
+
+def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=None):
+    """Publish the PR's single scoreboard comment, editing OUR existing one in place rather than
+    duplicating, and collapsing OUR older duplicates.
+
+    The comment to edit is our store/plan id, or — when the store does not know it (the PR was last
+    scored by CI or another machine) — the newest scoreboard WE authored, discovered on GitHub. We
+    only ever PATCH/DELETE our own comments (a write-scoped token could technically remove another
+    account's comment; we must not). If the only scoreboard present belongs to someone else, we post
+    our own and let the consumer's newest-wins read pick it. A failed edit of our own comment is a
+    real error, never silently re-posted. Returns (sb_id, ok). `mine` overrides the actor login."""
+    sb_id = pr_state.get("scoreboard_comment_id") or plan_sb_id
+    mine_dupes = []                      # older scoreboards WE authored, to collapse
+    if not sb_id:
+        me = mine if mine is not None else current_login()
+        ours = [c for c in find_scoreboard_comments(repo, pr) if c.get("login") == me]
+        if ours:
+            sb_id = ours[0]["id"]
+            mine_dupes = [c["id"] for c in ours[1:]]
+    ok = False
+    if sb_id:
+        if gh_api("PATCH", f"/repos/{repo}/issues/comments/{sb_id}", body_file=body_file,
+                  failures=failures, action="scoreboard PATCH") is not None:
+            pr_state["scoreboard_comment_id"] = sb_id
+            ok = True
+    else:
+        resp = gh_api("POST", f"/repos/{repo}/issues/{pr}/comments",
+                      body_file=body_file, failures=failures, action="scoreboard POST")
+        if resp and resp.get("id"):
+            pr_state["scoreboard_comment_id"] = sb_id = resp["id"]
+            ok = True
+        else:
+            print("post.py: scoreboard create failed", file=sys.stderr)
+            sb_id = None
+    for dup in mine_dupes:               # collapse our own older duplicates (best-effort)
+        if dup and dup != sb_id:
+            gh_api("DELETE", f"/repos/{repo}/issues/comments/{dup}",
+                   action=f"scoreboard collapse {dup}")
+    return sb_id, ok
+
+
 def resolve_thread(repo, pr, comment_id):
     """Resolve (collapse) the review thread whose root comment is `comment_id`, so a finding the
     author has cleared stops cluttering the conversation. Best-effort; failures are logged."""
@@ -91,22 +176,10 @@ def main():
     failures, posted_threads = [], {}
     scoreboard_ok = False
 
-    # 1) Scoreboard: edit in place if we know its id, else create and remember it.
-    sb_id = pr_state.get("scoreboard_comment_id") or plan.get("scoreboard_comment_id")
-    if sb_id:
-        if gh_api("PATCH", f"/repos/{a.repo}/issues/comments/{sb_id}",
-                  body_file=plan["scoreboard_body"], failures=failures,
-                  action="scoreboard PATCH") is not None:
-            scoreboard_ok = True
-    else:
-        resp = gh_api("POST", f"/repos/{a.repo}/issues/{a.pr}/comments",
-                      body_file=plan["scoreboard_body"], failures=failures,
-                      action="scoreboard POST")
-        if resp and resp.get("id"):
-            pr_state["scoreboard_comment_id"] = sb_id = resp["id"]
-            scoreboard_ok = True
-        else:
-            print("post.py: scoreboard create failed", file=sys.stderr)
+    # 1) Scoreboard: one comment per PR, edited in place (discovered from GitHub if our store does
+    #    not know its id), with older duplicates collapsed.
+    sb_id, scoreboard_ok = upsert_scoreboard(
+        a.repo, a.pr, plan["scoreboard_body"], plan.get("scoreboard_comment_id"), pr_state, failures)
 
     # 2) Per-rubric threads (only rubrics that ran this round appear in the plan).
     for t in plan.get("threads", []):
