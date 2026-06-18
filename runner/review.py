@@ -450,6 +450,20 @@ def is_blocking(state):
     return is_unresolved(state) or state == "absent"
 
 
+def newest_reply_id(cf):
+    """The highest author-reply comment id recorded for this rubric, or None. GitHub comment ids
+    are monotonic, so this is the watermark a re-run compares against `last_reply_seen`."""
+    ids = [r.get("id") for r in ((cf or {}).get("author_replies") or []) if r.get("id") is not None]
+    return max(ids) if ids else None
+
+
+def has_new_contest(cf):
+    """True iff this rubric carries an author reply NEWER than the one last adjudicated. Strict `>`
+    on the monotonic id (not `!=`), so a deleted/minimized newest reply can never re-fire the run."""
+    nr = newest_reply_id(cf)
+    return nr is not None and nr > ((cf or {}).get("last_reply_seen") or 0)
+
+
 def overall_label(states, stopped):
     if any(s == "blocking_block" for s in states):
         label = "blocked"
@@ -585,8 +599,9 @@ def render_thread(cf, prov=None):
                      + (f" _Fix:_ {sanitize(f['fix'])}" if f.get("fix") else ""))
     if not cf.get("findings"):
         lines.append("(no parseable verdict this round)")
-    lines.append("\nReply in this thread to contest a finding; that re-runs **only** this rubric. "
-                 "(To fix it, just push a commit — that re-reviews on its own.)")
+    lines.append("\nReply in this thread to contest a finding; that re-runs **only** this rubric and "
+                 "posts an answer here. (To fix it, just push a commit — that re-reviews on its own. "
+                 "To contest again after an answer, post a NEW reply rather than editing an old one.)")
     sub = [f"`{cf.get('provider')}/{cf.get('model')}`"]
     if cf.get("duration_s"):
         sub.append(f"{cf['duration_s']:.0f}s")
@@ -599,6 +614,24 @@ def render_thread(cf, prov=None):
     lines += ["", f"<sub>{' · '.join(sub)}</sub>", "",
               meta_block("thread", rubric=cf["rubric"], **thread_meta(cf, prov))]
     return "\n".join(lines)
+
+
+def render_contest_reply(cf, head_sha, prov=None, answered_id=None):
+    """A direct in-thread reply answering the author's contest: whether their reply cleared the
+    finding, else the one-line reason it stands. The hidden `tauceti-reply:RUBRIC:through:<id>`
+    marker carries the newest reply id answered THROUGH, so the post step never answers the same
+    contest twice (and a later reply, with a higher id, is answered as a fresh contest)."""
+    rubric = cf.get("rubric", "")
+    aid = answered_id if answered_id is not None else newest_reply_id(cf)
+    judge = f"{cf.get('provider')}/{cf.get('model')}" if cf.get("provider") else "—"
+    if state_of(cf, head_sha) == "green":
+        verdict = f"this clears the finding ✅ — approved on `{head_sha[:7]}`."
+    else:
+        why = sanitize((cf.get("summary") or "").replace("\n", " ")) or "the prior finding still holds"
+        verdict = f"the finding stands — {why}"
+    return (f"<!--tauceti-reply:{rubric}:through:{aid}-->\n"
+            f"**Re: your reply on `{rubric}` —** re-reviewed on `{head_sha[:7]}`; {verdict}\n\n"
+            f"<sub>`{judge}` · addresses your replies through comment {aid}.</sub>")
 
 
 def thread_meta(cf, prov):
@@ -645,13 +678,20 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
         # has the complete verdict without re-deriving it from the rendered table. green == approved
         # at head_sha; anything else is not mergeable.
         states={r: state_of(state_map.get(r), head_sha) for r in candidates},
+        # The highest author-reply comment id adjudicated across all rubrics. GitHub comment ids are
+        # monotonic, so the worker can trigger a contest re-review precisely on `newest_reply_id >
+        # replies_through` — second-resolution timestamps would conflate two replies in one second.
+        replies_through=max((state_map.get(r, {}).get("last_reply_seen") or 0
+                             for r in candidates), default=0),
         runs=[run_meta(r) for r in (runs or [])])]
     return "\n".join(lines)
 
 
 def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
-                       scoreboard_md, rubrics_version):
-    """Durable round record for the archive (production and shadow rounds alike)."""
+                       scoreboard_md, rubrics_version, mode=None):
+    """Durable round record for the archive (production and shadow rounds alike). `mode` overrides
+    a.mode so a contest-only commit round is recorded as a reply round (it must not count toward the
+    review budget)."""
     if not a.archive_dir or a.dry_run:
         return
     round_num = prov["round"]
@@ -667,7 +707,7 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
     rrec = {"schema": "tauceti.round/v1", "round_id": f"{a.pr}-{round_num}{suffix}{disc}",
             "repo": a.repo, "pr": int(a.pr), "round": round_num,
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "mode": a.mode, "arm": a.arm,
+            "mode": mode or a.mode, "arm": a.arm,
             "submitted_by": a.submitted_by or None,  # publisher (metadata only; not in round_id)
             "source": "live" if a.arm == "production" else "shadow",
             "head_sha": head, "base_ref_oid": a.base_sha or None,
@@ -883,7 +923,15 @@ def main():
     if a.replies_json and pathlib.Path(a.replies_json).exists():
         for rubric, reps in json.loads(pathlib.Path(a.replies_json).read_text()).items():
             if reps and rubric in candidates:
-                state_map.setdefault(rubric, {})["author_replies"] = reps
+                cf = state_map.setdefault(rubric, {})
+                cf["author_replies"] = reps
+                # Hydrate the thread root id from GitHub (authoritative) when the local store does not
+                # know it, so a contest answer can ALWAYS be posted in-thread — otherwise a fresh or
+                # cross-machine store would queue+watermark the contest but skip the reply, swallowing
+                # the answer. Only fills a missing id; never overwrites a known one.
+                root_id = next((r.get("root_id") for r in reps if r.get("root_id")), None)
+                if root_id and not (cf.get("thread") or {}).get("comment_id"):
+                    cf["thread"] = {**(cf.get("thread") or {}), "comment_id": root_id}
 
     # init mode: post an in-progress scoreboard immediately, before any model runs. No keys, no
     # diff, no ledger writes — just render the current states under a "running now" header and emit
@@ -993,13 +1041,42 @@ def main():
                     + desc_block
                     + f"\n## Diff\n```diff\n{diff}\n```")
 
-    # Which rubrics to run this invocation.
+    # Author contests, computed BEFORE any run mutates the watermark: rubrics carrying a reply newer
+    # than the one last adjudicated, mapped to the newest reply id we will answer "through". Drives
+    # re-queuing a contested-but-clean rubric, the direct reply, and the reply-round budget sizing.
+    had_contest = {r: newest_reply_id(state_map.get(r))
+                   for r in candidates if has_new_contest(state_map.get(r))}
+
+    def needs_fresh_run(r):
+        """A blocking/absent rubric that has NOT already been cleanly judged at THIS exact head — a
+        new commit to (re-)review, an errored run to retry, or a never-run rubric. A blocker already
+        judged at this head is NOT re-run on its own: re-running reproduces the same verdict with no
+        new input. This is what stops a contest at a stable head from also re-running the OTHER
+        blocking rubrics (they were already judged here); only a fresh contest re-opens a rubric."""
+        cf = state_map.get(r)
+        s = state_of(cf, head)
+        if not is_blocking(s):
+            return False
+        return s in ("absent", "error") or (cf or {}).get("reviewed_sha") != head
+
+    # Which rubrics to run this invocation. `contest_queued` = rubrics pulled in ONLY by a fresh
+    # contest (already judged at head, not needing a fresh run) — a round that runs nothing else is a
+    # reply round and must not burn the review budget.
+    contest_queued = set()
     if a.mode == "manual":
         queue = list(candidates)
     elif a.mode == "reply":
         queue = [a.reply_rubric] if a.reply_rubric in candidates else []
-    else:  # commit: re-run only what is currently blocking (greens stay, stale ones swept later)
-        queue = [r for r in candidates if is_blocking(state_of(state_map.get(r), head))]
+    else:  # commit: re-run rubrics needing a fresh run (a new commit's blockers, errors, never-run),
+        # PLUS any rubric with a fresh contest — so a push-back at an unchanged head is adjudicated and
+        # answered without re-running the rubrics already judged at this head.
+        queue = []
+        for r in candidates:
+            fresh = needs_fresh_run(r)
+            if fresh or r in had_contest:
+                queue.append(r)
+                if r in had_contest and not fresh:
+                    contest_queued.add(r)
 
     day = today()
     spent_today = ledger["days"].get(day, 0.0)
@@ -1113,6 +1190,15 @@ def main():
             cf["author_replies"].append(
                 {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                  "by": "author", "body": reply_text})
+        # Watermark the newest author reply this rubric has now adjudicated, so the same contest
+        # never re-runs the model (the strict `>` in has_new_contest reads this back next round).
+        # This advances on the MODEL verdict, which is the substantive answer: the verdict lands on
+        # the scoreboard and the thread root (edited in place) regardless of the direct reply. The
+        # in-thread "Re: your reply" notification posted by post.py is best-effort — a rare partial
+        # post failure skips only that courtesy comment, not the adjudication itself.
+        nr = newest_reply_id(cf)
+        if nr is not None:
+            cf["last_reply_seen"] = nr
         spent_today += cost
         ran.append(rubric)
         run_results.append(res)
@@ -1166,6 +1252,15 @@ def main():
     # Every blocking rubric green on this head (fresh, not stale). Drives both the auto-merge gate
     # and the budget signal below.
     all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
+    # A commit round that re-ran ONLY contested-but-clean rubrics (no blocker, no Phase-2 sweep) is a
+    # reply round, not a full review pass: an author's back-and-forth must not burn the review budget
+    # (the engine's auto-close signal) nor the worker's review-round budget. `full_rounds` (mode !=
+    # reply, including this one) goes into the scoreboard meta so the worker can exclude reply rounds.
+    effective_mode = "reply" if (a.mode == "commit" and ran and set(ran) <= contest_queued) else a.mode
+    prior_full = sum(1 for r in pr_state.get("rounds", []) if r.get("mode") != "reply")
+    full_rounds = prior_full + (0 if effective_mode == "reply" else 1)
+    prov["mode"] = effective_mode
+    prov["full_rounds"] = full_rounds
     if stopped:
         budget_note = f"Deferred {stopped} and after to the next run."
     elif halted and any(s in ("absent", "stale") for s in states.values()):
@@ -1230,6 +1325,15 @@ def main():
             plan["threads"].append(
                 {"rubric": rubric, "action": "close", "body": str(bpath),
                  "comment_id": thread.get("comment_id"), "node_id": thread.get("node_id")})
+        # Whenever this run consumed a fresh author contest — no matter why the rubric was queued —
+        # post a DIRECT reply in its thread so the author sees an answer, not a silently-edited root.
+        # The root id already exists (a contest implies a prior thread). Deduped post-side by marker.
+        if rubric in had_contest and (thread or {}).get("comment_id"):
+            rpath = threads_dir / f"{rubric}.reply.md"
+            rpath.write_text(render_contest_reply(cf, head, prov, answered_id=had_contest[rubric]))
+            plan["threads"].append(
+                {"rubric": rubric, "action": "reply", "body": str(rpath),
+                 "in_reply_to": thread["comment_id"], "reply_dedupe": had_contest[rubric]})
     if a.post_plan_file:
         pathlib.Path(a.post_plan_file).write_text(json.dumps(plan, indent=2))
 
@@ -1254,8 +1358,6 @@ def main():
     # and-forth must not burn the budget, and a round cut short by the daily dollar budget (`stopped`)
     # is an incomplete pass that should not count either.
     if a.budget_file:
-        prior_full = sum(1 for r in pr_state.get("rounds", []) if r.get("mode") != "reply")
-        full_rounds = prior_full + (0 if a.mode == "reply" else 1)
         budget_spent = full_rounds >= a.review_budget and not all_green and not stopped
         pathlib.Path(a.budget_file).write_text(json.dumps(
             {"budget_spent": budget_spent, "round": round_num, "full_rounds": full_rounds,
@@ -1267,19 +1369,19 @@ def main():
     round_cost = round(spent_today - spent_start, 6)
     pr_state["rounds"].append(
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-         "mode": a.mode, "ran": ran, "states": states, "cost": round_cost,
+         "mode": effective_mode, "ran": ran, "states": states, "cost": round_cost,
          "tokens": sum_usage(run_results), "prices_sha": PRICES_SHA,
          "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
          "base_sha": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
          "rubrics_sha": a.rubrics_sha or None, "diff_sha256": prov.get("diff_sha256"),
          "diff_prompt_truncated": prov.get("diff_prompt_truncated"),
          "run_ids": [r.get("run_id") for r in run_results]})
-    print(f"\nROUND {round_num} ({a.mode}) {overall}  (ran {len(ran)}: {ran}; "
+    print(f"\nROUND {round_num} ({effective_mode}) {overall}  (ran {len(ran)}: {ran}; "
           + (f"halted at {halted} block; " if halted else "")
           + f"cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
 
     emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
-                       scoreboard_md, rubrics_version)
+                       scoreboard_md, rubrics_version, mode=effective_mode)
 
     if a.dry_run:
         print("[dry-run] not writing ledger.")

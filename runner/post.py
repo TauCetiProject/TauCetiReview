@@ -18,9 +18,43 @@ Every API action's outcome is tracked: only CONFIRMED comment ids reach the ledg
 archive sidecar (records/posts/), failures are recorded explicitly, and a failed scoreboard
 upsert exits nonzero — a review that silently never landed on the PR is an error, not a success.
 """
-import argparse, datetime, hashlib, json, os, pathlib, subprocess, sys
+import argparse, datetime, hashlib, json, os, pathlib, re, subprocess, sys
 
 import archive
+
+REPLY_MARKER_RE = re.compile(r"<!--tauceti-reply:([a-z][a-z-]*):through:(\d+)-->")
+
+
+def already_replied(repo, pr, rubric, through_id, me):
+    """True iff we already posted a contest answer for `rubric` covering `through_id` or newer.
+
+    Durable, marker-based dedupe across machines (the engine's per-rubric `last_reply_seen` is the
+    local fast path; this is the cross-machine authority). The scan-then-POST is not atomic, so two
+    workers posting at the exact same instant could still double-reply — that is an accepted, rare,
+    cosmetic duplicate (normal operation is a single worker), not a correctness problem: the
+    expensive model-run dedupe is guaranteed by the case-file watermark, never this scan. On a fetch
+    failure, return False (post — a missed answer is worse than a rare duplicate)."""
+    if through_id is None:
+        return False
+    out = subprocess.run(["gh", "api", "--paginate", "--jq", ".[]",
+                          f"/repos/{repo}/pulls/{pr}/comments?per_page=100"],
+                         text=True, capture_output=True)
+    if out.returncode != 0:
+        return False
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            c = json.loads(line)
+        except Exception:
+            continue
+        if (c.get("user") or {}).get("login") != me:
+            continue
+        m = REPLY_MARKER_RE.search(c.get("body") or "")
+        if m and m.group(1) == rubric and int(m.group(2)) >= int(through_id):
+            return True
+    return False
 
 
 def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=""):
@@ -182,9 +216,23 @@ def main():
         a.repo, a.pr, plan["scoreboard_body"], plan.get("scoreboard_comment_id"), pr_state, failures)
 
     # 2) Per-rubric threads (only rubrics that ran this round appear in the plan).
+    me = current_login()
     for t in plan.get("threads", []):
         rubric = t["rubric"]
         cf = pr_state["state"].setdefault(rubric, {})
+        if t["action"] == "reply":
+            # A DIRECT reply under the thread root answering the author's contest. The root already
+            # exists (a contest implies a prior thread). Deduped by marker so the same contest is
+            # never answered twice across re-runs.
+            parent = t.get("in_reply_to") or (cf.get("thread") or {}).get("comment_id")
+            if not parent or already_replied(a.repo, a.pr, rubric, t.get("reply_dedupe"), me):
+                continue
+            resp = gh_api("POST", f"/repos/{a.repo}/pulls/{a.pr}/comments",
+                          fields={"in_reply_to": parent}, body_file=t["body"],
+                          failures=failures, action=f"thread reply {rubric}")
+            if resp and resp.get("id"):
+                posted_threads[f"{rubric}:reply"] = resp["id"]
+            continue
         cid = (cf.get("thread") or {}).get("comment_id") or t.get("comment_id")
         if cid:  # edit the existing thread root (blocking update, or 'now passing' note)
             if gh_api("PATCH", f"/repos/{a.repo}/pulls/comments/{cid}", body_file=t["body"],

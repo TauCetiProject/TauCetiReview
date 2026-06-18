@@ -152,13 +152,26 @@ def fetch_thread_replies(repo, pr):
     """Gather author replies on the per-rubric review threads from GitHub, keyed by rubric, so a
     re-review audits the author's contest rather than re-judging the diff blind. A thread root
     carries a `<!--tauceti-rubric:NAME-->` marker; a reply is any review comment whose
-    `in_reply_to_id` points at such a root."""
-    r = run(["gh", "api", f"/repos/{repo}/pulls/{pr}/comments?per_page=100"],
+    `in_reply_to_id` points at such a root.
+
+    Paginated (`--paginate --jq '.[]'` emits one compact comment per line — a bare --paginate would
+    concatenate per-page arrays into invalid JSON), so a busy PR cannot hide a root or a reply past
+    page one. Each reply keeps its monotonic `id` (the dedupe/watermark key), its `ts`, and the
+    thread `root_id` (so a re-review can answer in-thread even with a fresh/cross-machine store that
+    has not recorded the root). Our own comments are dropped by MARKER, never by author login: a
+    contest answer carries `tauceti-reply:` and a thread root carries `tauceti-rubric:`; filtering by
+    a poster login would wrongly drop a contest from someone who happens to share that login."""
+    r = run(["gh", "api", "--paginate", "--jq", ".[]",
+             f"/repos/{repo}/pulls/{pr}/comments?per_page=100"],
             capture=True, quiet=True, allow_fail=True)
-    try:
-        comments = json.loads(r.stdout)
-    except Exception:
-        return {}
+    comments = []
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                comments.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     root_rubric = {}
     for c in comments:
         if c.get("in_reply_to_id") is None:
@@ -167,10 +180,16 @@ def fetch_thread_replies(repo, pr):
                 root_rubric[c["id"]] = m.group(1)
     replies = {}
     for c in comments:
-        rubric = root_rubric.get(c.get("in_reply_to_id"))
-        if rubric:
-            replies.setdefault(rubric, []).append(
-                {"by": (c.get("user") or {}).get("login", "author"), "body": c.get("body", "")})
+        root = c.get("in_reply_to_id")
+        rubric = root_rubric.get(root)
+        if not rubric:
+            continue
+        body = c.get("body", "") or ""
+        if "tauceti-reply:" in body or "tauceti-rubric:" in body:
+            continue  # our own contest answer / a nested root — never a fresh contest
+        replies.setdefault(rubric, []).append(
+            {"id": c.get("id"), "ts": c.get("created_at", ""), "root_id": root,
+             "by": (c.get("user") or {}).get("login", "author"), "body": body})
     return replies
 
 
