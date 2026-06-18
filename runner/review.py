@@ -1042,22 +1042,35 @@ def main():
     had_contest = {r: newest_reply_id(state_map.get(r))
                    for r in candidates if has_new_contest(state_map.get(r))}
 
+    def needs_fresh_run(r):
+        """A blocking/absent rubric that has NOT already been cleanly judged at THIS exact head — a
+        new commit to (re-)review, an errored run to retry, or a never-run rubric. A blocker already
+        judged at this head is NOT re-run on its own: re-running reproduces the same verdict with no
+        new input. This is what stops a contest at a stable head from also re-running the OTHER
+        blocking rubrics (they were already judged here); only a fresh contest re-opens a rubric."""
+        cf = state_map.get(r)
+        s = state_of(cf, head)
+        if not is_blocking(s):
+            return False
+        return s in ("absent", "error") or (cf or {}).get("reviewed_sha") != head
+
     # Which rubrics to run this invocation. `contest_queued` = rubrics pulled in ONLY by a fresh
-    # contest (clean at head, no blocker) — a round that runs nothing else is a reply round (budget).
+    # contest (already judged at head, not needing a fresh run) — a round that runs nothing else is a
+    # reply round and must not burn the review budget.
     contest_queued = set()
     if a.mode == "manual":
         queue = list(candidates)
     elif a.mode == "reply":
         queue = [a.reply_rubric] if a.reply_rubric in candidates else []
-    else:  # commit: re-run what is currently blocking (greens stay, stale ones swept later), PLUS
-        # any rubric with a fresh contest, so a push-back at an unchanged head is adjudicated and
-        # answered without re-running the clean rubrics.
+    else:  # commit: re-run rubrics needing a fresh run (a new commit's blockers, errors, never-run),
+        # PLUS any rubric with a fresh contest — so a push-back at an unchanged head is adjudicated and
+        # answered without re-running the rubrics already judged at this head.
         queue = []
         for r in candidates:
-            blocking = is_blocking(state_of(state_map.get(r), head))
-            if blocking or r in had_contest:
+            fresh = needs_fresh_run(r)
+            if fresh or r in had_contest:
                 queue.append(r)
-                if r in had_contest and not blocking:
+                if r in had_contest and not fresh:
                     contest_queued.add(r)
 
     day = today()
