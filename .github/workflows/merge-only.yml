@@ -74,23 +74,35 @@ jobs:
           gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
 
-      - name: Prepare review store (reviews branch; public read, no token on disk)
-        # Read side only: clone the reviews-branch ledger so --mode merge can read it. This
-        # workflow never writes the ledger back (it dispatches nothing), so no store token is minted.
+      - name: Fetch this PR's round records from TauCetiData (sparse, complete, fail-closed)
         run: |
-          git clone --depth 1 --branch reviews --single-branch \
-            https://github.com/FormalFrontier/TauCetiReview store 2>/dev/null \
-            || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
+          set -euo pipefail
+          # The merge gate's source of truth is the per-PR round records on TauCetiData
+          # (records/rounds/<pr>/<round_id>.json, schema tauceti.round/v1), written by every reviewer.
+          # Enumerate via a sparse git checkout, not the Contents API: git gives a COMPLETE view of the
+          # directory (the Contents API caps directory listings, which an open store could exceed or be
+          # flooded past, hiding a newer blocking record). Public repo -> no token. `set -e` fails the
+          # job closed on any clone error; a PR with no records leaves rounds/ empty -> the decision
+          # step refuses ("no live review at head").
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/FormalFrontier/TauCetiData tcdata
+          git -C tcdata sparse-checkout set "records/rounds/$PR"
+          mkdir -p rounds
+          if [ -d "tcdata/records/rounds/$PR" ]; then
+            find "tcdata/records/rounds/$PR" -maxdepth 1 -name '*.json' -exec cp {} rounds/ \;
+          fi
+          echo "fetched $(find rounds -name '*.json' | wc -l) round record(s) for #$PR"
 
-      - name: Compute merge decision from the existing ledger (no dispatch, no spend)
+      - name: Compute merge decision from TauCetiData round records (no dispatch, no spend)
         run: |
-          python3 runner/review.py \
-            --repo FormalFrontier/TauCeti --pr "$PR" --mode merge \
-            --rubrics-dir rubrics --tool-cwd . \
-            --diff-file diff.txt --store store \
-            --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
-            --rubrics-sha "$RUBRICS_SHA" \
-            --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" \
+          set -euo pipefail
+          # Mergeable iff the latest live/production/exact round record AT THE CURRENT HEAD has every
+          # required rubric green (head-pinned, so no carried-over approval) and the shared decide_merge
+          # rule holds (build green, TauCeti/-only + allowed root/pins, bump-guard for a pin change).
+          # Records are untrusted public input, so merge_from_data.py validates every field.
+          python3 runner/merge_from_data.py \
+            --pr "$PR" --head-sha "$HEAD_SHA" --rounds-dir rounds \
+            --diff-file diff.txt --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" \
             --merge-decision-file "$PWD/merge.json"
 
       # ---- Auto-merge: mint the scoped merge token only now, and merge iff the decision is green.
