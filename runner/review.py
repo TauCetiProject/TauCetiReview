@@ -468,6 +468,36 @@ def overall_label(states, stopped):
     return label
 
 
+def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump_guard, ci_build):
+    """The single auto-merge rule, shared by the post-review path and the no-dispatch merge mode.
+
+    Mergeable iff there is a head commit, CI's `build` check is green on it (so the merge path is
+    self-sufficient and safe to run on comment events, not only after a successful build), every
+    blocking rubric is green on it (fresh, not stale), and every changed path is under `prefix` or an
+    allowed root file (`allow`); a PR touching a Lake pin (lake-manifest.json / lean-toolchain)
+    additionally requires the bump-guard check to be green (a CI-validated forward-only bump).
+    Returns (merge_ok, reason)."""
+    allow = set(allow or [])
+    # The two Lake pins may auto-merge only as a CI-validated forward bump.
+    pin_files = {"lake-manifest.json", "lean-toolchain"}
+    touches_pin = bool(paths & pin_files)
+    code_only = bool(paths) and all(
+        p.startswith(prefix) or p in allow for p in paths)
+    if not head:
+        return False, "no head_sha; refusing to merge"
+    if (ci_build or "").lower() != "success":
+        return False, f"build is not green on HEAD (={ci_build or 'missing'}); refusing to merge"
+    if not all_green:
+        return False, f"not all rubrics green on HEAD: {[r for r in candidates if states[r] != 'green']}"
+    if not code_only:
+        return False, (f"PR touches paths outside {prefix} "
+                       f"(allowed extras: {sorted(allow)}); needs human merge")
+    if touches_pin and (bump_guard or "").upper() != "SUCCESS":
+        return False, (f"PR changes a Lake pin but bump-guard is not green "
+                       f"(={bump_guard or 'missing'}); needs human merge")
+    return True, f"all rubrics green on {head[:7]}; {prefix}+root only"
+
+
 def update_case_file(state_map, rubric, res, head_sha):
     """Fold a finished rubric run into its persistent case file (= the scoreboard/staleness
     state and the compact context a later re-run audits instead of re-deriving)."""
@@ -747,10 +777,13 @@ def main():
                     help="write the rendered review comment here for a separate post step")
     ap.add_argument("--no-post", action="store_true",
                     help="do not post the comment (a later tokened step does); still writes ledger")
-    ap.add_argument("--mode", default="commit", choices=["commit", "manual", "reply", "init"],
+    ap.add_argument("--mode", default="commit",
+                    choices=["commit", "manual", "reply", "init", "merge"],
                     help="commit: re-run blocking rubrics then sweep stale greens; manual "
                          "(/review): re-run all; reply: re-run only --reply-rubric; init: post an "
-                         "in-progress scoreboard immediately (no models), before the review runs")
+                         "in-progress scoreboard immediately (no models), before the review runs; "
+                         "merge: compute the auto-merge decision from the EXISTING ledger and write "
+                         "merge.json — dispatches no reviewers, spends nothing, posts nothing")
     ap.add_argument("--reply-rubric", default="", help="reply mode: the single rubric to re-run")
     ap.add_argument("--reply-file", default="", help="reply mode: file with the author's reply")
     ap.add_argument("--replies-json", default="",
@@ -855,6 +888,34 @@ def main():
                  "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
                  "scoreboard_body": str(sb_path), "threads": []}, indent=2))
         print("[init] wrote in-progress scoreboard + scoreboard-only post plan.")
+        return
+
+    # merge mode: compute the auto-merge decision from the EXISTING ledger and write merge.json.
+    # Dispatches no reviewers, spends nothing, posts nothing, needs no provider keys — CI runs this
+    # so a green PR (reviewed by people locally) can auto-merge without paying for any review API
+    # spend. Uses the SAME per-rubric state helper, all_green rule, diff source, and merge rule as
+    # the normal post-review path, so the decision can never diverge.
+    if a.mode == "merge":
+        states = {r: state_of(state_map.get(r), head) for r in candidates}
+        all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
+        paths = changed_paths(pathlib.Path(a.diff_file).read_text())
+        merge_ok, reason = decide_merge(
+            states, candidates, all_green, paths, head,
+            a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build)
+        if a.merge_decision_file:
+            pathlib.Path(a.merge_decision_file).write_text(
+                json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
+        # Budget signal, reusing the same computation as the post-review path (no round is added
+        # here, so this reflects the ledger's existing full-round count).
+        if a.budget_file:
+            prior_full = sum(1 for r in pr_state.get("rounds", []) if r.get("mode") != "reply")
+            full_rounds = prior_full
+            budget_spent = full_rounds >= a.review_budget and not all_green
+            pathlib.Path(a.budget_file).write_text(json.dumps(
+                {"budget_spent": budget_spent, "round": round_num, "full_rounds": full_rounds,
+                 "all_green": all_green, "stopped": False, "budget": a.review_budget,
+                 "head_sha": head}))
+        print(f"[merge] {merge_ok}: {reason}")
         return
 
     # Per-PR daily round cap: bound how often one PR can spend (rapid commits or repeated
@@ -1161,25 +1222,9 @@ def main():
     if a.merge_decision_file:
         merge_ok, reason = False, "auto-merge not enabled"
         if a.auto_merge:
-            paths = changed_paths(diff_full)
-            allow = set(a.merge_allow_file or [])
-            # The two Lake pins may auto-merge only as a CI-validated forward bump.
-            pin_files = {"lake-manifest.json", "lean-toolchain"}
-            touches_pin = bool(paths & pin_files)
-            code_only = bool(paths) and all(
-                p.startswith(a.merge_path_prefix) or p in allow for p in paths)
-            if not head:
-                reason = "no head_sha; refusing to merge"
-            elif not all_green:
-                reason = f"not all rubrics green on HEAD: {[r for r in candidates if states[r] != 'green']}"
-            elif not code_only:
-                reason = (f"PR touches paths outside {a.merge_path_prefix} "
-                          f"(allowed extras: {sorted(allow)}); needs human merge")
-            elif touches_pin and a.bump_guard.upper() != "SUCCESS":
-                reason = (f"PR changes a Lake pin but bump-guard is not green "
-                          f"(={a.bump_guard or 'missing'}); needs human merge")
-            else:
-                merge_ok, reason = True, f"all rubrics green on {head[:7]}; {a.merge_path_prefix}+root only"
+            merge_ok, reason = decide_merge(
+                states, candidates, all_green, changed_paths(diff_full), head,
+                a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build)
         pathlib.Path(a.merge_decision_file).write_text(
             json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
         print(f"[auto-merge] {merge_ok}: {reason}")
