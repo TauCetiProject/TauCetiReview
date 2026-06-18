@@ -1,10 +1,14 @@
 name: merge-only
 
-# A cheap, no-dispatch auto-merge: read the EXISTING review ledger (reviews branch) and merge a
-# green PR if it is all-green and TauCeti/-only. Generates NO reviews, stages NO provider keys, and
-# runs NO reviewer — the reviews themselves are produced by people running tauceti-review locally;
-# CI just reads what is already on the ledger and merges. This keeps auto-merge automatic with the
-# expensive review API spend turned off (see runner/review.py --mode merge).
+# A cheap, no-dispatch auto-merge: read the EXISTING review ledger (reviews branch) and, if a PR is
+# all-green and TauCeti/-only, add it to the merge queue. Generates NO reviews, stages NO provider
+# keys, and runs NO reviewer — the reviews themselves are produced by people running tauceti-review
+# locally; CI just reads what is already on the ledger and enqueues. This keeps auto-merge automatic
+# with the expensive review API spend turned off (see runner/review.py --mode merge).
+#
+# Enqueue, not direct merge: the queue retests each entry against the CURRENT main and merges in
+# order, so an approved PR that has fallen behind main is retested and merged without any re-review,
+# rather than stranded (as it was when this merged directly and skipped BEHIND PRs).
 
 on:
   workflow_call:
@@ -102,27 +106,48 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Auto-merge if all rubrics approve and PR is TauCeti/-only
+      - name: Enqueue into the merge queue if all rubrics approve and PR is TauCeti/-only
         env: { GH_TOKEN: "${{ steps.merge_token.outputs.token }}" }
         run: |
           set -euo pipefail
           if [ ! -f merge.json ] || [ "$(jq -r .merge merge.json)" != "true" ]; then
-            echo "not auto-merging: $(jq -r '.reason // "no decision file"' merge.json 2>/dev/null || echo 'no decision file')"
+            echo "not enqueuing: $(jq -r '.reason // "no decision file"' merge.json 2>/dev/null || echo 'no decision file')"
             exit 0
           fi
-          # Re-read state right before merging: the decision was computed for HEAD_SHA against a
-          # then-current base, but the App bypasses branch protection, so we re-verify here.
-          read -r CUR_HEAD STATE < <(gh pr view "$PR" --repo FormalFrontier/TauCeti \
-            --json headRefOid,mergeStateStatus -q '.headRefOid + " " + .mergeStateStatus')
+          # Re-read state right before enqueuing: the decision was computed for HEAD_SHA, so only
+          # enqueue if that is still the head (a later push re-triggers with a fresh decision).
+          read -r CUR_HEAD PRID < <(gh pr view "$PR" --repo FormalFrontier/TauCeti \
+            --json headRefOid,id -q '.headRefOid + " " + .id')
           if [ "$CUR_HEAD" != "$HEAD_SHA" ]; then
             echo "head moved ($HEAD_SHA -> $CUR_HEAD) since the decision; skipping (a fresh build will re-trigger)."
             exit 0
           fi
-          if [ "$STATE" = "BEHIND" ]; then
-            echo "PR is behind base (not built against current main); skipping until it is rebased + rebuilt."
-            exit 0
+          # Hand the PR to the merge queue rather than merging directly. The queue retests it against
+          # the CURRENT main (the merge_group build + bump-guard) and merges in order, so a PR that has
+          # fallen BEHIND is retested and merged without any re-review, instead of being stranded as it
+          # was when we merged here directly and skipped behind PRs. The App is a queue + review bypass
+          # actor, so enqueuing as it clears the code-owner gate the AI-reviewed TauCeti/ math PRs skip.
+          #
+          # expectedHeadOid binds the enqueue to the exact reviewed commit (the old --match-head-commit
+          # guarantee): if the author races a new push in between, the mutation is rejected rather than
+          # queueing an un-reviewed commit. The CUR_HEAD check above is just a cheaper early-out.
+          echo "enqueuing #$PR ($CUR_HEAD): $(jq -r .reason merge.json)"
+          if out=$(gh api graphql -f query='
+            mutation($prId: ID!, $headOid: GitObjectID!) {
+              enqueuePullRequest(input: { pullRequestId: $prId, expectedHeadOid: $headOid }) {
+                mergeQueueEntry { position state }
+              }
+            }' -f prId="$PRID" -f headOid="$HEAD_SHA" 2>&1); then
+            echo "$out"; echo "enqueued #$PR."
+          else
+            echo "$out"
+            # Benign, retried on the next build / scoreboard event: already in the queue, the head
+            # moved (expectedHeadOid mismatch), or GitHub does not currently consider it mergeable.
+            # Anything else (auth, permissions, queue disabled, malformed query) is a real fault: fail
+            # loudly so a broken merge path is visible rather than silently never merging.
+            if printf '%s' "$out" | grep -qiE 'already queued|already in the merge queue|expected head|head .*(moved|changed|match)|not mergeable|mergeable state'; then
+              echo "enqueue not applied (already queued / head moved / not yet mergeable) — a later trigger retries."
+            else
+              echo "::error::unexpected enqueue failure for #$PR"; exit 1
+            fi
           fi
-          echo "auto-merging: $(jq -r .reason merge.json)"
-          # --match-head-commit binds the merge to exactly the reviewed commit: if the head races
-          # forward between this check and the merge, GitHub rejects it rather than merging untested code.
-          gh pr merge "$PR" --repo FormalFrontier/TauCeti --squash --match-head-commit "$HEAD_SHA"
