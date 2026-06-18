@@ -42,13 +42,6 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Checkout roadmap (public)
-        uses: actions/checkout@v4
-        with:
-          repository: FormalFrontier/TauCetiRoadmap
-          path: roadmap
-          persist-credentials: false
-
       - name: Resolve PR head and fetch diff
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
