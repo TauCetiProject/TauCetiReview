@@ -652,7 +652,15 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
         return
     round_num = prov["round"]
     suffix = "" if a.arm == "production" else "-" + a.arm.split(":", 1)[-1]
-    rrec = {"schema": "tauceti.round/v1", "round_id": f"{a.pr}-{round_num}{suffix}",
+    run_ids = [r.get("run_id") for r in run_results]
+    # A non-production (shadow/backfill) arm can be re-run over the same pr+round, which would mint
+    # an identical `{pr}-{round}-{arm}` round_id with different content and silently collide. Append
+    # a discriminator derived from this execution's run ids (themselves timestamp-unique) so every
+    # run of an arm is a distinct round. Production keeps the bare `{pr}-{round}`; a rare cross-store
+    # production clash is caught losslessly by the archive's collision backstop (archive.write_record).
+    disc = ("-" + hashlib.sha256("|".join(sorted(run_ids)).encode()).hexdigest()[:12]
+            if suffix and run_ids else "")
+    rrec = {"schema": "tauceti.round/v1", "round_id": f"{a.pr}-{round_num}{suffix}{disc}",
             "repo": a.repo, "pr": int(a.pr), "round": round_num,
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "mode": a.mode, "arm": a.arm,
@@ -661,7 +669,7 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
             "merge_base_sha": a.merge_base_sha or None,
             "rubrics_sha": a.rubrics_sha or None, "rubrics_version": rubrics_version,
             "diff_sha256": prov.get("diff_sha256"), "ran": ran,
-            "run_ids": [r.get("run_id") for r in run_results], "states": states,
+            "run_ids": run_ids, "states": states,
             "overall": overall, "cost": round_cost, "halted_at": halted,
             "scoreboard_sha256": hashlib.sha256(scoreboard_md.encode()).hexdigest(),
             "fidelity": "exact"}
