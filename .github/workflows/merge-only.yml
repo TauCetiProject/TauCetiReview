@@ -74,34 +74,33 @@ jobs:
           gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
 
-      - name: Fetch this PR's round records from TauCetiData (sparse, complete, fail-closed)
+      - name: Fetch this PR's scoreboard comment(s)
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
-          # The merge gate's source of truth is the per-PR round records on TauCetiData
-          # (records/rounds/<pr>/<round_id>.json, schema tauceti.round/v1), written by every reviewer.
-          # Enumerate via a sparse git checkout, not the Contents API: git gives a COMPLETE view of the
-          # directory (the Contents API caps directory listings, which an open store could exceed or be
-          # flooded past, hiding a newer blocking record). Public repo -> no token. `set -e` fails the
-          # job closed on any clone error; a PR with no records leaves rounds/ empty -> the decision
-          # step refuses ("no live review at head").
-          git clone --depth 1 --filter=blob:none --sparse \
-            https://github.com/FormalFrontier/TauCetiData tcdata
-          git -C tcdata sparse-checkout set "records/rounds/$PR"
-          mkdir -p rounds
-          if [ -d "tcdata/records/rounds/$PR" ]; then
-            find "tcdata/records/rounds/$PR" -maxdepth 1 -name '*.json' -exec cp {} rounds/ \;
-          fi
-          echo "fetched $(find rounds -name '*.json' | wc -l) round record(s) for #$PR"
+          # The merge gate's verdict source is the PR's scoreboard COMMENT: every reviewer (the worker,
+          # or anyone running tauceti-review with no repo write) posts one carrying a tauceti-meta:v1
+          # block with head_sha + a full per-rubric `states` map. No access bar: a contributor's review
+          # counts via their posted comment. The hard boundary a forged scoreboard cannot bypass remains
+          # the build + scope + bump-guard checks below.
+          # Fetch ALL comments: an external reviewer can't edit the worker's scoreboard comment, so
+          # they post their OWN — which on a busy PR could be past page 1, and the gate picks the
+          # NEWEST scoreboard, so a single page could hide it. `--paginate` with a non-array --jq
+          # emits one JSON object per line (JSONL), concatenated across pages (a bare --paginate would
+          # concatenate per-page arrays into invalid JSON; --slurp can't combine with --jq).
+          gh api --paginate "repos/FormalFrontier/TauCeti/issues/$PR/comments" \
+            --jq '.[] | {body, updated_at, created_at}' > comments.json
+          echo "fetched $(wc -l < comments.json) comment(s) for #$PR"
 
-      - name: Compute merge decision from TauCetiData round records (no dispatch, no spend)
+      - name: Compute merge decision from the scoreboard comment (no dispatch, no spend)
         run: |
           set -euo pipefail
-          # Mergeable iff the latest live/production/exact round record AT THE CURRENT HEAD has every
-          # required rubric green (head-pinned, so no carried-over approval) and the shared decide_merge
-          # rule holds (build green, TauCeti/-only + allowed root/pins, bump-guard for a pin change).
-          # Records are untrusted public input, so merge_from_data.py validates every field.
-          python3 runner/merge_from_data.py \
-            --pr "$PR" --head-sha "$HEAD_SHA" --rounds-dir rounds \
+          # Mergeable iff the newest scoreboard comment is AT THE CURRENT HEAD with every required rubric
+          # green (head-pinned), and the shared decide_merge rule holds (build green, TauCeti/-only +
+          # allowed root/pins, bump-guard for a pin). Reads the full `states` from the meta, falling back
+          # to the rendered table for comments posted before that field existed.
+          python3 runner/merge_from_scoreboard.py \
+            --pr "$PR" --head-sha "$HEAD_SHA" --comments-file comments.json \
             --diff-file diff.txt --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" \
             --merge-decision-file "$PWD/merge.json"
 
