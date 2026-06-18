@@ -664,6 +664,7 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
             "repo": a.repo, "pr": int(a.pr), "round": round_num,
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "mode": a.mode, "arm": a.arm,
+            "submitted_by": a.submitted_by or None,  # publisher (metadata only; not in round_id)
             "source": "live" if a.arm == "production" else "shadow",
             "head_sha": head, "base_ref_oid": a.base_sha or None,
             "merge_base_sha": a.merge_base_sha or None,
@@ -725,6 +726,9 @@ def main():
     ap.add_argument("--arm", default="production",
                     help="experiment arm recorded on archive records: production, or "
                          "shadow:<label> for an A/B arm that must not touch the live PR")
+    ap.add_argument("--submitted-by", default="",
+                    help="GitHub login of the identity that published this review, stamped on "
+                         "records as metadata only (NOT part of any content identity/hash).")
     ap.add_argument("--shadow", action="store_true",
                     help="A/B arm mode: run the requested rubrics fresh (manual semantics) and "
                          "archive the results, but emit NO post plan, NO thread bodies, and NO "
@@ -1072,6 +1076,7 @@ def main():
                 "dedupe_key": "|".join([a.repo, str(a.pr), head, rubric, model,
                                         rubrics_version, a.arm, str(round_num)]),
                 "source": "live" if a.arm == "production" else "shadow", "arm": a.arm,
+                "submitted_by": a.submitted_by or None,  # publisher (metadata only; not in run_id/dedupe_key)
                 "prompt_policy": "reactivation" if reblock else "fresh",
                 "repo": a.repo, "pr": int(a.pr), "round": round_num, "head_sha": head,
                 "base_ref_oid": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
