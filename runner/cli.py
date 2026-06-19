@@ -44,12 +44,13 @@ CACHE_DIR = pathlib.Path(
 # A "review in progress" marker comment de-contends concurrent reviewers without any write access
 # beyond commenting: an independent reviewer may have repo write NOWHERE, but anyone who can review a
 # PR can comment on it. A reviewer posts the marker before spending inference and deletes it when done;
-# the embedded TTL self-clears a crashed reviewer. The marker is scoped to (head, provider): a
-# different model — or the same model after a new push — is a distinct unit that still runs and reaches
-# the backend DB, so multi-model coverage is preserved while identical work is skipped. Trust is NOT
-# gated on author association (unlike the scoreboard, which drives merges): a forged marker can at
-# worst delay a review by its TTL — no inference runs, no data lands — so honoring anyone's marker is
-# what lets a fleet of non-collaborators coordinate at all.
+# the embedded TTL self-clears a crashed reviewer. The marker is scoped to (head) ALONE: the first run
+# to claim a commit reviews it, and any other run — whatever model it would use — yields, so a commit
+# is reviewed exactly once regardless of model (a new push is a fresh head, hence a fresh unit). The
+# marker still records which providers are running, but only for display; it is not part of the
+# de-contention key. Trust is NOT gated on author association (unlike the scoreboard, which drives
+# merges): a forged marker can at worst delay a review by its TTL — no inference runs, no data lands —
+# so honoring anyone's marker is what lets a fleet of non-collaborators coordinate at all.
 COORD_MARKER = "tauceti-review-in-progress"
 COORD_RE = re.compile(r"<!--tauceti-review-in-progress (.*?)-->", re.S)
 COORD_TTL = int(os.environ.get("TAUCETI_REVIEW_INPROGRESS_TTL", "1800"))  # 30 min; > a slow review
@@ -230,9 +231,11 @@ def issue_comments(repo, pr):
 
 
 def covered_providers(comments, head, now, *, exclude_nonce, max_id=None):
-    """Set of providers that an UNEXPIRED in-progress marker for this EXACT head — posted by a different
-    run (nonce ≠ exclude_nonce) — already covers. With max_id set, only count markers whose comment id
-    is lower (the deterministic tiebreak for a simultaneous post: lowest id wins a provider)."""
+    """Providers advertised by any UNEXPIRED in-progress marker for this EXACT head — posted by a
+    different run (nonce ≠ exclude_nonce). De-contention is on the head alone, so the SET being
+    non-empty is what matters (a commit is reviewed once); the provider names are kept only for the
+    skip message. With max_id set, only count markers whose comment id is lower (the deterministic
+    tiebreak for a simultaneous post: the lowest-id marker wins the head)."""
     cov = set()
     for c in comments:
         m = COORD_RE.search(c.get("body") or "")
@@ -308,9 +311,10 @@ def _install_marker_cleanup():
 
 
 def _recheck_lost(repo, pr, head, nonce, cid):
-    """After posting, find which providers a LOWER-id foreign marker covers (we must yield those). Poll
-    until our OWN comment is visible — so the list is current enough for the lowest-id rule to be real,
-    not fooled by replication lag where neither poster yet sees the other — or a short deadline passes.
+    """After posting, return the providers any LOWER-id foreign marker advertises on this head — a
+    non-empty result means a peer claimed the head first and we must yield the whole run. Poll until
+    our OWN comment is visible — so the list is current enough for the lowest-id rule to be real, not
+    fooled by replication lag where neither poster yet sees the other — or a short deadline passes.
     Time is re-read each scan so an expiring lower-id marker isn't honored past its TTL."""
     lost = set()
     for delay in (0.0, 0.4, 0.8, 1.5):
@@ -326,15 +330,16 @@ def _recheck_lost(repo, pr, head, nonce, cid):
 
 
 def coordinate(repo, pr, head, avail, submitted_by):
-    """[COOP] de-contend concurrent reviewers via a review-in-progress comment. Returns the subset of
-    `avail` this run should actually review (providers no live foreign marker already covers), having
-    posted our own marker for exactly that subset and armed its deletion at exit. An empty return means
-    every provider is already in flight elsewhere — skip the whole run and spend nothing.
+    """[COOP] de-contend concurrent reviewers via a review-in-progress comment, on the head ALONE: a
+    commit is reviewed once regardless of model. Returns `avail` (this run owns the head and should
+    review it) having posted our own marker and armed its deletion at exit, or [] to skip the whole run
+    and spend nothing because another run already holds the head. A different model is NOT a distinct
+    unit — the first claimer wins — but a new push is a new head, hence a new claim.
 
-    Not an atomic CAS, so after posting we re-read (waiting until our own comment is visible) and drop
-    any provider a LOWER-id foreign marker covers — lowest id wins, which collapses the simultaneous-post
-    window. A read/post failure (e.g. no comment access) proceeds unclaimed: a possible duplicate review,
-    never corruption.
+    Not an atomic CAS, so after posting we re-read (waiting until our own comment is visible) and yield
+    if any LOWER-id foreign marker is on the head — the lowest-id marker wins, which collapses the
+    simultaneous-post window. A read/post failure (e.g. no comment access) proceeds unclaimed: a
+    possible duplicate review, never corruption.
     """
     nonce = uuid.uuid4().hex
     comments = issue_comments(repo, pr)
@@ -343,35 +348,25 @@ def coordinate(repo, pr, head, avail, submitted_by):
               "posting our marker (a concurrent duplicate review is possible).", file=sys.stderr)
         comments = []
     cov = covered_providers(comments, head, int(time.time()), exclude_nonce=nonce)
-    run_set = [p for p in avail if p not in cov]
-    if not run_set:
+    if cov:
         print(f"PR #{pr} @ {head[:12]} is already being reviewed ({','.join(sorted(cov))}) — "
               f"skipping to avoid duplicate spend.", file=sys.stderr)
         return []
+    run_set = list(avail)
     cid = post_marker(repo, pr, head, run_set, nonce, submitted_by)
     if cid is None:
         print("note: couldn't post a review-in-progress marker (no comment access?); proceeding "
               "without de-contention — a concurrent duplicate review is possible.", file=sys.stderr)
         return run_set
     lost = _recheck_lost(repo, pr, head, nonce, cid)
-    survivors = [p for p in run_set if p not in lost]
-    if not survivors:
-        print(f"PR #{pr} @ {head[:12]}: lost the post race ({','.join(sorted(lost))} covered first) — "
-              f"skipping.", file=sys.stderr)
+    if lost:
+        print(f"PR #{pr} @ {head[:12]}: lost the post race ({','.join(sorted(lost))} claimed it "
+              f"first) — skipping.", file=sys.stderr)
         delete_marker(repo, cid)
         return []
-    if set(survivors) != set(run_set):
-        # We over-claimed: the marker still advertises providers we just lost, which would needlessly
-        # make others wait on work we won't do. Replace it with one scoped to what we'll actually run.
-        delete_marker(repo, cid)
-        cid = post_marker(repo, pr, head, survivors, nonce, submitted_by)
-        if cid is None:
-            print(f"note: couldn't repost the narrowed marker; proceeding unclaimed for "
-                  f"{','.join(survivors)} (duplicate review possible).", file=sys.stderr)
-            return survivors
     _ACTIVE_MARKERS.append((repo, cid))
     _install_marker_cleanup()
-    return survivors
+    return run_set
 
 
 def main():
