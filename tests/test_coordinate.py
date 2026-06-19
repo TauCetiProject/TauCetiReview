@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""The review-in-progress marker must de-contend concurrent reviewers without blocking distinct work.
+"""The review-in-progress marker must de-contend concurrent reviewers so a commit is reviewed once.
 
-Guards the fleet-dedup contract: a reviewer skips a provider another reviewer is already running on
-the same head (no duplicate spend), but a different model — or the same model after a new push — is a
-distinct unit that still runs and reaches the backend DB. Posting needs only comment access, so an
-independent reviewer with no repo write still coordinates. Dependency-free — run with
-`python tests/test_coordinate.py` or under pytest.
+Guards the fleet-dedup contract: a run yields the WHOLE head if any other reviewer already holds it,
+regardless of model (one review per (pr, head)); only a new push — a fresh head — is a fresh unit.
+Posting needs only comment access, so an independent reviewer with no repo write still coordinates.
+Dependency-free — run with `python tests/test_coordinate.py` or under pytest.
 """
 import sys
 import pathlib
@@ -123,13 +122,14 @@ def test_all_covered_skips_without_posting():
         _unwire()
 
 
-def test_partial_cover_runs_remainder():
+def test_any_foreign_marker_skips_whole_head():
+    # A foreign marker for a DIFFERENT model still owns the head: we yield entirely (one review per head).
     g = FakeGH(before=[marker(5, "other", ["codex"])])
     _wire(g)
     try:
-        out = cli.coordinate("r", 1, H, ["claude", "codex"], "me")
-        assert out == ["claude"]                      # codex deferred, claude proceeds → reaches the DB
-        assert g.posted == [["claude"]]
+        out = cli.coordinate("r", 1, H, ["claude"], "me")
+        assert out == []                              # claude does NOT proceed — the head is taken
+        assert g.posted == [] and cli._ACTIVE_MARKERS == []   # spent nothing, posted nothing
     finally:
         _unwire()
 
@@ -147,16 +147,16 @@ def test_lost_post_race_yields():
         _unwire()
 
 
-def test_overclaim_reposts_narrowed():
-    # Post [claude,codex]; recheck shows a lower-id racer covering codex only → repost scoped to claude.
-    g = FakeGH(before=[], after=[marker(1, "racer", ["codex"])], post_ids=(999, 1000))
+def test_lost_race_to_other_model_yields():
+    # Post [claude]; recheck shows a lower-id racer running a DIFFERENT model (codex) → we yield the
+    # head entirely (head-level de-contention: the lowest-id claimer wins regardless of model).
+    g = FakeGH(before=[], after=[marker(1, "racer", ["codex"])], post_ids=(999,))
     _wire(g)
     try:
-        out = cli.coordinate("r", 1, H, ["claude", "codex"], "me")
-        assert out == ["claude"]
-        assert g.posted == [["claude", "codex"], ["claude"]]   # over-claim replaced by a narrowed marker
-        assert g.deleted == [999]                              # the over-claiming marker was removed
-        assert cli._ACTIVE_MARKERS == [("r", 1000)]           # cleanup tracks the narrowed marker
+        out = cli.coordinate("r", 1, H, ["claude"], "me")
+        assert out == []
+        assert g.deleted == [999]                             # deleted our own marker on losing
+        assert cli._ACTIVE_MARKERS == []
     finally:
         _unwire()
 

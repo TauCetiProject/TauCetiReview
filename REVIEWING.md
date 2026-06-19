@@ -112,11 +112,11 @@ Add `--post` to publish. Useful flags:
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
 - **Concurrent reviewers.** Before spending inference, a contributing run (one that posts or
-  archives) posts a short-lived `review in progress` comment scoped to `(head, reviewer)` and checks
-  for one already there. If another reviewer is running the *same* model on the *same* commit, this
-  run skips it — so a fleet never pays twice for identical work — while a *different* model (or the
-  same model after a new push) is a distinct unit that still runs and reaches the database. The
-  marker self-expires (a crashed reviewer never blocks anyone) and is deleted when the run finishes.
+  archives) posts a short-lived `review in progress` comment scoped to the `head` alone and checks
+  for one already there. If another reviewer already holds the commit, this run skips it entirely —
+  so a commit is reviewed once regardless of model, and a fleet never pays twice. A *different* model
+  is not a distinct unit (the first claimer wins); only a new push, being a fresh head, is a fresh
+  unit. The marker self-expires (a crashed reviewer never blocks anyone) and is deleted when done.
   It needs only the ability to comment, so an independent reviewer with no repo write still
   coordinates. Pass `--no-coordinate` for a private read-only pass that touches the PR not at all
   (at the cost of possible duplicate spend); a `--shadow` arm opts out automatically.
