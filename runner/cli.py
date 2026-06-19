@@ -265,9 +265,8 @@ def post_marker(repo, pr, head, providers, nonce, submitted_by):
     payload = {"schema": f"{COORD_MARKER}/v1", "nonce": nonce, "providers": list(providers),
                "head": head, "submitted_by": submitted_by or "", "started_at": now,
                "expires_at": now + COORD_TTL}
-    body = (f"🔍 Review in progress — `{','.join(providers)}` reviewing `{head[:12]}`. "
-            f"This marker self-expires and is removed when the review finishes; it only de-contends "
-            f"concurrent reviewers.\n<!--{COORD_MARKER} "
+    body = (f"🔍 Review in progress — `{','.join(providers)}` reviewing `{head[:12]}`."
+            f"\n<!--{COORD_MARKER} "
             f"{json.dumps(payload, separators=(',', ':'))}-->")
     r = run(["gh", "api", f"/repos/{repo}/issues/{pr}/comments", "-f", f"body={body}", "--jq", ".id"],
             capture=True, quiet=True, allow_fail=True)
