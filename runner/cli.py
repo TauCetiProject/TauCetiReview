@@ -22,6 +22,7 @@ subscription) and/or `codex` (ChatGPT subscription). Each rubric is judged by wh
 two you have available.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -30,12 +31,27 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 
 REVIEW_REPO = "FormalFrontier/TauCetiReview"
 DEFAULT_CODE_REPO = "FormalFrontier/TauCeti"
 DEFAULT_ROADMAP_REPO = "FormalFrontier/TauCetiRoadmap"
 CACHE_DIR = pathlib.Path(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))) / "tauceti-review"
+
+# A "review in progress" marker comment de-contends concurrent reviewers without any write access
+# beyond commenting: an independent reviewer may have repo write NOWHERE, but anyone who can review a
+# PR can comment on it. A reviewer posts the marker before spending inference and deletes it when done;
+# the embedded TTL self-clears a crashed reviewer. The marker is scoped to (head, provider): a
+# different model — or the same model after a new push — is a distinct unit that still runs and reaches
+# the backend DB, so multi-model coverage is preserved while identical work is skipped. Trust is NOT
+# gated on author association (unlike the scoreboard, which drives merges): a forged marker can at
+# worst delay a review by its TTL — no inference runs, no data lands — so honoring anyone's marker is
+# what lets a fleet of non-collaborators coordinate at all.
+COORD_MARKER = "tauceti-review-in-progress"
+COORD_RE = re.compile(r"<!--tauceti-review-in-progress (.*?)-->", re.S)
+COORD_TTL = int(os.environ.get("TAUCETI_REVIEW_INPROGRESS_TTL", "1800"))  # 30 min; > a slow review
 
 
 def die(msg):
@@ -193,6 +209,107 @@ def fetch_thread_replies(repo, pr):
     return replies
 
 
+def issue_comments(repo, pr):
+    """All issue comments on a PR, newest-or-oldest order as GitHub returns them. Best-effort: a fetch
+    failure yields [] (we then proceed unclaimed — a possible duplicate review, never corruption)."""
+    r = run(["gh", "api", "--paginate", "--jq", ".[]",
+             f"/repos/{repo}/issues/{pr}/comments?per_page=100"],
+            capture=True, quiet=True, allow_fail=True)
+    out = []
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def covered_providers(comments, head, now, *, exclude_nonce, max_id=None):
+    """Set of providers that an UNEXPIRED in-progress marker on this head — posted by a different run
+    (nonce ≠ exclude_nonce) — already covers. With max_id set, only count markers whose comment id is
+    lower (the deterministic tiebreak for a simultaneous post: lowest id wins a provider)."""
+    cov = set()
+    for c in comments:
+        m = COORD_RE.search(c.get("body") or "")
+        if not m:
+            continue
+        try:
+            d = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            continue
+        exp = d.get("expires_at")
+        if not isinstance(exp, int) or exp <= now or d.get("nonce") == exclude_nonce:
+            continue
+        if str(d.get("head") or "")[:12] != head[:12]:
+            continue
+        cid = c.get("id")
+        if max_id is not None and not (isinstance(cid, int) and cid < max_id):
+            continue
+        cov.update(p for p in (d.get("providers") or []) if isinstance(p, str))
+    return cov
+
+
+def post_marker(repo, pr, head, providers, nonce, submitted_by):
+    """Post a review-in-progress marker for `providers` on `head`; return its comment id (None on
+    failure). Best-effort: an inability to comment (a reviewer with no access) just means no marker."""
+    now = int(time.time())
+    payload = {"schema": f"{COORD_MARKER}/v1", "nonce": nonce, "providers": list(providers),
+               "head": head, "submitted_by": submitted_by or "", "started_at": now,
+               "expires_at": now + COORD_TTL}
+    body = (f"🔍 Review in progress — `{','.join(providers)}` reviewing `{head[:12]}`. "
+            f"This marker self-expires and is removed when the review finishes; it only de-contends "
+            f"concurrent reviewers.\n<!--{COORD_MARKER} "
+            f"{json.dumps(payload, separators=(',', ':'))}-->")
+    r = run(["gh", "api", f"/repos/{repo}/issues/{pr}/comments", "-f", f"body={body}", "--jq", ".id"],
+            capture=True, quiet=True, allow_fail=True)
+    if r.returncode != 0:
+        return None
+    out = (r.stdout or "").strip()
+    return int(out) if out.isdigit() else None
+
+
+def delete_marker(repo, comment_id):
+    """Remove a marker by id. Best-effort (a 404 — already gone or expired-and-gc'd — is fine)."""
+    run(["gh", "api", "-X", "DELETE", f"/repos/{repo}/issues/comments/{comment_id}"],
+        quiet=True, allow_fail=True)
+
+
+def coordinate(repo, pr, head, avail, submitted_by):
+    """[COOP] de-contend concurrent reviewers via a review-in-progress comment. Returns the subset of
+    `avail` this run should actually review (providers no live foreign marker already covers), having
+    posted our own marker for that subset and registered its deletion at exit. An empty return means
+    every provider is already in flight elsewhere — skip the whole run and spend nothing.
+
+    Not an atomic CAS, so after posting we re-read and drop any provider a LOWER-id foreign marker
+    covers (lowest id wins), which collapses the sub-second simultaneous-post window. A read/post
+    failure (e.g. no comment access) proceeds unclaimed: a possible duplicate review, never corruption.
+    """
+    nonce = uuid.uuid4().hex
+    now = int(time.time())
+    cov = covered_providers(issue_comments(repo, pr), head, now, exclude_nonce=nonce)
+    run_set = [p for p in avail if p not in cov]
+    if not run_set:
+        print(f"PR #{pr} @ {head[:12]} is already being reviewed ({','.join(sorted(cov))}) — "
+              f"skipping to avoid duplicate spend.", file=sys.stderr)
+        return []
+    cid = post_marker(repo, pr, head, run_set, nonce, submitted_by)
+    if cid is None:
+        print("note: couldn't post a review-in-progress marker (no comment access?); proceeding "
+              "without de-contention — a concurrent duplicate review is possible.", file=sys.stderr)
+        return run_set
+    lost = covered_providers(issue_comments(repo, pr), head, now, exclude_nonce=nonce, max_id=cid)
+    run_set = [p for p in run_set if p not in lost]
+    if not run_set:
+        print(f"PR #{pr} @ {head[:12]}: lost the post race ({','.join(sorted(lost))} covered first) — "
+              f"skipping.", file=sys.stderr)
+        delete_marker(repo, cid)
+        return []
+    atexit.register(delete_marker, repo, cid)
+    return run_set
+
+
 def main():
     ap = argparse.ArgumentParser(
         prog="tauceti-review",
@@ -269,6 +386,12 @@ def main():
     ap.add_argument("--rubrics-sha", default="",
                     help="run the rubrics AND engine pinned at this TauCetiReview commit "
                          "(a cached per-SHA checkout), instead of the floating main")
+    ap.add_argument("--no-coordinate", action="store_true",
+                    help="skip the review-in-progress marker. By default a contributing run (one that "
+                         "posts or archives) posts a short-lived marker comment and skips a provider "
+                         "another reviewer is already running on the same head — so a fleet doesn't "
+                         "pay twice for identical work. Pass this to review without touching the PR "
+                         "(e.g. a private read-only pass), at the cost of possible duplicate spend.")
     a = ap.parse_args()
 
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
@@ -357,6 +480,19 @@ def main():
     if a.expect_head and not (head.startswith(a.expect_head) or a.expect_head.startswith(head)):
         die(f"PR #{a.pr} head is {head[:12]}, expected {a.expect_head[:12]}. The push may not have "
             "propagated to the API yet; re-run in a moment to avoid reviewing a stale commit.")
+
+    # De-contend concurrent reviewers BEFORE the expensive workspace setup + inference. Only for a
+    # contributing run (one that posts or archives): a pure read-only dry run (--no-archive, no --post)
+    # touches nothing, and a shadow arm deliberately re-reviews the same diff, so both opt out.
+    if (a.post or not a.no_archive) and not a.shadow and not a.no_coordinate:
+        avail = coordinate(a.repo, a.pr, head, avail, a.submitted_by)
+        if not avail:
+            if not a.keep and not a.workdir:
+                shutil.rmtree(work, ignore_errors=True)
+            return
+        providers = ",".join(avail)
+        print(f"reviewers (after de-contention): {providers}", file=sys.stderr)
+
     diff = run(["gh", "pr", "diff", str(a.pr), "--repo", a.repo], capture=True, quiet=True).stdout
     (work / "diff.txt").write_text(diff)
     # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
