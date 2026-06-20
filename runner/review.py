@@ -803,7 +803,7 @@ def main():
                          "this to be SUCCESS — i.e. CI confirmed a forward-only bump. Ignored otherwise.")
     ap.add_argument("--merge-decision-file", default="",
                     help="write the auto-merge decision JSON here for a separate merge step")
-    ap.add_argument("--review-budget", type=int, default=8,
+    ap.add_argument("--review-budget", type=int, default=10,
                     help="lifetime budget of full review passes per PR: once a PR has been through "
                          "this many full review rounds (reply rounds and dollar-budget-truncated "
                          "rounds do not count) without reaching all-green, it is 'budget spent'. The "
