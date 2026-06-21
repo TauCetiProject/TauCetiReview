@@ -1390,7 +1390,10 @@ def main():
         # Whenever this run consumed a fresh author contest — no matter why the rubric was queued —
         # post a DIRECT reply in its thread so the author sees an answer, not a silently-edited root.
         # The root id already exists (a contest implies a prior thread). Deduped post-side by marker.
-        if rubric in had_contest and (thread or {}).get("comment_id"):
+        # Skip on `error`: an infra failure produced no verdict, so a "the finding stands" reply would be
+        # misleading and is the same junk-comment class as the suppressed error thread — stay silent and
+        # let the next clean round answer the contest.
+        if rubric in had_contest and (thread or {}).get("comment_id") and s != "error":
             rpath = threads_dir / f"{rubric}.reply.md"
             rpath.write_text(render_contest_reply(cf, head, prov, answered_id=had_contest[rubric]))
             plan["threads"].append(
