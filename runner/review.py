@@ -74,6 +74,43 @@ PRICES_SHA = hashlib.sha256(
 # the price-coverage guard and its test see the same id the dispatcher uses.
 SONNET_MODEL = "claude-sonnet-4-6"
 
+# Each reviewer subprocess runs in a throwaway HOME under here (not /tmp: codex refuses to create
+# helper binaries when CODEX_HOME is in /tmp). One dir per attempt; the engine removes each as soon
+# as its reviewer returns, and sweeps stragglers (from crashes/kills) at startup — see
+# cleanup_rev_home / sweep_rev_homes. A review attempt never runs for hours, so anything older than
+# REV_HOME_MAX_AGE_S is certainly abandoned.
+REV_HOME_BASE = os.path.join(os.path.expanduser("~"), ".tauceti-rev")
+REV_HOME_MAX_AGE_S = 6 * 3600
+
+
+def cleanup_rev_home(home):
+    """Remove a throwaway reviewer HOME. No-op unless it's a `rev-*` dir directly under the base —
+    so a stray path can never escalate into deleting something we didn't create."""
+    if not home:
+        return
+    norm = os.path.normpath(home)
+    if os.path.dirname(norm) == REV_HOME_BASE and os.path.basename(norm).startswith("rev-"):
+        shutil.rmtree(norm, ignore_errors=True)
+
+
+def sweep_rev_homes(max_age_s=REV_HOME_MAX_AGE_S):
+    """Reclaim leaked reviewer HOMEs left behind by killed/crashed runs. Age-gated so it can never
+    touch a HOME a concurrent reviewer is still using (no attempt runs anywhere near max_age_s)."""
+    try:
+        entries = os.listdir(REV_HOME_BASE)
+    except OSError:
+        return
+    now = time.time()
+    for name in entries:
+        if not name.startswith("rev-"):
+            continue
+        p = os.path.join(REV_HOME_BASE, name)
+        try:
+            if now - os.path.getmtime(p) > max_age_s:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
+
 
 def dispatch_models(claude_model=CLAUDE_MODEL, codex_model=CODEX_MODEL):
     """Every model id the engine can dispatch — the set that must be priced."""
@@ -107,7 +144,8 @@ def sh(cmd, cwd=None, env=None, stdin_text=None):
 
 
 def reviewer_env(provider, keys, subscription=False):
-    """A minimal, isolated environment for a reviewer subprocess.
+    """A minimal, isolated environment for a reviewer subprocess. Returns `(env, home)`; the caller
+    must `cleanup_rev_home(home)` once the reviewer returns.
 
     Each reviewer gets a fresh throwaway HOME and ONLY its own provider credential — never the
     other provider's key, never a GitHub token (the parent posts/pushes in separate tokenless-here
@@ -124,10 +162,10 @@ def reviewer_env(provider, keys, subscription=False):
     where we expect (e.g. a macOS keychain login), we fall back to the real HOME so auth still
     works, trading reproducibility for a working review.
     """
-    # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp.
-    base = os.path.join(os.path.expanduser("~"), ".tauceti-rev")
-    os.makedirs(base, exist_ok=True)
-    home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=base)
+    # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp. The caller
+    # removes `home` once the reviewer returns (cleanup_rev_home), so these don't accumulate.
+    os.makedirs(REV_HOME_BASE, exist_ok=True)
+    home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=REV_HOME_BASE)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": home,
            "LANG": os.environ.get("LANG", "C.UTF-8"), "CI": "1"}
     if provider in ("claude", "sonnet"):
@@ -161,7 +199,9 @@ def reviewer_env(provider, keys, subscription=False):
                 env["CODEX_HOME"] = os.path.expanduser("~/.codex")  # fallback; less reproducible
         else:
             env["OPENAI_API_KEY"] = keys["openai"]
-    return env
+    # Return the throwaway dir alongside env so the caller cleans it up even in the fallback paths
+    # above, where env["HOME"]/CODEX_HOME were repointed at the real home and `home` is left unused.
+    return env, home
 
 
 def changed_paths(diff_text):
@@ -855,6 +895,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
+    # Reclaim reviewer HOMEs orphaned by an earlier killed/crashed run before we add more. Each
+    # worker has its own HOME, so this base isn't shared, and a worker runs reviews sequentially —
+    # but the age gate (no attempt runs near 6h) makes the sweep safe even if that ever changed.
+    sweep_rev_homes()
+
     if a.shadow:
         # Shadow arms exist to be archived and compared, never posted. Enforce the contract up
         # front; the render/post sections below are additionally skipped structurally.
@@ -1116,7 +1161,11 @@ def main():
 
         def attempt():
             t = time.monotonic()
-            r = fn(prompt, a.tool_cwd, model, reviewer_env(provider, keys, subscription))
+            env, rev_home = reviewer_env(provider, keys, subscription)
+            try:
+                r = fn(prompt, a.tool_cwd, model, env)
+            finally:
+                cleanup_rev_home(rev_home)   # throwaway HOME, one per attempt — don't accumulate
             # Keep each attempt's execution facts: the retry path returns only the last result,
             # but the first attempt's spend/usage/failure is provenance too.
             attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
