@@ -490,6 +490,15 @@ def is_blocking(state):
     return is_unresolved(state) or state == "absent"
 
 
+def posts_review_thread(state):
+    """States that warrant CREATING/updating a contestable review thread: a genuine adverse verdict.
+    Deliberately NARROWER than is_unresolved — `error` is an infrastructure failure (no parseable
+    verdict), not a finding to contest, so it must never spawn a thread (it would post one "no
+    parseable verdict" comment per rubric per round when the reviewer backend is down). `error` stays
+    blocking for merge and shows on the scoreboard; it just gets no thread."""
+    return state in ("blocking_request", "blocking_block")
+
+
 def newest_reply_id(cf):
     """The highest author-reply comment id recorded for this rubric, or None. GitHub comment ids
     are monotonic, so this is the watermark a re-run compares against `last_reply_seen`."""
@@ -1361,12 +1370,16 @@ def main():
         s = state_of(cf, head)
         thread = cf.get("thread")
         bpath = threads_dir / f"{rubric}.md"
-        if s in ("blocking_request", "blocking_block", "error"):
+        if posts_review_thread(s):
             bpath.write_text(render_thread(cf, prov=prov))
             plan["threads"].append(
                 {"rubric": rubric, "action": "upsert", "body": str(bpath),
                  "comment_id": (thread or {}).get("comment_id"),
                  "path": pick_anchor(cf, fallback_path, set(paths_sorted))})
+        # NOTE: `error` (no parseable verdict — an infra failure, not a finding) deliberately falls
+        # through here: it stays blocking and shows on the scoreboard, but spawns NO review thread, so a
+        # reviewer-backend outage can't flood the PR with "no parseable verdict" comments. See
+        # posts_review_thread. An existing thread from a prior genuine finding is left untouched.
         elif s in ("green", "stale") and thread:
             bpath.write_text(f"<!--tauceti-rubric:{rubric}-->\n### ✅ {rubric} — now passing on "
                              f"`{head[:7]}`.\n\n"
