@@ -810,3 +810,7 @@ def main():
         return
     led.persist()
     print("[runner done] scoreboard + post plan written for the trusted post step.")
+
+
+if __name__ == "__main__":
+    main()
