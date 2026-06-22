@@ -450,6 +450,10 @@ def main():
                          "another reviewer is already running on the same head — so a fleet doesn't "
                          "pay twice for identical work. Pass this to review without touching the PR "
                          "(e.g. a private read-only pass), at the cost of possible duplicate spend.")
+    ap.add_argument("--max-rounds-per-day", type=int, default=12,
+                    help="per-PR daily round cap (UTC day); past this the run refuses without spending. "
+                         "Forwarded to review.py. Exposing it here lets a caller (e.g. the worker, whose "
+                         "survey prefilters capped PRs) drive the prefilter and the engine from one value.")
     a = ap.parse_args()
 
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
@@ -653,6 +657,7 @@ def main():
            *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
            "--ci-build", ci_build or "", "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
+           "--max-rounds-per-day", str(a.max_rounds_per_day),
            "--scoreboard-file", str(work / "scoreboard.md"),
            "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
            "--replies-json", str(replies_path)]
