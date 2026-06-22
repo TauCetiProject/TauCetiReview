@@ -667,9 +667,15 @@ def main():
           file=sys.stderr)
     run(cmd)
 
+    # The review step exits 0 having written a scoreboard on every path this CLI drives (commit /
+    # manual / shadow). A clean exit with no scoreboard means the engine did not actually run: a
+    # broken or partial engine (e.g. a missing entry point), not a review verdict. Fail at the phase
+    # boundary instead of limping on to post a nonexistent plan with a cryptic downstream error.
     sb = (work / "scoreboard.md")
+    if not sb.is_file():
+        die(f"review step exited cleanly but produced no scoreboard ({sb}); the engine did not run.")
     print("\n" + "=" * 72)
-    print(sb.read_text() if sb.is_file() else "(no scoreboard produced)")
+    print(sb.read_text())
     threads = sorted((work / "threads").glob("*.md")) if (work / "threads").is_dir() else []
     for t in threads:
         print("\n" + "-" * 72 + f"\n[thread] {t.stem}\n")
@@ -679,6 +685,8 @@ def main():
     if a.shadow:
         print(f"shadow arm `{a.label}` complete — archived, nothing posted.", file=sys.stderr)
     elif a.post:
+        if not plan.is_file():
+            die(f"review step exited cleanly but wrote no post plan ({plan}); refusing to post.")
         token = run(["gh", "auth", "token"], capture=True, quiet=True).stdout.strip()
         if not token:
             die("`gh auth token` returned nothing; run `gh auth login` first.")
