@@ -21,3 +21,4 @@ jobs:
       - run: python -m py_compile runner/*.py
       - run: python tests/test_prices.py
       - run: python tests/test_post.py
+      - run: python tests/test_billing.py

@@ -53,6 +53,11 @@ from collections import defaultdict
 from datetime import datetime, date
 from pathlib import Path
 
+# Read the dated price table through the engine's pricing module — one source of truth for the
+# prices.json path and its load, so the analytics price runs from exactly the file the engine bills
+# from. (costs runs as `runner.costs` / `python3 -m runner.costs`, so this package import resolves.)
+from runner.pricing import load_price_windows as load_history
+
 CACHE = Path.home() / ".cache" / "tauceti-review"
 DEFAULT_DB = CACHE / "review-costs.db"
 DEFAULT_OUT = CACHE / "review-costs.svg"
@@ -65,13 +70,7 @@ SCHEMA_VERSION = 5
 # must use the rate that was in effect when it ran. prices.json is a single DATED table (the same
 # file the engine bills from) — there is no separate history file to drift against. Real
 # provider-billed costs (cost_estimated=false) are kept as recorded.
-PRICES_PATH = Path(__file__).resolve().parent / "prices.json"
 DEFAULT_PRICE = {"input": 3.0, "output": 15.0, "cache_read": 3.0}  # review.py's unpriced fallback
-
-
-def load_history() -> dict:
-    """The dated price table: {model: [window, ...]} straight from prices.json."""
-    return json.loads(PRICES_PATH.read_text()).get("models", {})
 
 
 def price_window(history: dict, model: str, date: str) -> dict | None:
