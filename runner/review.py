@@ -17,8 +17,7 @@ import archive
 # correctness and reuse block as often as scope but cost a third as much; attribution has
 # not blocked yet). The non-blocking style angles follow in their README order.
 DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
-                   "generality", "placement", "naming", "documentation", "proof-quality",
-                   "deprecation"]
+                   "generality", "placement", "naming", "documentation", "proof-quality"]
 CLAUDE_MODEL = "claude-opus-4-8"
 CODEX_MODEL = "gpt-5.5"
 # OpenRouter models driven through the `pi` agent (badlogic/pi-mono): a third reviewer

@@ -24,6 +24,5 @@ block-capable integrity angles run first (cheapest, most-likely-to-block earlies
 | [`naming`](naming.md) | Conclusion-describing names; conventional notation? | no |
 | [`documentation`](documentation.md) | Accurate module and declaration docstrings? | no |
 | [`proof-quality`](proof-quality.md) | Automation-first, robust proofs? | no |
-| [`deprecation`](deprecation.md) | Backward-compatible API changes and bumps? | no |
 
 Blocking angles are integrity checks. The rest use `request_changes` for fixable issues.
