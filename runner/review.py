@@ -698,8 +698,9 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
             "blocking_request": "changes requested", "blocking_block": "blocked",
             "error": "error", "absent": "not yet run"}
     lines = ["<!--tauceti-scoreboard-->", f"## AI review — {overall}", "",
-             "Each rubric is judged independently by multiple review agents; only integrity angles can "
-             f"block. See the [rubrics]({rubric_url(prov)}).", "",
+             "Each rubric is judged independently by multiple review agents; the PR merges only once "
+             "**every** rubric is green — any rubric that is not green (changes requested, blocked, "
+             f"errored, stale, or not yet run) blocks the merge. See the [rubrics]({rubric_url(prov)}).", "",
              "| | rubric | state | judge | summary |", "|---|---|---|---|---|"]
     for r in candidates:
         cf = state_map.get(r) or {}
