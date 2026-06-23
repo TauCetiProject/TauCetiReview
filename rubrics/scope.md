@@ -5,8 +5,17 @@ One question: does this PR belong in Tau Ceti now, as a single coherent unit? Th
 
 ## Roadmap fit
 
+**A refactor of already-merged code is in scope a priori.** Everything on `main` was reviewed
+for roadmap fit when it was merged, so reworking it needs no fresh roadmap claim. If the PR only
+refactors, relocates, renames, simplifies or re-proves, modestly generalises, or documents
+material that — up to those changes — already exists on `main`, roadmap fit is automatically
+satisfied: do not `request_changes` for a missing or unstated roadmap target. Judge by whether
+the mathematics already existed, not by whether identifiers or file paths moved. The test below
+applies only to genuinely *new* mathematical content: a definition, theorem, instance, or file
+that adds a capability `main` did not have.
+
 Tau Ceti implements the roadmaps in the `FormalFrontier/TauCetiRoadmap` repo, checked out for
-you in the workspace. A PR is in scope only if it advances a specific roadmap target, or
+you in the workspace. New material is in scope only if it advances a specific roadmap target, or
 supplies a prerequisite a specific target needs. A valid claim identifies a roadmap file and
 node or heading; read it (in the roadmap checkout) to confirm.
 
@@ -27,7 +36,8 @@ refactor that is itself the topic is fine.
 
 ## Verdict
 
-- `block` when there is no real path to a roadmap target, or the PR is not a single topic.
-- `request_changes` when the path is genuine but the description fails to state it.
-- `approve` when the PR advances one target, or one target's genuine prerequisite, as one
-  unit.
+- `block` when new material has no real path to a roadmap target, or the PR is not a single
+  topic.
+- `request_changes` when new material's path is genuine but the description fails to state it.
+- `approve` when the PR reworks already-merged material as a single topic, or advances one
+  target or one target's genuine prerequisite, as one unit.
