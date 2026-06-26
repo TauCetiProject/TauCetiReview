@@ -5,8 +5,7 @@ The review rubrics and the machinery that runs review for
 downstream of Mathlib. Humans own these rubrics; AIs author the code; the human roadmaps
 live in [TauCetiRoadmap](https://github.com/FormalFrontier/TauCetiRoadmap).
 
-Tau Ceti is being incubated jointly by the [Lean FRO](https://lean-lang.org/fro/) and the
-[Mathlib Initiative](https://mathlib-initiative.org/), in partnership with academic and
+Tau Ceti is being incubated by the [Lean FRO](https://lean-lang.org/fro/) in partnership with academic and
 industry groups.
 
 ## How review works
