@@ -51,6 +51,14 @@ apply to it: rely on what it reports and do not re-litigate the build it confirm
 - Be specific: each finding gives a location (line `0` for PR-wide issues), the problem, a
   concrete fix, and the evidence behind it.
 
+## Contested findings
+
+When re-reviewing a contested finding, read the contributor's reply. If it quotes a conflicting
+finding from another angle or an earlier round, weigh it as evidence: restate your finding
+compatibly if both can hold, withdraw if your point was a mere preference or is met by the
+other, or — if it does not really conflict — let your finding stand. Repeating the opposite
+verdict without engaging the quote is the failure to avoid.
+
 ## Output
 
 Return a single JSON object:
