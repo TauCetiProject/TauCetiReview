@@ -14,6 +14,10 @@ the correctness agent owns meaning). Uses `request_changes`.
   unfolding-heavy context is fragile even though it is terse.
 - Factor substantial or repeated reasoning into reusable lemmas; inline genuine one-offs. Flag
   redundant hypotheses, and a `revert` the following proof does not justify.
+- Long proofs (more than 50 lines) are often a sign that intermediate steps should be factored
+  out as preliminary lemmas. In exceptional cases this is not possible, in which case
+  there should be comments within the proof explaining the global structure to the extent it is not
+  clear from the proof script.
 
 ## Verdict
 
