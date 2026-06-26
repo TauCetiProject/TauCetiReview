@@ -62,6 +62,61 @@ def states_from_table(body):
     return out
 
 
+DEFAULT_ALLOW = ["TauCeti.lean", "lake-manifest.json", "lean-toolchain"]
+
+
+def load_comments(text):
+    """Parse a comments file that is either a single JSON array or JSONL (one comment object per line
+    — what `gh api --paginate --jq '.[]|...'` emits across pages, so all comments are seen, not just
+    page 1). Distinguish by the leading bracket: a single JSONL line is itself valid JSON (a dict), so
+    a plain json.loads would silently drop it."""
+    if text.lstrip()[:1] == "[":
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, list) else []
+        except json.JSONDecodeError:
+            return []
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump_guard,
+                         merge_path_prefix="TauCeti/", merge_allow_file=None):
+    """The merge gate, shared by the merge-only CLI and the merge sweep: a PR is mergeable iff the
+    newest scoreboard comment is AT `head_sha` with every `required` rubric green there, and the
+    `decide_merge` rule holds (build green, TauCeti/-only + allowed root/pins, bump-guard for a pin).
+    Returns {"merge", "reason", "head_sha"}."""
+    allow = DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file
+    board = newest_scoreboard(comments)
+    meta = parse_meta(board.get("body")) if board else None
+    if not required:
+        return {"merge": False, "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
+    if not meta:
+        return {"merge": False, "reason": "no scoreboard comment at the PR; refusing to merge",
+                "head_sha": head_sha}
+    if (meta.get("head_sha") or "") != head_sha:
+        return {"merge": False, "head_sha": head_sha,
+                "reason": (f"scoreboard is for a different head "
+                           f"({(meta.get('head_sha') or '')[:7]} != {head_sha[:7]}); refusing")}
+    raw = meta.get("states")
+    if not isinstance(raw, dict) or not raw:
+        raw = states_from_table(board.get("body"))   # old comment: derive from the rendered table
+    states = {r: (raw.get(r) or "absent") for r in required}
+    candidates = sorted(required)
+    all_green = all(states[r] == "green" for r in required)
+    paths = changed_paths(diff_text)
+    merge_ok, reason = decide_merge(states, candidates, all_green, paths, head_sha,
+                                    merge_path_prefix, allow, bump_guard, ci_build)
+    return {"merge": merge_ok, "reason": reason, "head_sha": head_sha}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pr", required=True)
@@ -73,58 +128,21 @@ def main():
     ap.add_argument("--ci-build", default="")
     ap.add_argument("--bump-guard", default="")
     ap.add_argument("--merge-path-prefix", default="TauCeti/")
-    ap.add_argument("--merge-allow-file", action="append",
-                    default=["TauCeti.lean", "lake-manifest.json", "lean-toolchain"])
+    ap.add_argument("--merge-allow-file", action="append", default=list(DEFAULT_ALLOW))
     ap.add_argument("--merge-decision-file", default="")
     a = ap.parse_args()
 
     required = {r for r in a.rubrics.split(",") if r}
-    # Accept either a single JSON array or JSONL (one comment object per line — what `gh api
-    # --paginate --jq '.[]|...'` emits across pages, so all comments are seen, not just page 1).
-    # Distinguish by the leading bracket: a single JSONL line is itself valid JSON (a dict), so a
-    # plain json.loads would silently drop it.
-    comments = []
     try:
         text = pathlib.Path(a.comments_file).read_text()
     except OSError:
         text = ""
-    if text.lstrip()[:1] == "[":
-        try:
-            data = json.loads(text)
-            comments = data if isinstance(data, list) else []
-        except json.JSONDecodeError:
-            comments = []
-    else:
-        for line in text.splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    comments.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    board = newest_scoreboard(comments)
-    meta = parse_meta(board.get("body")) if board else None
-
-    if not required:
-        merge_ok, reason = False, "no rubric set; refusing to merge"
-    elif not meta:
-        merge_ok, reason = False, "no scoreboard comment at the PR; refusing to merge"
-    elif (meta.get("head_sha") or "") != a.head_sha:
-        merge_ok, reason = False, (f"scoreboard is for a different head "
-                                   f"({(meta.get('head_sha') or '')[:7]} != {a.head_sha[:7]}); refusing")
-    else:
-        raw = meta.get("states")
-        if not isinstance(raw, dict) or not raw:
-            raw = states_from_table(board.get("body"))   # old comment: derive from the rendered table
-        states = {r: (raw.get(r) or "absent") for r in required}
-        candidates = sorted(required)
-        all_green = all(states[r] == "green" for r in required)
-        paths = changed_paths(pathlib.Path(a.diff_file).read_text())
-        merge_ok, reason = decide_merge(
-            states, candidates, all_green, paths, a.head_sha,
-            a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build)
-
-    out = {"merge": merge_ok, "reason": reason, "head_sha": a.head_sha}
+    try:
+        diff_text = pathlib.Path(a.diff_file).read_text()
+    except OSError:
+        diff_text = ""
+    out = decide_from_comments(load_comments(text), a.head_sha, required, diff_text,
+                               a.ci_build, a.bump_guard, a.merge_path_prefix, a.merge_allow_file)
     print(json.dumps(out))
     if a.merge_decision_file:
         pathlib.Path(a.merge_decision_file).write_text(json.dumps(out))
