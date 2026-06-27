@@ -92,6 +92,20 @@ def test_classify_update_distinguishes_race_from_conflict():
     assert sweep.classify_update(1, "HTTP 403: Resource not accessible by integration") == "error"
 
 
+def test_enqueue_already_in_queue_is_benign():
+    # The exact GraphQL error when auto-merge enqueued the PR first, mid-sweep. It must be read as a
+    # benign race (a no-op a later sweep retries), NOT a failure that turns the sweep job red.
+    msg = ('{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE",'
+           '"message":"Pull request is already in the queue"}]}')
+    assert sweep.enqueue_is_benign(msg)
+    # other benign races
+    assert sweep.enqueue_is_benign("expected head oid does not match")
+    assert sweep.enqueue_is_benign("Pull request is not mergeable")
+    # a real fault is NOT benign
+    assert not sweep.enqueue_is_benign("HTTP 403: Resource not accessible by integration")
+    assert not sweep.enqueue_is_benign("")
+
+
 def _scoreboard(head, states):
     meta = "<!--tauceti-meta:v1 " + json.dumps({"head_sha": head, "states": states}) + "-->"
     return [{"body": "<!--tauceti-scoreboard-->\n" + meta, "updated_at": "2026-06-26T00:00:00Z"}]
