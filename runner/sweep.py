@@ -145,6 +145,22 @@ def classify_update(returncode, output):
     return "error"
 
 
+# Enqueue outcomes that are NOT failures: the PR is already in the queue (a concurrent auto-merge
+# enqueued it first), the head moved, or GitHub does not currently consider it mergeable — all retried
+# on a later sweep. GitHub phrases "already queued" as "Pull request is already in the queue", which
+# matches neither "already queued" nor "already in the merge queue", so it is listed explicitly.
+ENQUEUE_BENIGN = ("already queued", "already in the merge queue", "already in the queue",
+                  "expected head", "head has been modified", "not mergeable", "mergeable state",
+                  "is not mergeable")
+
+
+def enqueue_is_benign(output):
+    """True if an enqueue's failure output is a benign race (already queued / head moved / not yet
+    mergeable) rather than a real fault — those are no-ops a later sweep retries, not failures."""
+    low = (output or "").lower()
+    return any(b in low for b in ENQUEUE_BENIGN)
+
+
 def decide_action(*, merge_ok, in_queue, evictions_at_head, behind, escalate=EVICT_ESCALATE):
     """Pure policy: given the merge gate's verdict and the PR's queue history, what should the sweep do?
     Returns (action, reason) with action in {skip, enqueue, update_branch, flag}.
@@ -213,9 +229,7 @@ def enqueue(pr, node_id, head):
     if r.returncode == 0 and "errors" not in out.lower():
         print(f"enqueued #{pr}: {out.strip()}")
         return True
-    benign = ("already queued", "already in the merge queue", "expected head", "head has been modified",
-              "not mergeable", "mergeable state", "is not mergeable")
-    if any(b in out.lower() for b in benign):
+    if enqueue_is_benign(out):
         print(f"#{pr}: enqueue not applied (benign — a later sweep retries): {out.strip()}")
         return True
     print(f"#{pr}: unexpected enqueue failure: {out.strip()}", file=sys.stderr)
