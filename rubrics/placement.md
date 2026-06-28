@@ -15,11 +15,13 @@ imports whose wrongness is evident from the diff or the dependency topic.
 
 ## Imports
 
-- Import directly what a file uses. Flag an import whose wrongness is evident: unused, or a
-  broad `import Mathlib` where specific modules would do.
+- Flag only an evidently wrong import: unused, or a broad `import Mathlib` where
+  specific modules would do. Do not request a direct import for something already
+  available transitively; that is redundant and `shake` removes it.
 
 ## Verdict
 
 - `request_changes` for a declaration in the wrong home, material that belongs in an earlier
   file, roadmap-specific material hidden in a generic file, or an evidently wrong import.
-- `approve` when each declaration is in its natural place with direct imports.
+- `approve` when each declaration is in its natural place and no import is unused or
+  unnecessarily broad.
