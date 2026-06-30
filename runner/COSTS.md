@@ -16,7 +16,7 @@ It answers:
 
 | source | tokens | $ | when |
 |--------|:------:|:-:|------|
-| **data** a [TauCetiData](https://github.com/FormalFrontier/TauCetiData) checkout | ✅ | ✅ | **canonical** — durable, public, reproducible (`--source data --data-dir …`) |
+| **data** a [TauCetiData](https://github.com/TauCetiProject/TauCetiData) checkout | ✅ | ✅ | **canonical** — durable, public, reproducible (`--source data --data-dir …`) |
 | **store** `~/.cache/tauceti-review/store/<repo>/` | ✅ | ✅ | the live engine cache — fast, local, single-machine |
 | **logs** `task-*.log` | ❌ | ✅ | last-resort fallback, dollars only (`--source logs --logs-dir …`) |
 
@@ -38,7 +38,7 @@ prefers `data` when `--data-dir` is given, else the store, else logs — never
 mixing, so nothing is double-counted.
 
 ```bash
-git clone --depth 1 https://github.com/FormalFrontier/TauCetiData /tmp/TauCetiData
+git clone --depth 1 https://github.com/TauCetiProject/TauCetiData /tmp/TauCetiData
 tauceti-review-costs --source data --data-dir /tmp/TauCetiData all
 ```
 
@@ -99,7 +99,7 @@ tauceti-review-costs graph --out g.svg         # dependency-free SVG (4 panels)
 ```
 
 Defaults: DB and graph live under `~/.cache/tauceti-review/`; `--repo` is
-`FormalFrontier/TauCeti`; `--store` defaults to that repo's store slug. PR author
+`TauCetiProject/TauCeti`; `--store` defaults to that repo's store slug. PR author
 is read from the body trailer (`🤖 Prepared with Codex` / `Claude Code`), since
 commits land under the contributor's account.
 

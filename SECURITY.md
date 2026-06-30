@@ -6,7 +6,7 @@ hardening that followed (issues #7–#15, #22).
 
 ## What runs
 
-A PR on `FormalFrontier/TauCeti` triggers review after CI succeeds, or on a `/review` comment
+A PR on `TauCetiProject/TauCeti` triggers review after CI succeeds, or on a `/review` comment
 from a trusted user. The reusable workflow (`.github/workflows/review.yml`) checks out the PR
 code, runs each rubric through a reviewer CLI (`claude` or `codex`, chosen at random per rubric,
 read-only tools), posts an aggregated verdict, and — when the gate passes — auto-merges.

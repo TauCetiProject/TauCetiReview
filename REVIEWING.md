@@ -30,17 +30,17 @@ With [uv](https://docs.astral.sh/uv/):
 
 ```bash
 # one-off, no install:
-uvx --from git+https://github.com/FormalFrontier/TauCetiReview tauceti-review 42
+uvx --from git+https://github.com/TauCetiProject/TauCetiReview tauceti-review 42
 
 # or install the command:
-uv tool install git+https://github.com/FormalFrontier/TauCetiReview
+uv tool install git+https://github.com/TauCetiProject/TauCetiReview
 tauceti-review 42
 ```
 
 Or from a checkout (also how to hack on it):
 
 ```bash
-git clone https://github.com/FormalFrontier/TauCetiReview
+git clone https://github.com/TauCetiProject/TauCetiReview
 cd TauCetiReview
 uv run tauceti-review 42          # or: pipx install . / pip install .
 ```
@@ -70,7 +70,7 @@ Add `--post` to publish. Useful flags:
 | `--reviewer claude\|codex\|sonnet\|deepseek\|minimax\|grok` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). `claude`/`codex` are drawn per rubric like CI. `sonnet` is the `claude` CLI pinned to Sonnet. `deepseek`/`minimax`/`grok` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. `sonnet`/`deepseek`/`minimax`/`grok` are explicit-only (never auto-drawn) |
 | `--mode commit` | review only rubrics not already passing in the local store (default `manual` = all) |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
-| `--repo owner/name` | review a different repo (default `FormalFrontier/TauCeti`) |
+| `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |
 | `--auth api` | use `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the env instead of the subscription (billed) |
 | `--keep` | keep the temporary workspace for inspection |
 
@@ -124,7 +124,7 @@ Add `--post` to publish. Useful flags:
 ## Shadow reviews (A/B arms)
 
 A shadow review runs the same PR through alternative rubrics and/or models, archives the
-results to [TauCetiData](https://github.com/FormalFrontier/TauCetiData), and posts **nothing**
+results to [TauCetiData](https://github.com/TauCetiProject/TauCetiData), and posts **nothing**
 — the PR thread and the production review state are untouched. This is how review variants are
 evaluated against each other before being adopted.
 

@@ -1,9 +1,9 @@
 # Tau Ceti Review
 
 The review rubrics and the machinery that runs review for
-[Tau Ceti](https://github.com/FormalFrontier/TauCeti), an AIs-welcome Lean 4 library
+[Tau Ceti](https://github.com/TauCetiProject/TauCeti), an AIs-welcome Lean 4 library
 downstream of Mathlib. Humans own these rubrics; AIs author the code; the human roadmaps
-live in [TauCetiRoadmap](https://github.com/FormalFrontier/TauCetiRoadmap).
+live in [TauCetiRoadmap](https://github.com/TauCetiProject/TauCetiRoadmap).
 
 Tau Ceti is being incubated by the [Lean FRO](https://lean-lang.org/fro/) in partnership with academic and
 industry groups.
@@ -30,13 +30,13 @@ same review on their **own Claude / Codex subscription** with the `tauceti-revie
 bill. See [REVIEWING.md](REVIEWING.md):
 
 ```bash
-uvx --from git+https://github.com/FormalFrontier/TauCetiReview tauceti-review 42
+uvx --from git+https://github.com/TauCetiProject/TauCetiReview tauceti-review 42
 ```
 
 ## Meta-review
 
 We A/B-test the reviews themselves, to measure and improve review quality. `judge.py` (in
-[TauCetiData](https://github.com/FormalFrontier/TauCetiData)) takes two review runs of the
+[TauCetiData](https://github.com/TauCetiProject/TauCetiData)) takes two review runs of the
 same `(pr, head_sha, rubric)` — production vs a `--shadow` arm with a different model or
 rubric version — and has AI judges pick the better one, grounded in the actual checked-out
 code (a fluent hallucinated finding should lose to a terse real one), in both presentation
@@ -47,13 +47,13 @@ win-rates per model and rubric version, and judge–human agreement.
 So far: several thousand archived review runs, a few hundred A/B pairs, and over a thousand AI
 judgments across five judge models and three judge-prompt versions, plus a first round of human
 decisions and preliminary calibration. All of it lives in
-[TauCetiData](https://github.com/FormalFrontier/TauCetiData); see its `docs/` for the design.
+[TauCetiData](https://github.com/TauCetiProject/TauCetiData); see its `docs/` for the design.
 
 ## Costs
 
 `tauceti-review-costs` reports the engine's review spend — tokens and imputed
 dollars, per merged line of code, per day, and split by PR outcome — reading the
-durable [TauCetiData](https://github.com/FormalFrontier/TauCetiData) archive
+durable [TauCetiData](https://github.com/TauCetiProject/TauCetiData) archive
 (reproducible by anyone) or the local store. Costs are recomputed from token
 counts at the rate in effect on each run's date. See [runner/COSTS.md](runner/COSTS.md).
 

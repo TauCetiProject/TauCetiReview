@@ -3,7 +3,7 @@
 
 Reviews are durable the moment they finish: the runner writes one JSON record per execution
 into a local OUTBOX (`<store>/outbox/`), and a separate sync step drains the outbox into a
-checkout of FormalFrontier/TauCetiData (write-if-absent, commit, rebase, push). The split is
+checkout of TauCetiProject/TauCetiData (write-if-absent, commit, rebase, push). The split is
 load-bearing: a data-repo push outage must never fail an otherwise-good review, and in CI the
 outbox rides along in the reviews-branch store commit, so an unsynced record survives the
 runner and syncs on a later run.
@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import sys
 
-DATA_REPO = "FormalFrontier/TauCetiData"
+DATA_REPO = "TauCetiProject/TauCetiData"
 
 # Conservative scrubbing for blob text that may quote tool/CLI output: known credential shapes
 # and home paths. Records themselves never carry these fields, so this is defense in depth.

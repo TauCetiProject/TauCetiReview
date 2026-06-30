@@ -61,7 +61,7 @@ from runner.pricing import load_price_windows as load_history
 CACHE = Path.home() / ".cache" / "tauceti-review"
 DEFAULT_DB = CACHE / "review-costs.db"
 DEFAULT_OUT = CACHE / "review-costs.svg"
-DEFAULT_REPO = "FormalFrontier/TauCeti"
+DEFAULT_REPO = "TauCetiProject/TauCeti"
 SCHEMA_VERSION = 5
 
 # Cost is DERIVED, not a stored fact. We recompute every *estimated* (codex/pi) review from the
@@ -274,7 +274,7 @@ def ingest_data(con: sqlite3.Connection, data_dir: Path, include_shadows: bool =
     pass include_shadows to also count the archived A/B experiment arms."""
     runs = data_dir / "records" / "runs"
     if not runs.is_dir():
-        raise FileNotFoundError(f"no records/runs under {data_dir} (clone FormalFrontier/TauCetiData)")
+        raise FileNotFoundError(f"no records/runs under {data_dir} (clone TauCetiProject/TauCetiData)")
     con.execute("DELETE FROM rubric_runs")
     con.execute("DELETE FROM review_rounds WHERE source='data'")
     history = load_history()

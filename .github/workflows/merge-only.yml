@@ -38,18 +38,18 @@ jobs:
       - name: Checkout review repo (runner + rubrics)
         uses: actions/checkout@v4
         with:
-          repository: FormalFrontier/TauCetiReview
+          repository: TauCetiProject/TauCetiReview
           ref: main
           persist-credentials: false
 
       - name: Resolve PR head and fetch diff
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
+          HEAD_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
-          BASE_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json baseRefOid -q .baseRefOid)
+          BASE_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid -q .baseRefOid)
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
-          MERGE_BASE=$(gh api "/repos/FormalFrontier/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
+          MERGE_BASE=$(gh api "/repos/TauCetiProject/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
             --jq '.merge_base_commit.sha' 2>/dev/null || echo "")
           echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
           echo "RUBRICS_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
@@ -58,13 +58,13 @@ jobs:
           # the job CheckRun (whose name differs — bump-guard's job is "guard"). Missing -> "" -> the
           # engine refuses to merge. Posted by the trusted base-repo CI; external authors cannot write
           # statuses to the base repo.
-          CI_BUILD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+          CI_BUILD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="build") | .state] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
-          BUMP_GUARD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+          BUMP_GUARD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="bump-guard") | .state] | first // ""')
           echo "BUMP_GUARD=$BUMP_GUARD" >> "$GITHUB_ENV"
-          gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
+          gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
 
       - name: Fetch this PR's scoreboard comment(s)
@@ -81,7 +81,7 @@ jobs:
           # NEWEST scoreboard, so a single page could hide it. `--paginate` with a non-array --jq
           # emits one JSON object per line (JSONL), concatenated across pages (a bare --paginate would
           # concatenate per-page arrays into invalid JSON; --slurp can't combine with --jq).
-          gh api --paginate "repos/FormalFrontier/TauCeti/issues/$PR/comments" \
+          gh api --paginate "repos/TauCetiProject/TauCeti/issues/$PR/comments" \
             --jq '.[] | {body, updated_at, created_at}' > comments.json
           echo "fetched $(wc -l < comments.json) comment(s) for #$PR"
 
@@ -105,7 +105,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FormalFrontier
+          owner: TauCetiProject
           repositories: TauCeti
           permission-contents: write
           permission-pull-requests: write
@@ -120,7 +120,7 @@ jobs:
           fi
           # Re-read state right before enqueuing: the decision was computed for HEAD_SHA, so only
           # enqueue if that is still the head (a later push re-triggers with a fresh decision).
-          read -r CUR_HEAD PRID < <(gh pr view "$PR" --repo FormalFrontier/TauCeti \
+          read -r CUR_HEAD PRID < <(gh pr view "$PR" --repo TauCetiProject/TauCeti \
             --json headRefOid,id -q '.headRefOid + " " + .id')
           if [ "$CUR_HEAD" != "$HEAD_SHA" ]; then
             echo "head moved ($HEAD_SHA -> $CUR_HEAD) since the decision; skipping (a fresh build will re-trigger)."
