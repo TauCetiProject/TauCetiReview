@@ -35,9 +35,9 @@ import tempfile
 import time
 import uuid
 
-REVIEW_REPO = "FormalFrontier/TauCetiReview"
-DEFAULT_CODE_REPO = "FormalFrontier/TauCeti"
-DEFAULT_ROADMAP_REPO = "FormalFrontier/TauCetiRoadmap"
+REVIEW_REPO = "TauCetiProject/TauCetiReview"
+DEFAULT_CODE_REPO = "TauCetiProject/TauCeti"
+DEFAULT_ROADMAP_REPO = "TauCetiProject/TauCetiRoadmap"
 CACHE_DIR = pathlib.Path(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))) / "tauceti-review"
 

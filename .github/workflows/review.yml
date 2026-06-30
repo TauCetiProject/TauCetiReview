@@ -34,7 +34,7 @@ jobs:
       - name: Checkout review repo (runner + rubrics)
         uses: actions/checkout@v4
         with:
-          repository: FormalFrontier/TauCetiReview
+          repository: TauCetiProject/TauCetiReview
           # main in production (workflow_call); a dispatch can point at a branch to test changes.
           ref: ${{ inputs.review_ref || 'main' }}
           persist-credentials: false
@@ -42,45 +42,45 @@ jobs:
       - name: Checkout roadmap (public)
         uses: actions/checkout@v4
         with:
-          repository: FormalFrontier/TauCetiRoadmap
+          repository: TauCetiProject/TauCetiRoadmap
           path: roadmap
           persist-credentials: false
 
       - name: Resolve PR head and fetch diff
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
+          HEAD_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           # Provenance for the review comments and meta block: the PR base tip, the merge base
           # (the actual left side of the three-dot diff below), and the rubrics+engine commit.
-          BASE_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json baseRefOid -q .baseRefOid)
+          BASE_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid -q .baseRefOid)
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
-          MERGE_BASE=$(gh api "/repos/FormalFrontier/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
+          MERGE_BASE=$(gh api "/repos/TauCetiProject/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
             --jq '.merge_base_commit.sha' 2>/dev/null || echo "")
           echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
           echo "RUBRICS_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           # CI's build-check conclusion for this head (GitHub's own result, not author input): the
           # engine uses it to tell reviewers the code compiles so they don't re-litigate the build.
-          CI_BUILD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+          CI_BUILD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.name=="build") | .conclusion] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
           # bump-guard's conclusion for this head: required green before a PR that changes a
           # Lake pin (lake-manifest.json / lean-toolchain) may auto-merge (see runner/review.py).
-          BUMP_GUARD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+          BUMP_GUARD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.name=="bump-guard") | .conclusion] | first // ""')
           echo "BUMP_GUARD=$BUMP_GUARD" >> "$GITHUB_ENV"
-          gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
+          gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
           # The PR title+body: the author's stated intent, sources, and dependencies. The
           # rubric tells agents to read it; pass it through (as untrusted author input, like
           # the diff). Author-controlled, so no more trusted than the diff already is.
-          gh pr view "$PR" --repo FormalFrontier/TauCeti --json title,body \
+          gh pr view "$PR" --repo TauCetiProject/TauCeti --json title,body \
             --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
           echo "pr_desc bytes: $(wc -c < pr_desc.txt)"
           # Reply flow: fetch the author's reply body (untrusted) so the re-run can address it.
           : > reply.txt
           if [ -n "${{ inputs.reply_comment_id }}" ]; then
-            gh api "/repos/FormalFrontier/TauCeti/pulls/comments/${{ inputs.reply_comment_id }}" \
+            gh api "/repos/TauCetiProject/TauCeti/pulls/comments/${{ inputs.reply_comment_id }}" \
               --jq '.body' > reply.txt || true
             echo "reply bytes: $(wc -c < reply.txt)"
           fi
@@ -88,7 +88,7 @@ jobs:
       - name: Prepare review store (reviews branch; public read, no token on disk)
         run: |
           git clone --depth 1 --branch reviews --single-branch \
-            https://github.com/FormalFrontier/TauCetiReview store 2>/dev/null \
+            https://github.com/TauCetiProject/TauCetiReview store 2>/dev/null \
             || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
 
       # ---- Responsiveness: post an in-progress scoreboard NOW — before the slow Mathlib clone,
@@ -102,7 +102,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FormalFrontier
+          owner: TauCetiProject
           repositories: TauCeti
           permission-pull-requests: write
 
@@ -110,18 +110,18 @@ jobs:
         continue-on-error: true
         env: { GH_TOKEN: "${{ steps.early_comment_token.outputs.token }}" }
         run: |
-          python3 runner/review.py --repo FormalFrontier/TauCeti --pr "$PR" --mode init \
+          python3 runner/review.py --repo TauCetiProject/TauCeti --pr "$PR" --mode init \
             --rubrics-dir rubrics --tool-cwd . --diff-file diff.txt --store store \
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
             --rubrics-sha "$RUBRICS_SHA" \
             --scoreboard-file "$PWD/scoreboard.md" --post-plan-file "$PWD/post_plan.json"
-          python3 runner/post.py --repo FormalFrontier/TauCeti --pr "$PR" \
+          python3 runner/post.py --repo TauCetiProject/TauCeti --pr "$PR" \
             --plan "$PWD/post_plan.json" --store store
 
       - name: Checkout code at PR head (public, no credentials persisted)
         uses: actions/checkout@v4
         with:
-          repository: FormalFrontier/TauCeti
+          repository: TauCetiProject/TauCeti
           ref: ${{ env.HEAD_SHA }}
           path: code
           persist-credentials: false
@@ -131,7 +131,7 @@ jobs:
         # lakefile/manifest (that would be arbitrary code execution on attacker input — I1).
         run: |
           base=$(mktemp -d)
-          git clone --depth 1 https://github.com/FormalFrontier/TauCeti "$base/base"
+          git clone --depth 1 https://github.com/TauCetiProject/TauCeti "$base/base"
           MREV=$(jq -r '.packages[] | select(.name=="mathlib") | .rev' "$base/base/lake-manifest.json")
           echo "mathlib rev (from base manifest): $MREV"
           git init -q mathlib
@@ -187,7 +187,7 @@ jobs:
             REPLY_ARGS="--reply-rubric ${{ inputs.reply_rubric }} --reply-file $PWD/reply.txt"
           fi
           python3 runner/review.py \
-            --repo FormalFrontier/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
+            --repo TauCetiProject/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
@@ -206,7 +206,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FormalFrontier
+          owner: TauCetiProject
           repositories: TauCeti
           permission-pull-requests: write
           # issues:write so the budget-label step can create the repo label on first use.
@@ -219,7 +219,7 @@ jobs:
         env: { GH_TOKEN: "${{ steps.comment_token.outputs.token }}" }
         run: |
           if [ -s post_plan.json ]; then
-            python3 runner/post.py --repo FormalFrontier/TauCeti --pr "$PR" \
+            python3 runner/post.py --repo TauCetiProject/TauCeti --pr "$PR" \
               --plan "$PWD/post_plan.json" --store store --archive-dir store/outbox
           else
             echo "no post plan (runner did not run, e.g. round cap); nothing to post"
@@ -238,7 +238,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f budget.json ]; then echo "no budget.json; leaving labels untouched"; exit 0; fi
-          R=FormalFrontier/TauCeti
+          R=TauCetiProject/TauCeti
           if [ "$(jq -r '.budget_spent' budget.json)" = "true" ]; then
             # Create the label only if it is missing, so a real failure surfaces instead of being hidden.
             if ! gh label list --repo "$R" --search "$LABEL" --json name --jq '.[].name' \
@@ -265,7 +265,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FormalFrontier
+          owner: TauCetiProject
           repositories: TauCetiData
           permission-contents: write
 
@@ -276,7 +276,7 @@ jobs:
         run: |
           if [ -d store/outbox ] && [ -n "$TOKEN" ]; then
             python3 runner/archive.py sync --store store --data-dir "$RUNNER_TEMP/tauceti-data" \
-              --remote "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiData"
+              --remote "https://x-access-token:${TOKEN}@github.com/TauCetiProject/TauCetiData"
           else
             echo "no outbox or no token; skipping archive sync"
           fi
@@ -288,7 +288,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FormalFrontier
+          owner: TauCetiProject
           repositories: TauCetiReview
           permission-contents: write
 
@@ -301,7 +301,7 @@ jobs:
           git -c user.name="tauceti-review-bot[bot]" \
               -c user.email="tauceti-review-bot[bot]@users.noreply.github.com" \
               commit -q -m "review: PR #${PR}" || { echo "nothing to commit"; exit 0; }
-          git push "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiReview" HEAD:reviews
+          git push "https://x-access-token:${TOKEN}@github.com/TauCetiProject/TauCetiReview" HEAD:reviews
 
       # ---- Auto-merge (I9): dormant unless enable_automerge. The App must be a ruleset bypass
       # ---- actor and hold TauCeti contents:write for the merge to land.
@@ -312,7 +312,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FormalFrontier
+          owner: TauCetiProject
           repositories: TauCeti
           permission-contents: write
           permission-pull-requests: write
@@ -323,7 +323,7 @@ jobs:
         run: |
           if [ -f merge.json ] && [ "$(jq -r .merge merge.json)" = "true" ]; then
             echo "auto-merging: $(jq -r .reason merge.json)"
-            gh pr merge "$PR" --repo FormalFrontier/TauCeti --squash
+            gh pr merge "$PR" --repo TauCetiProject/TauCeti --squash
           else
             echo "not auto-merging: $(jq -r '.reason // "no decision file"' merge.json 2>/dev/null || echo 'no decision file')"
           fi

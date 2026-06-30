@@ -14,7 +14,7 @@ the mathematics already existed, not by whether identifiers or file paths moved.
 applies only to genuinely *new* mathematical content: a definition, theorem, instance, or file
 that adds a capability `main` did not have.
 
-Tau Ceti implements the roadmaps in the `FormalFrontier/TauCetiRoadmap` repo, checked out for
+Tau Ceti implements the roadmaps in the `TauCetiProject/TauCetiRoadmap` repo, checked out for
 you in the workspace. New material is in scope only if it advances a specific roadmap target, or
 supplies a prerequisite a specific target needs. A valid claim identifies a roadmap file and
 node or heading; read it (in the roadmap checkout) to confirm.

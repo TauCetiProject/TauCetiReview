@@ -36,39 +36,39 @@ jobs:
       - name: Checkout review repo (runner + rubrics, pinned)
         uses: actions/checkout@v4
         with:
-          repository: FormalFrontier/TauCetiReview
+          repository: TauCetiProject/TauCetiReview
           ref: ${{ inputs.rubrics_sha }}
           persist-credentials: false
 
       - name: Checkout roadmap (public)
         uses: actions/checkout@v4
         with:
-          repository: FormalFrontier/TauCetiRoadmap
+          repository: TauCetiProject/TauCetiRoadmap
           path: roadmap
           persist-credentials: false
 
       - name: Resolve PR head and fetch diff
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          HEAD_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json headRefOid -q .headRefOid)
+          HEAD_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
-          BASE_SHA=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json baseRefOid -q .baseRefOid)
+          BASE_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid -q .baseRefOid)
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
-          MERGE_BASE=$(gh api "/repos/FormalFrontier/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
+          MERGE_BASE=$(gh api "/repos/TauCetiProject/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
             --jq '.merge_base_commit.sha' 2>/dev/null || echo "")
           echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
           echo "RUBRICS_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          CI_BUILD=$(gh pr view "$PR" --repo FormalFrontier/TauCeti --json statusCheckRollup \
+          CI_BUILD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.name=="build") | .conclusion] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
-          gh pr diff "$PR" --repo FormalFrontier/TauCeti > diff.txt
-          gh pr view "$PR" --repo FormalFrontier/TauCeti --json title,body \
+          gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
+          gh pr view "$PR" --repo TauCetiProject/TauCeti --json title,body \
             --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
 
       - name: Checkout code at PR head (public, no credentials persisted)
         uses: actions/checkout@v4
         with:
-          repository: FormalFrontier/TauCeti
+          repository: TauCetiProject/TauCeti
           ref: ${{ env.HEAD_SHA }}
           path: code
           persist-credentials: false
@@ -77,7 +77,7 @@ jobs:
         # Rev from the BASE repo's manifest, never the PR's (same rationale as review.yml).
         run: |
           base=$(mktemp -d)
-          git clone --depth 1 https://github.com/FormalFrontier/TauCeti "$base/base"
+          git clone --depth 1 https://github.com/TauCetiProject/TauCeti "$base/base"
           MREV=$(jq -r '.packages[] | select(.name=="mathlib") | .rev' "$base/base/lake-manifest.json")
           git init -q mathlib
           git -C mathlib remote add origin https://github.com/leanprover-community/mathlib4
@@ -117,7 +117,7 @@ jobs:
           [ -n "${{ inputs.rubrics }}" ] && RUBRICS_ARGS="--rubrics ${{ inputs.rubrics }}"
           mkdir -p store
           python3 runner/review.py \
-            --repo FormalFrontier/TauCeti --pr "$PR" --mode manual \
+            --repo TauCetiProject/TauCeti --pr "$PR" --mode manual \
             --shadow --arm "shadow:${LABEL}" $RUBRICS_ARGS \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
@@ -136,7 +136,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: FormalFrontier
+          owner: TauCetiProject
           repositories: TauCetiData
           permission-contents: write
 
@@ -146,7 +146,7 @@ jobs:
         env: { TOKEN: "${{ steps.archive_token.outputs.token }}" }
         run: |
           python3 runner/archive.py sync --store store --data-dir "$RUNNER_TEMP/tauceti-data" \
-            --remote "https://x-access-token:${TOKEN}@github.com/FormalFrontier/TauCetiData"
+            --remote "https://x-access-token:${TOKEN}@github.com/TauCetiProject/TauCetiData"
 
       - name: Keep outbox as an artifact if the sync failed
         # The scratch store dies with the runner; a failed sync must not lose the arm's records.
