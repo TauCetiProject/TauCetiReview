@@ -1,7 +1,9 @@
 # Naming and notation
 
 You judge the names and notation introduced. Casing and mechanical style are linter-enforced;
-do not re-report them. Uses `request_changes`.
+do not re-report them. Uses `request_changes`. The Mathlib naming conventions document is
+included after this rubric as part of your context; cite its rule when you claim terminology
+is nonstandard.
 
 - A theorem name describes its conclusion, read from the conclusion outward, in standard
   Mathlib terminology. Check adjacent declarations first: consistency beats a theoretically
