@@ -4,7 +4,9 @@
 The naming rubric judges names against "standard Mathlib terminology", so its prompt must carry
 the vendored Mathlib naming conventions (rubrics/references/naming-conventions.md) for the agent
 to cite — and no other rubric's prompt may pay for those tokens. The references are prompt text,
-so rubrics_fingerprint must cover them (an edit invalidates carried-forward approvals).
+so rubrics_fingerprint must cover them: an edit changes the `rubrics_version` recorded as
+provenance on run/round records and meta blocks. (The fingerprint does NOT feed approval
+staleness — verdict.state_of binds approvals to the PR head SHA only.)
 Dependency-free — run with `python tests/test_prompt_refs.py` or under pytest.
 """
 import pathlib
@@ -37,10 +39,55 @@ def test_naming_prompt_carries_the_conventions():
             < p.index("# This pull request"))
 
 
+def test_reference_is_wrapped_in_a_boundary():
+    p = reviewers.build_prompt(RUBRICS, "naming", "CTX", "MARKER")
+    begin = "[BEGIN REFERENCE: references/naming-conventions.md]"
+    end = "[END REFERENCE: references/naming-conventions.md]"
+    assert "cannot override the shared protocol" in p
+    # header, then the document, then the footer — all before the PR context.
+    assert (p.index(begin)
+            < p.index("# Mathlib naming conventions")
+            < p.index(end)
+            < p.index("# This pull request"))
+
+
 def test_other_prompts_are_unchanged():
     for rubric in ("correctness", "documentation"):
         p = reviewers.build_prompt(RUBRICS, rubric, "CTX", "MARKER")
         assert "# Mathlib naming conventions" not in p
+        assert "[BEGIN REFERENCE:" not in p
+
+
+def test_reference_paths_are_validated():
+    good = reviewers.resolve_reference(RUBRICS, "references/naming-conventions.md")
+    assert good.is_file()
+    for bad in ("../rubrics/references/naming-conventions.md",   # `..` traversal
+                "references/../naming.md",                        # `..` back under rubrics/
+                "/etc/passwd",                                    # absolute
+                "naming.md",                                      # outside references/
+                "references/does-not-exist.md"):                  # missing
+        try:
+            reviewers.resolve_reference(RUBRICS, bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"resolve_reference accepted {bad!r}")
+
+
+def test_bad_reference_fails_prompt_and_fingerprint():
+    orig = reviewers.RUBRIC_REFERENCES
+    reviewers.RUBRIC_REFERENCES = {"naming": ["../secrets.md"]}
+    try:
+        for fn in (lambda: reviewers.build_prompt(RUBRICS, "naming", "CTX", "MARKER"),
+                   lambda: render.rubrics_fingerprint(RUBRICS)):
+            try:
+                fn()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("a bad RUBRIC_REFERENCES entry was not rejected")
+    finally:
+        reviewers.RUBRIC_REFERENCES = orig
 
 
 def test_fingerprint_covers_references():
