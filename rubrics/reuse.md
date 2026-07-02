@@ -2,7 +2,8 @@
 
 Pull requests must not duplicate existing material from Mathlib or TauCeti, whether directly or via unnecessary thin wrappers. Whenever it is possible to reuse existing developments from Mathlib, it is essential to do so, and to ensure that new contributions make effective use of the Mathlib theory.
 
-Direct duplications should result in a `block` review.
+A new declaration that a located existing declaration directly replaces should result in a
+`block` review; every other form of duplication below is `request_changes`.
 
 ## Detecting potential duplication
 
@@ -10,7 +11,9 @@ Run each of these searches. Choose relevant search terms and grep (under
 `.lake/packages/mathlib` and `TauCeti/`) to verify.
 
 - For each new declaration, search for an existing one with the same content.
-  (Sometimes you'll find something with a different name than expected, or a slight variant that you bridge the gap to.)
+  (Sometimes you'll find something with a different name than expected, or a variant that
+  matches up to renaming, definitional unfolding, symmetry or duality, or an existing
+  bridging lemma.)
 - For each proof more than a few lines long, search for the goal, and for its key
   intermediate steps. Standard plumbing (image and preimage computations, `Finsupp` support
   arithmetic, `Fin` case bashes) almost always has a named lemma;
