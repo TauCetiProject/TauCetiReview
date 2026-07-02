@@ -4,15 +4,29 @@ Run as a script (runner/ on sys.path), so imports are flat siblings, not package
 
 import datetime, hashlib, json, pathlib, re
 
+import reviewers
 from pricing import fmt_tok
 from verdict import newest_reply_id, state_of
 
 
 def rubrics_fingerprint(rubrics_dir):
-    """Short hash of all rubric text, so a rubric edit invalidates carried-forward approvals."""
+    """Short hash of all rubric text — including the references/ documents, which are part of a
+    rubric's prompt (reviewers.RUBRIC_REFERENCES) — recorded as `rubrics_version` provenance on
+    every run and round record, in run ids and dedupe keys, and in the rendered meta blocks, so
+    a rubric or reference edit is distinguishable in the archive. It does NOT feed approval
+    staleness: verdict.state_of binds approvals to the PR head SHA only (issue #95 tracks
+    binding carried-forward approvals to this fingerprint)."""
+    d = pathlib.Path(rubrics_dir)
+    for rubric, paths in reviewers.RUBRIC_REFERENCES.items():
+        if not (d / f"{rubric}.md").is_file():
+            continue  # rubric not in this dir, so nothing would be spliced from it
+        for rel in paths:
+            # Fail fast on a bad entry; also guarantees every spliced reference lies under
+            # references/ and is therefore covered by the glob below.
+            reviewers.resolve_reference(d, rel)
     h = hashlib.sha256()
-    for p in sorted(pathlib.Path(rubrics_dir).glob("*.md")):
-        h.update(p.name.encode())
+    for p in sorted(d.glob("*.md")) + sorted(d.glob("references/*.md")):
+        h.update(p.relative_to(d).as_posix().encode())
         h.update(p.read_bytes())
     return h.hexdigest()[:16]
 
