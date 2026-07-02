@@ -1,24 +1,43 @@
 # Reuse and duplication
 
-Does the PR reuse what exists, in Mathlib and TauCeti, instead of reinventing it? This angle
-may `block` on outright duplication.
+Pull requests must not duplicate existing material from Mathlib or TauCeti, whether directly or via unnecessary thin wrappers. Whenever it is possible to reuse existing developments from Mathlib, it is essential to do so, and to ensure that new contributions make effective use of the Mathlib theory.
 
-- Use recall to choose searches; use grep (under `.lake/packages/mathlib` and `TauCeti/`) to
-  verify. Search conclusion heads, key constants, and adjacent-namespace APIs, not only
-  names, and check generated, dual, additive, and order-dual variants before accepting a new
-  parallel lemma.
-- Verify every claim: name the existing `X` and show the grep hit. Never assert a duplicate
-  you have not located.
+Direct duplications should result in a `block` review.
 
-## What to flag
+## Detecting potential duplication
 
-- `block` only when the new declaration should be replaced directly by an existing one.
-- `request_changes` for partial overlap: a result reprovable after a small rewrite, a special
-  case of an existing general result, or a parallel API differing only by naming or notation.
-  Point at the existing API, or ask for the equivalence.
+Run each of these searches. Choose relevant search terms and grep (under
+`.lake/packages/mathlib` and `TauCeti/`) to verify.
+
+- For each new declaration, search for an existing one with the same content.
+  (Sometimes you'll find something with a different name than expected, or a slight variant that you bridge the gap to.)
+- For each proof more than a few lines long, search for the goal, and for its key
+  intermediate steps. Standard plumbing (image and preimage computations, `Finsupp` support
+  arithmetic, `Fin` case bashes) almost always has a named lemma;
+  keep searching until you find it or are confident it is absent.
+- For each definition assembled from raw pieces, search for a library combinator that does
+  the assembly (for example `Finsupp.ofSupportFinite` rather than `Finsupp.onFinset`
+  plumbing).
+- For each new block of code, grep TauCeti for its distinctive identifiers or proof shape,
+  to find near-clones that should be factored into a shared construction.
+- Within the diff itself, look for private lemmas restating public ones up to defeq,
+  composite lemmas that their component `@[simp]` lemmas already prove, and `∧`-bundles of
+  existing lemmas.
+
+## Rejecting it
+
+Every finding must name the located replacement and say exactly how to use it.
+Name the existing lemmas you've found (and if necessary the one-liner showing how to use it).
+If there are unnecessary duplications as public and private APIs, explain the overlaps.
+Make sure that all assertions about duplication are backed up by explicit references based
+on your grep searches; don't ask the author to search themselves.
+Not every hit is a defect: Mathlib itself keeps per-type restatements of generic lemmas, and
+a specialization with genuine consumers can earn its place.
 
 ## Verdict
 
 - `block` on a declaration an existing one directly replaces.
-- `request_changes` for reprovable results, special cases, or parallel APIs.
+- `request_changes` for reprovable results, special cases, or parallel APIs, and for proofs,
+  definitions, or scaffolding that re-derive what a located lemma, combinator, or earlier
+  line already provides.
 - `approve` when the PR adds genuinely new material and reuses existing API where it can.
