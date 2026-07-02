@@ -151,10 +151,20 @@ def ci_status_block(build_status, head_sha):
 
 
 
+# Reference documents appended verbatim to a single rubric's prompt (paths relative to the
+# rubrics dir). Vendored under rubrics/references/ so the agent can cite the actual convention
+# rather than its training-data recollection of it; listed per rubric so only the angle that
+# needs a document pays for its tokens. Covered by rubrics_fingerprint (render.py), so editing
+# a reference invalidates carried-forward approvals like any rubric edit.
+RUBRIC_REFERENCES = {"naming": ["references/naming-conventions.md"]}
+
+
 def build_prompt(rubrics_dir, rubric, context, marker):
     common = (rubrics_dir / "_common.md").read_text()
     angle = (rubrics_dir / f"{rubric}.md").read_text()
-    return (f"{common}\n\n---\n\n{angle}\n\n---\n\n# This pull request\n\n{context}\n\n"
+    refs = "".join("\n\n---\n\n" + (rubrics_dir / p).read_text()
+                   for p in RUBRIC_REFERENCES.get(rubric, []))
+    return (f"{common}\n\n---\n\n{angle}{refs}\n\n---\n\n# This pull request\n\n{context}\n\n"
             "Produce your review now. After any analysis, end your response with this exact "
             f"marker alone on a line:\n\n{marker}\n\nand then, as the very last content with "
             "nothing after it, the single JSON object specified above. The marker is a one-time "

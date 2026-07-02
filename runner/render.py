@@ -9,10 +9,13 @@ from verdict import newest_reply_id, state_of
 
 
 def rubrics_fingerprint(rubrics_dir):
-    """Short hash of all rubric text, so a rubric edit invalidates carried-forward approvals."""
+    """Short hash of all rubric text — including the references/ documents, which are part of a
+    rubric's prompt (reviewers.RUBRIC_REFERENCES) — so a rubric or reference edit invalidates
+    carried-forward approvals."""
     h = hashlib.sha256()
-    for p in sorted(pathlib.Path(rubrics_dir).glob("*.md")):
-        h.update(p.name.encode())
+    d = pathlib.Path(rubrics_dir)
+    for p in sorted(d.glob("*.md")) + sorted(d.glob("references/*.md")):
+        h.update(p.relative_to(d).as_posix().encode())
         h.update(p.read_bytes())
     return h.hexdigest()[:16]
 
