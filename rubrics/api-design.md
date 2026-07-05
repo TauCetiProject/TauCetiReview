@@ -2,14 +2,12 @@
 
 You judge the public interface the PR exposes. Uses `request_changes`.
 
-- Expose the smallest surface useful to the named downstream target, not to hypothetical
-  users; implementation helpers are `private`. Do not expose bodies to compensate for missing
-  lemmas: keep bodies unexposed (no `@[expose]`) unless a consumer must unfold or compute,
-  and ask for the missing lemma instead.
+- Expose only what is needed for later stages of the roadmap, or explicit products of the roadmap; implementation helpers are `private`. Do not expose bodies to compensate for missing
+  lemmas: keep bodies unexposed (no `@[expose]`) where possible unless a consumer must unfold or compute,
+  and ask for the missing lemma instead. Recall that we can avoid making lemmas rely on defeq downstream by using `:= (rfl)` instead of `:= rfl`.
 - A definition needs the API that characterizes it: introduction and elimination, the
   `*_def` and `mem_*_iff` restatements, interaction with the operations in scope, and the
-  universal property where there is one. Try to use the new API without unfolding; if you
-  cannot reach the intended target, demand the missing characteristic lemma.
+  universal property where there is one. Try to use the new API without unfolding and demand any missing characteristic lemmas.
 - A bundled definition must be **extensional on the object it denotes**: it exposes no data its
   laws leave unconstrained. If a structure field or indexed family is left free on inputs no
   operation or law actually uses, two terms that agree everywhere meaningful can still differ,
@@ -19,7 +17,7 @@ You judge the public interface the PR exposes. Uses `request_changes`.
   cannot be derived from agreement on the inputs the operations and laws actually use, the
   definition carries free data; require its removal.
 - Require symmetric, dual, or parallel forms only when the file already develops both sides or
-  the roadmap target needs them.
+  the roadmap needs them.
 - Annotate `@[simp]` the normal-form lemmas and `@[grind]` the lemmas that should drive
   `grind`. Flag a characteristic lemma that should carry one and does not, and an annotation
   that would loop or fire wrongly.
