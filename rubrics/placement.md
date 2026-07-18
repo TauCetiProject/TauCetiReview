@@ -18,8 +18,7 @@ imports whose wrongness is evident from the diff or the dependency topic.
   (mechanical `git mv` plus imports; any anchor `Foo.lean` stays; no invented
   `Basic.lean`; no declaration renames) and places the new file there. `request_changes`
   when such a PR extends the flat family or starts a second layout instead, unless it
-  documents an open PR importing the old module names. The prefix count is evidence,
-  not arithmetic, and the bundled restructure is one topic, not opportunistic bundling.
+  documents an open PR importing the old module names.
 
 ## Imports
 
