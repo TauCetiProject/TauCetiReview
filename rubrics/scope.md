@@ -32,7 +32,8 @@ node or heading; read it (in the roadmap checkout) to confirm.
 
 `block` and ask for a split when the PR is more than one topic: an opportunistic refactor of
 prerequisite material bundled with new work, or several unrelated targets at once. A single
-refactor that is itself the topic is fine.
+refactor that is itself the topic is fine, as are the file moves `placement.md` requires
+alongside a new file.
 
 ## Verdict
 
