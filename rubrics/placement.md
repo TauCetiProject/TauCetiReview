@@ -12,18 +12,15 @@ imports whose wrongness is evident from the diff or the dependency topic.
   there.
 - Reject generic placement for declarations whose hypotheses or names are roadmap-specific:
   do not let roadmap-specific lemmas masquerade as reusable by living in a generic file.
-- New files join the tree the way the surrounding tree already does: into an existing topic
-  subdirectory when one fits. When a PR adds a file to an already-large flat filename
-  family (several siblings sharing a leading CamelCase component), the expected shape is
-  restructure-as-you-add: the same PR moves the family into its subdirectory (mechanical
-  `git mv` plus import/header updates, any anchor `Foo.lean` kept in place, no invented
-  `Basic.lean`, zero declaration renames) and places the new file there.
-  `request_changes` when such a PR instead extends the flat family or starts a second
-  layout beside it, unless the PR documents an open PR still importing the old module
-  names, in which case the flat addition is correct and the family belongs on the
-  structure tracking issue. Treat the prefix count as evidence, not arithmetic: the
-  reviewer judges the topic boundary, and a restructure bundled with the file that
-  triggered it is one topic, not opportunistic bundling.
+- New files join an existing topic subdirectory when one fits. A file joining an
+  already-large flat family (several siblings sharing a leading CamelCase component) is
+  expected to restructure-as-you-add: the same PR moves the family into its subdirectory
+  (mechanical `git mv` plus imports; any anchor `Foo.lean` stays; no invented
+  `Basic.lean`; no declaration renames) and places the new file there. `request_changes`
+  when such a PR extends the flat family or starts a second layout instead, unless it
+  documents an open PR importing the old module names; then the flat addition is correct
+  and the deferral goes on the structure tracking issue. The prefix count is evidence,
+  not arithmetic, and the bundled restructure is one topic, not opportunistic bundling.
 
 ## Imports
 
