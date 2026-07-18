@@ -12,12 +12,13 @@ imports whose wrongness is evident from the diff or the dependency topic.
   there.
 - Reject generic placement for declarations whose hypotheses or names are roadmap-specific:
   do not let roadmap-specific lemmas masquerade as reusable by living in a generic file.
-- New files join an existing topic subdirectory when one fits. A file that would join an
-  already-large flat family (several siblings sharing a leading CamelCase component)
-  warrants a preliminary PR first: relocate the family into its subdirectory (mechanical
-  `git mv` plus imports; any anchor `Foo.lean` stays; no invented `Basic.lean`; no
-  declaration renames), then add the file there. `request_changes` when a PR extends the
-  flat family or starts a second layout beside it.
+- New files join an existing topic subdirectory when one fits. Two files sharing a
+  leading CamelCase component should be a directory: a PR whose new file would put both
+  `Foo.lean` and `FooBar.lean` (or two `Foo*.lean` files) in one directory moves them in
+  the same PR, creating `Foo/` with `Foo.lean` as `Foo/Basic.lean` (`Foo/Defs.lean` when
+  definitions-only) and each `FooBar.lean` as `Foo/Bar.lean` (mechanical `git mv` plus
+  imports; no declaration renames), the new file placed there. `request_changes` when a
+  PR instead leaves flat prefix-sharing siblings behind.
 
 ## Imports
 
