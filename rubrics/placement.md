@@ -12,6 +12,12 @@ imports whose wrongness is evident from the diff or the dependency topic.
   there.
 - Reject generic placement for declarations whose hypotheses or names are roadmap-specific:
   do not let roadmap-specific lemmas masquerade as reusable by living in a generic file.
+- New files join the tree the way the surrounding tree already does: into an existing topic
+  subdirectory when one fits. A directory where several sibling files share a leading
+  CamelCase name component is evidence of a subdirectory in the making; treat the prefix
+  count as evidence only, never by itself grounds for `request_changes`. Ask for a
+  dedicated relocation of the whole family (its own refactor PR) rather than requiring
+  this PR to move unrelated files or to start a second layout beside the flat one.
 
 ## Imports
 
