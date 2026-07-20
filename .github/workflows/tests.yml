@@ -23,3 +23,4 @@ jobs:
       - run: python tests/test_post.py
       - run: python tests/test_billing.py
       - run: python tests/test_sweep.py
+      - run: python tests/test_codex_fallback.py

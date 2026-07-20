@@ -9,6 +9,11 @@ CLAUDE_MODEL = "claude-opus-4-8"
 
 CODEX_MODEL = "gpt-5.6-sol"
 
+# When the default codex model isn't available to the account, run_one downgrades to this one mid-run
+# rather than failing every codex rubric: Sol needs a paid ChatGPT tier, while Free/Go subscriptions
+# get Terra. Always kept priced — dispatch_models() lists it and the price-sync test enforces coverage.
+CODEX_FALLBACK_MODEL = "gpt-5.6-terra"
+
 # OpenRouter models driven through the `pi` agent (badlogic/pi-mono): a third reviewer
 # family alongside claude/codex, selectable as --providers/--reviewer deepseek|minimax.
 # Pay-per-token, so they run only when explicitly named — never auto-drawn. Add a row here
@@ -70,8 +75,9 @@ SONNET_MODEL = "claude-sonnet-4-6"
 
 
 def dispatch_models(claude_model=CLAUDE_MODEL, codex_model=CODEX_MODEL):
-    """Every model id the engine can dispatch — the set that must be priced."""
-    return {claude_model, codex_model, SONNET_MODEL, *OPENROUTER_MODELS.values()}
+    """Every model id the engine can dispatch — the set that must be priced. Includes the codex
+    fallback, since the seamless downgrade in run_one can route any codex run to it."""
+    return {claude_model, codex_model, CODEX_FALLBACK_MODEL, SONNET_MODEL, *OPENROUTER_MODELS.values()}
 
 
 

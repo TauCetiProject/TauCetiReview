@@ -15,13 +15,13 @@ import archive
 from dataclasses import dataclass, field
 
 from ledger import Ledger
-from pricing import CLAUDE_MODEL, CODEX_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, require_priced, sum_usage
+from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, require_priced, sum_usage
 # Re-exported for merge_from_scoreboard (changed_paths/decide_merge/DEFAULT_RUBRICS) and the price
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge
-from reviewers import build_prompt, ci_status_block, cleanup_rev_home, reviewer_env, run_claude, run_codex, run_pi, sweep_rev_homes
+from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, reviewer_env, run_claude, run_codex, run_pi, sweep_rev_homes
 from casefile import build_reactivation_block, normalize_finding_path, pick_anchor, update_case_file
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
 
@@ -96,6 +96,7 @@ class RunContext:
     day: str
     ledger: Ledger
     spent_today: float
+    codex_model_explicit: bool = False   # --codex-model was passed → honor the pin, skip auto-fallback
     ran: list = field(default_factory=list)
     run_results: list = field(default_factory=list)
 
@@ -148,15 +149,45 @@ def run_rubric(ctx, rubric):
         # but the first attempt's spend/usage/failure is provenance too.
         attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
                                            "usage", "session_id", "parse_error")
-                         if r.get(k) is not None} | {"secs": round(time.monotonic() - t, 1)})
+                         if r.get(k) is not None}
+                        | {"model": model, "secs": round(time.monotonic() - t, 1)})
         return r
+
+    def has_verdict(r):
+        return r["returncode"] == 0 and extract_verdict(r.get("text", ""), marker) is not None
 
     res = attempt()
     cost = res.get("cost_usd") or 0.0
-    if res["returncode"] != 0 or extract_verdict(res.get("text", ""), marker) is None:
-        res = attempt()  # one retry
+    requested = model
+    downgraded = False
+    # Seamless codex model downgrade: the default model (Sol) needs a paid ChatGPT tier; a Free/Go
+    # subscription gets Terra and would otherwise fail EVERY codex rubric. Only the DEFAULT model
+    # auto-falls-back — an explicit --codex-model pin is honored as chosen. Codex has been seen to wrap
+    # a TRANSIENT server error in the same "model not supported" 400 an entitlement failure uses
+    # (openai/codex#14190), so reconfirm on the same model before downgrading: a transient rejection
+    # clears on the second try; a real unavailability repeats.
+    if provider == "codex" and not ctx.codex_model_explicit and codex_model_unavailable(res):
+        res = attempt()  # reconfirm on the same model
+        cost += res.get("cost_usd") or 0.0
+        if not has_verdict(res) and codex_model_unavailable(res):
+            model = CODEX_FALLBACK_MODEL  # rejected twice → treat as persistent → try the fallback
+            res = attempt()
+            cost += res.get("cost_usd") or 0.0
+            downgraded = True
+    elif not has_verdict(res):
+        res = attempt()  # the ordinary one retry (unchanged for every non-codex-downgrade case)
         cost += res.get("cost_usd") or 0.0  # count every attempt
     res["cost_usd"] = round(cost, 6)
+    # Persist the downgrade for the rest of the run — flip the shared runner registry so later rubrics
+    # skip the now-known-dead Sol call — but ONLY once the fallback has actually produced a verdict. With
+    # the reconfirm above, that means: rejected twice on the default AND the fallback then worked. Runs
+    # dispatch rubrics sequentially, so the mutation races nothing; the registry is rebuilt from
+    # CODEX_MODEL every run, so Sol is re-probed next run. (require_priced covers the fallback, so this
+    # never routes to an unpriced model.)
+    if downgraded and has_verdict(res):
+        print(f"[{rubric}] codex model {requested} unavailable to this account — using {model} for "
+              f"the rest of this run", file=sys.stderr)
+        runners[provider] = (fn, model)
     # A stable per-execution id: readable prefix + a short hash of the identifying fields.
     rid = hashlib.sha256("|".join(
         [a.repo, str(a.pr), head, rubric, model, rubrics_version, started_at]
@@ -330,7 +361,10 @@ def main():
                     help="write the budget signal JSON ({budget_spent, round, all_green, ...}) here, "
                          "for a separate step that reconciles the review-budget-spent label")
     ap.add_argument("--claude-model", default=CLAUDE_MODEL)
-    ap.add_argument("--codex-model", default=CODEX_MODEL)
+    ap.add_argument("--codex-model", default=None,
+                    help=f"codex reviewer model (default: {CODEX_MODEL}). Passing this explicitly also "
+                         "opts OUT of the automatic unavailable-model fallback — the pinned model is "
+                         "used as chosen.")
     ap.add_argument("--providers", default="claude,codex",
                     help="comma-separated reviewers to draw from: claude, codex, and any "
                          "OpenRouter model in OPENROUTER_MODELS (deepseek, minimax — via the `pi` "
@@ -606,7 +640,7 @@ def main():
     spent_start = spent_today
     outdir = store / "reviews" / str(a.pr) / str(round_num)
     outdir.mkdir(parents=True, exist_ok=True)
-    runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model),
+    runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model or CODEX_MODEL),
                # sonnet is the same claude CLI runner pinned to Sonnet — a cheaper claude-family
                # A/B arm, selected explicitly (never auto-drawn) via --reviewer sonnet.
                "sonnet": (run_claude, SONNET_MODEL)}
@@ -617,14 +651,19 @@ def main():
     if not providers:
         print(f"no usable providers in --providers={a.providers!r}", file=sys.stderr)
         sys.exit(1)
-    # Fail before spending if any provider we'll actually dispatch has an unpriced model.
-    require_priced({runners[p][1] for p in providers})
+    # Fail before spending if any provider we'll actually dispatch has an unpriced model. Include the
+    # codex fallback (the seamless Sol->Terra downgrade in run_one can route to it) so an unpriced
+    # fallback is caught here, not mid-round.
+    dispatchable = {runners[p][1] for p in providers}
+    if "codex" in providers:
+        dispatchable.add(CODEX_FALLBACK_MODEL)
+    require_priced(dispatchable)
     stopped, halted = None, None
     ctx = RunContext(a=a, state_map=state_map, reply_text=reply_text, base_context=base_context,
                      head=head, providers=providers, runners=runners, keys=keys,
                      subscription=subscription, rubrics_version=rubrics_version, round_num=round_num,
                      prov=prov, diff_full=diff_full, outdir=outdir, day=day, ledger=led,
-                     spent_today=spent_today)
+                     spent_today=spent_today, codex_model_explicit=a.codex_model is not None)
 
     # Phase 1: the queued rubrics. Reserve before spending so a call can't breach the cap.
     # A `block` verdict halts the round: blocked code gets reworked or abandoned, and approvals
