@@ -2,7 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 
-import json, os, pathlib, shutil, subprocess, tempfile, time
+import json, os, pathlib, re, shutil, subprocess, tempfile, time
 
 from pricing import CACHE_READ, DEFAULT_PRICE, OPENROUTER_MODELS, PRICES
 
@@ -217,6 +217,53 @@ def run_claude(prompt, cwd, model, env):
 
 
 
+# A ChatGPT-auth codex asking for a model the account can't use returns a 400 invalid_request_error —
+# observed verbatim on codex 0.144 (an unentitled Free/Go account asking for Sol gets the SAME shape,
+# since to the API an unentitled model is an unsupported one):
+#   {"type":"turn.failed","error":{"message":"{\"status\":400,\"error\":{\"type\":
+#    \"invalid_request_error\",\"message\":\"The '<model>' model is not supported when using Codex
+#    with a ChatGPT account.\"}}"}}
+# Classifying this needs TWO things. The status is NOT model-specific on its own — a 400 also covers
+# context-length, malformed requests, and policy rejections — so the model-specific signal is the error
+# MESSAGE naming a model-access failure (grounded in the captured wording above, not a blind guess). The
+# status is used only to EXCLUDE transient failures (429/5xx), which codex has been seen to wrap in the
+# same "not supported" text (openai/codex#14190). run_one adds two more safety nets: it reconfirms on
+# the same model before downgrading, and only persists a downgrade once the fallback yields a verdict.
+_CODEX_MODEL_ERR_STATUS = {400, 403, 404}
+_CODEX_MODEL_MSG = re.compile(
+    r"not supported when using codex"                         # observed 0.144 wording (unsupported/unentitled)
+    r"|does not exist or you do not have access"              # OpenAI's canonical 404 wording
+    r"|(?:no|do not have) access to (?:this )?model"
+    r"|model[_ ]not[_ ]found|model metadata for .*? not found"
+    r"|unsupported model|invalid model|unknown model"
+    r"|model .*?not entitled|not entitled to (?:this |use )?model",
+    re.I,
+)
+
+
+def codex_model_unavailable(res):
+    """True when a run_codex result shows the requested model was rejected as unavailable/unentitled for
+    this account, as opposed to a transient failure. Two conditions: (1) the failure NAMES a model-access
+    problem — matched against the structured error message run_codex parsed (`error_message`), falling
+    back to the transcript only when none was parsed — and (2) any parsed HTTP status is a client
+    rejection (400/403/404), never a rate limit (429) or a 5xx. A status alone never qualifies (it isn't
+    model-specific); a matching message with no parsed status does. This is a NECESSARY, not sufficient,
+    signal: run_one reconfirms on the same model and only persists the Sol->Terra downgrade once the
+    fallback yields a verdict, so a transient or non-model rejection costs at most one extra attempt."""
+    if res.get("returncode", 0) == 0 and res.get("text"):
+        return False  # it produced an answer — not a model problem
+    status = res.get("error_status")
+    if isinstance(status, int) and status not in _CODEX_MODEL_ERR_STATUS:
+        return False  # 429 / 5xx / other — a transient failure, never a model problem
+    msg = res.get("error_message")
+    hay = msg if isinstance(msg, str) else " ".join([
+        res.get("raw_stderr") or "",
+        res.get("raw_stdout") or "",
+        json.dumps(res.get("error_events") or []),
+    ])
+    return bool(_CODEX_MODEL_MSG.search(hay))
+
+
 def run_codex(prompt, cwd, model, env):
     # Authenticate into this invocation's isolated CODEX_HOME so the credential is not shared.
     # In subscription mode there is no key (and no isolated home): use the inherited codex login.
@@ -229,6 +276,7 @@ def run_codex(prompt, cwd, model, env):
     r = sh(cmd, cwd=cwd, env=env)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     text, usage, thread, events, errors = "", None, None, [], []
+    fail_payload = err_payload = None  # turn.failed (authoritative) and first `error` event (fallback)
     for line in r.stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -245,9 +293,45 @@ def run_codex(prompt, cwd, model, env):
             text = ev["item"].get("text", "")
         elif t == "turn.completed":
             usage = ev.get("usage")
+        elif t == "turn.failed":  # authoritative terminal failure — its payload carries the API status
+            errors.append(ev)
+            e = ev.get("error")
+            if isinstance(e, dict) and isinstance(e.get("message"), str):
+                fail_payload = e["message"]
         elif t and ("error" in t or "failed" in t):
             errors.append(ev)
+            if err_payload is None and isinstance(ev.get("message"), str):
+                err_payload = ev["message"]
     out.update(text=text, usage=usage, session_id=thread)
+    # The terminal failure carries a JSON blob (serialized as a STRING field) with an HTTP `status`,
+    # error `type`, and human `message`. Parse it defensively so a caller can classify the failure from
+    # structured fields, not by regex-scanning escaped transcript text: codex may hand a string/list
+    # where a dict is expected, or a malformed message — so try the authoritative turn.failed payload
+    # first, then any `error` event, validating types at each step so one bad payload neither crashes the
+    # run nor masks a good earlier one.
+    for payload in (fail_payload, err_payload):
+        if not isinstance(payload, str):
+            continue
+        try:
+            j = json.loads(payload)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(j, dict):
+            continue
+        err = j.get("error")
+        err = err if isinstance(err, dict) else {}
+        st = j.get("status", err.get("status"))
+        if isinstance(st, bool):
+            st = None  # bools are ints in Python; a stray true/false is not a status
+        if isinstance(st, int):
+            out["error_status"] = st
+        elif isinstance(st, str) and st.lstrip("-").isdigit():
+            out["error_status"] = int(st)
+        out["error_type"] = err.get("type") or j.get("type")
+        msg = err.get("message") or j.get("message")
+        if isinstance(msg, str):
+            out["error_message"] = msg
+        break  # first well-formed dict payload wins
     # Surface why codex produced no usable answer, so failures are diagnosable not silent.
     if r.returncode != 0 or not text:
         out.update(event_types=events, error_events=errors[:5], raw_stdout=r.stdout[-3000:])
