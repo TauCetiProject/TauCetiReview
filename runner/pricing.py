@@ -7,7 +7,7 @@ import hashlib, json, os, pathlib
 
 CLAUDE_MODEL = "claude-opus-4-8"
 
-CODEX_MODEL = "gpt-5.5"
+CODEX_MODEL = "gpt-5.6-sol"
 
 # OpenRouter models driven through the `pi` agent (badlogic/pi-mono): a third reviewer
 # family alongside claude/codex, selectable as --providers/--reviewer deepseek|minimax.
