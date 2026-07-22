@@ -2,7 +2,7 @@
 
 You judge the public interface the PR exposes. Uses `request_changes`.
 
-- Expose only what is needed for later stages of the roadmap, or explicit products of the roadmap; implementation helpers are `private`. Do not expose bodies to compensate for missing
+- Expose what later stages of the roadmap need, the explicit products of the roadmap, and genuinely reusable general results. Keep an implementation helper `private` when it has no use outside the proof or file it serves. The roadmap's named targets are not the whole allowed surface, so do not ask for something to be `private` merely because it is not named there. Do not expose bodies to compensate for missing
   lemmas: keep bodies unexposed (no `@[expose]`) where possible unless a consumer must unfold or compute,
   and ask for the missing lemma instead. Recall that we can avoid making lemmas rely on defeq downstream by using `:= (rfl)` instead of `:= rfl`.
 - A definition needs the API that characterizes it: introduction and elimination, the
