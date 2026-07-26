@@ -24,6 +24,10 @@ weaker than it pretends. Approve only once you have tried and failed.
   not mere simplicity.
 - Placeholders: reject `True` or any trivial stand-in in a signature or as a structure-field
   type, including a field given a plausible mathematical name that is really an assumption.
+- An unexercised predicate: a new `Prop`-valued definition, class, or hypothesis structure with
+  neither a consuming theorem nor a nontrivial witness (a concrete instance where it holds
+  non-degenerately) in this PR or already on `main`. Until one exists its faithfulness is
+  unfalsifiable; require the witness or consumer in the same PR.
 - Over-strong typeclass or structural assumptions that quietly narrow the claim.
 
 ## Missing prerequisites
