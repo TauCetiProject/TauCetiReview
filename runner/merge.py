@@ -5,6 +5,12 @@ Run as a script (runner/ on sys.path), so imports are flat siblings, not package
 import re
 
 
+# REST/webhook payloads use the first form; GitHub's GraphQL `PullRequest.author.login` uses the
+# second for the same App. Both are server-authenticated identities, not author-controlled text.
+TRUSTED_LAKEFILE_AUTHORS = {"tauceti-review-bot[bot]", "app/tauceti-review-bot"}
+TRUSTED_AUTHOR_ALLOW = {author: {"lakefile.toml"} for author in TRUSTED_LAKEFILE_AUTHORS}
+
+
 def changed_paths(diff_text):
     """Repo-relative paths touched by a unified diff (both sides, to catch renames/deletes)."""
     paths = set()
@@ -14,19 +20,25 @@ def changed_paths(diff_text):
 
 
 
-def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump_guard, ci_build):
+def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump_guard, ci_build,
+                 pr_author="", scope=""):
     """The single auto-merge rule, shared by the post-review path and the no-dispatch merge mode.
 
     Mergeable iff there is a head commit, CI's `build` check is green on it (so the merge path is
     self-sufficient and safe to run on comment events, not only after a successful build), every
     blocking rubric is green on it (fresh, not stale), and every changed path is under `prefix` or an
-    allowed root file (`allow`); a PR touching a Lake pin (lake-manifest.json / lean-toolchain)
-    additionally requires the bump-guard check to be green (a CI-validated forward-only bump).
+    allowed root file (`allow`). A PR opened by the trusted Tau Ceti review bot may additionally
+    change lakefile.toml, which is how the incompatibility tracker pins an exact first-known-bad
+    Mathlib commit for repair. A PR touching any Lake pin, including that bot-only lakefile change,
+    additionally requires the bump-guard check to be green (a CI-validated forward-only bump), and
+    the lakefile exception itself requires CI's author-aware scope status to be green.
     Returns (merge_ok, reason)."""
-    allow = set(allow or [])
-    # The two Lake pins may auto-merge only as a CI-validated forward bump.
-    pin_files = {"lake-manifest.json", "lean-toolchain"}
+    allow = set(allow or []) | TRUSTED_AUTHOR_ALLOW.get(pr_author, set())
+    # Lake pins may auto-merge only as a CI-validated forward bump. lakefile.toml reaches this rule
+    # only through the exact trusted-author exception above.
+    pin_files = {"lake-manifest.json", "lean-toolchain", "lakefile.toml"}
     touches_pin = bool(paths & pin_files)
+    touches_lakefile = "lakefile.toml" in paths
     code_only = bool(paths) and all(
         p.startswith(prefix) or p in allow for p in paths)
     if not head:
@@ -38,6 +50,9 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
     if not code_only:
         return False, (f"PR touches paths outside {prefix} "
                        f"(allowed extras: {sorted(allow)}); needs human merge")
+    if touches_lakefile and (scope or "").upper() != "SUCCESS":
+        return False, (f"PR changes lakefile.toml but the trusted author-aware scope check is not "
+                       f"green (={scope or 'missing'}); refusing to use the bot exception")
     if touches_pin and (bump_guard or "").upper() != "SUCCESS":
         return False, (f"PR changes a Lake pin but bump-guard is not green "
                        f"(={bump_guard or 'missing'}); needs human merge")

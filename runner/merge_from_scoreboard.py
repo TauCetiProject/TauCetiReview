@@ -19,6 +19,7 @@ import argparse
 import json
 import pathlib
 import re
+import subprocess
 
 from review import DEFAULT_RUBRICS, changed_paths, decide_merge
 
@@ -88,10 +89,10 @@ def load_comments(text):
 
 
 def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump_guard,
-                         merge_path_prefix="TauCeti/", merge_allow_file=None):
+                         merge_path_prefix="TauCeti/", merge_allow_file=None, pr_author="", scope=""):
     """The merge gate, shared by the merge-only CLI and the merge sweep: a PR is mergeable iff the
     newest scoreboard comment is AT `head_sha` with every `required` rubric green there, and the
-    `decide_merge` rule holds (build green, TauCeti/-only + allowed root/pins, bump-guard for a pin).
+    `decide_merge` rule holds (build green, author-aware allowed paths, bump-guard for a pin).
     Returns {"merge", "reason", "head_sha"}."""
     allow = DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file
     board = newest_scoreboard(comments)
@@ -113,13 +114,42 @@ def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump
     all_green = all(states[r] == "green" for r in required)
     paths = changed_paths(diff_text)
     merge_ok, reason = decide_merge(states, candidates, all_green, paths, head_sha,
-                                    merge_path_prefix, allow, bump_guard, ci_build)
+                                    merge_path_prefix, allow, bump_guard, ci_build, pr_author, scope)
     return {"merge": merge_ok, "reason": reason, "head_sha": head_sha}
+
+
+def resolve_pr_author(repo, pr):
+    """Resolve the server-authenticated PR author for the trusted-author path exception.
+
+    Failure is deliberately closed: an empty author receives no extra allowed paths.
+    """
+    try:
+        out = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{pr}", "--jq", ".user.login"],
+            check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return out.strip()
+
+
+def resolve_commit_status(repo, head_sha, context):
+    """Read the newest trusted commit status for `context`; failure returns missing."""
+    try:
+        out = subprocess.run(
+            ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses", "--jq",
+             f'map(select(.context == "{context}")) | sort_by(.created_at) | last | .state // ""'],
+            check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return out.strip()
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--repo", default="TauCetiProject/TauCeti")
     ap.add_argument("--pr", required=True)
+    ap.add_argument("--pr-author", default="",
+                    help="server-authenticated PR author; resolved with gh when omitted")
     ap.add_argument("--head-sha", required=True)
     ap.add_argument("--comments-file", required=True, help="JSON array of the PR's issue comments")
     ap.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS),
@@ -127,6 +157,8 @@ def main():
     ap.add_argument("--diff-file", required=True)
     ap.add_argument("--ci-build", default="")
     ap.add_argument("--bump-guard", default="")
+    ap.add_argument("--scope", default="",
+                    help="trusted scope status; resolved from HEAD when omitted")
     ap.add_argument("--merge-path-prefix", default="TauCeti/")
     ap.add_argument("--merge-allow-file", action="append", default=list(DEFAULT_ALLOW))
     ap.add_argument("--merge-decision-file", default="")
@@ -141,8 +173,11 @@ def main():
         diff_text = pathlib.Path(a.diff_file).read_text()
     except OSError:
         diff_text = ""
+    pr_author = a.pr_author or resolve_pr_author(a.repo, a.pr)
+    scope = a.scope or resolve_commit_status(a.repo, a.head_sha, "scope")
     out = decide_from_comments(load_comments(text), a.head_sha, required, diff_text,
-                               a.ci_build, a.bump_guard, a.merge_path_prefix, a.merge_allow_file)
+                               a.ci_build, a.bump_guard, a.merge_path_prefix, a.merge_allow_file,
+                               pr_author, scope)
     print(json.dumps(out))
     if a.merge_decision_file:
         pathlib.Path(a.merge_decision_file).write_text(json.dumps(out))

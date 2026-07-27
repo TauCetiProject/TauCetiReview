@@ -1,8 +1,8 @@
 name: merge-only
 
 # A cheap, no-dispatch auto-merge: read the EXISTING review ledger (reviews branch) and, if a PR is
-# all-green and TauCeti/-only, add it to the merge queue. Generates NO reviews, stages NO provider
-# keys, and runs NO reviewer — the reviews themselves are produced by people running tauceti-review
+# all-green and the author-aware path policy permits it, add it to the merge queue. Generates NO
+# reviews, stages NO provider keys, and runs NO reviewer — reviews are produced by people running tauceti-review
 # locally; CI just reads what is already on the ledger and enqueues. This keeps auto-merge automatic
 # with the expensive review API spend turned off (see runner/review.py --mode merge).
 #
@@ -64,6 +64,9 @@ jobs:
           BUMP_GUARD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="bump-guard") | .state] | first // ""')
           echo "BUMP_GUARD=$BUMP_GUARD" >> "$GITHUB_ENV"
+          SCOPE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
+            -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="scope") | .state] | first // ""')
+          echo "SCOPE=$SCOPE" >> "$GITHUB_ENV"
           gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
 
@@ -93,8 +96,8 @@ jobs:
           # allowed root/pins, bump-guard for a pin). Reads the full `states` from the meta, falling back
           # to the rendered table for comments posted before that field existed.
           python3 runner/merge_from_scoreboard.py \
-            --pr "$PR" --head-sha "$HEAD_SHA" --comments-file comments.json \
-            --diff-file diff.txt --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" \
+            --repo TauCetiProject/TauCeti --pr "$PR" --head-sha "$HEAD_SHA" --comments-file comments.json \
+            --diff-file diff.txt --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" \
             --merge-decision-file "$PWD/merge.json"
 
       # ---- Auto-merge: mint the scoped merge token only now, and merge iff the decision is green.
@@ -110,7 +113,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Enqueue into the merge queue if all rubrics approve and PR is TauCeti/-only
+      - name: Enqueue if all rubrics and the author-aware path policy approve
         env: { GH_TOKEN: "${{ steps.merge_token.outputs.token }}" }
         run: |
           set -euo pipefail

@@ -34,7 +34,11 @@ so safety rests entirely on breaking links 1–2: removing the reviewer's *acces
 ## Mitigations (mapped to audit findings)
 
 - **I1** — never evaluate PR-controlled Lake (`lakefile`/manifest) in the privileged job;
-  Mathlib source is cloned at the rev pinned in the *base* manifest. Closes the pre-auth RCE.
+  Mathlib source is cloned at the rev pinned in the *base* manifest. TauCeti's sole exception is
+  read as data by a trusted validator: a PR opened by `tauceti-review-bot[bot]` may replace only
+  Mathlib's lakefile `rev` with the identical immutable SHA in its manifest, or restore that field
+  to `master` afterward. That validated config is evaluated only later inside the secretless
+  landrun sandbox. Closes the pre-auth RCE.
 - **I2** — reviewers run in a clean workspace (PR source without `.git`, roadmap, Mathlib,
   diff) with a minimal **per-provider** env: only that provider's key, never the other key and
   never a GitHub token. Keys are staged to files, read into memory, and unlinked before any
@@ -62,8 +66,10 @@ only when **all** of:
 
 - every rubric **approves on the current commit** (latest verdict per rubric across that
   commit's rounds; I7 guarantees freshness);
-- every changed path is under `TauCeti/` — infra-touching PRs are never auto-merged and still
-  require `@humans`;
+- every changed path is under `TauCeti/` or an explicitly allowed root pin; additionally, only a
+  PR whose server-authenticated author is `tauceti-review-bot[bot]` may touch `lakefile.toml`;
+- any PR touching a Lake pin or the bot-only lakefile path has a green trusted `bump-guard`, and
+  the lakefile exception additionally requires TauCeti CI's author-aware `scope` status to be green;
 - CI's `build` check is green (status checks are **not** bypassed, only the review requirement).
 
 Toggle: `enable_automerge` on the trigger workflow. `gh workflow disable "Review"` pauses the
@@ -92,11 +98,13 @@ TauCeti CI compiles untrusted PR Lean, which runs arbitrary code at build time (
 sandbox written into `ci.yml` would be defeatable (the PR strips it). The build therefore lives
 in a **trusted, base-defined** `pull_request_target` workflow (`TauCeti/.github/workflows/pr-build.yml`):
 
-- **Trusted definition + trusted config.** The PR cannot change what runs. The build/audit use
-  the base's `lakefile`/`Scripts`/manifest/toolchain; only the PR's `TauCeti/` sources are
-  overlaid onto a base checkout. Any PR touching paths outside `TauCeti/` (per GitHub's computed
-  file list, not PR content) is routed to a human (build status = failure), so a PR cannot redefine
-  what "build"/"axioms" mean to fake a green check.
+- **Trusted definition + validated config.** The PR cannot change what runs. Ordinarily the
+  build/audit use the base's `lakefile`/`scripts`/manifest/toolchain and overlay only validated
+  sources and pins. For the exact review-bot lakefile exception above, the trusted base validator
+  proves the lakefile changed one Mathlib `rev` line to the matching manifest SHA, verifies the SHA
+  is a forward commit on the base-nominated branch, and only then overlays it. Any other config or
+  infrastructure path is routed to a human, so a PR cannot redefine what "build"/"axioms" mean to
+  fake a green check.
 - **Sandbox.** PR `TauCeti/` code compiles only under **landrun** (pinned `v0.1.14` + SHA256),
   offline (no network), writes confined to `base/.lake`, with `/dev` narrowed to specific nodes. A
   **fail-closed self-test** proves enforcement (out-of-tree write, `/dev/shm` write, and network

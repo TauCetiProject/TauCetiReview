@@ -276,6 +276,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="TauCetiProject/TauCeti")
     ap.add_argument("--pr", required=True)
+    ap.add_argument("--pr-author", default="",
+                    help="server-authenticated PR author, used only by the merge path policy")
     ap.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS))
     ap.add_argument("--rubrics-dir", required=True)
     ap.add_argument("--tool-cwd", required=True)
@@ -349,6 +351,9 @@ def main():
                     help="the bump-guard check conclusion for HEAD (GitHub's own result). When the PR "
                          "touches a Lake pin (lake-manifest.json / lean-toolchain), auto-merge requires "
                          "this to be SUCCESS — i.e. CI confirmed a forward-only bump. Ignored otherwise.")
+    ap.add_argument("--scope", default="",
+                    help="trusted author-aware scope status for HEAD; required green for the "
+                         "review bot's lakefile exception")
     ap.add_argument("--merge-decision-file", default="",
                     help="write the auto-merge decision JSON here for a separate merge step")
     ap.add_argument("--review-budget", type=int, default=10,
@@ -522,7 +527,7 @@ def main():
         paths = changed_paths(pathlib.Path(a.diff_file).read_text())
         merge_ok, reason = decide_merge(
             states, candidates, all_green, paths, head,
-            a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build)
+            a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build, a.pr_author, a.scope)
         if a.merge_decision_file:
             pathlib.Path(a.merge_decision_file).write_text(
                 json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
@@ -806,7 +811,8 @@ def main():
         if a.auto_merge:
             merge_ok, reason = decide_merge(
                 states, candidates, all_green, changed_paths(diff_full), head,
-                a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build)
+                a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build, a.pr_author,
+                a.scope)
         pathlib.Path(a.merge_decision_file).write_text(
             json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
         print(f"[auto-merge] {merge_ok}: {reason}")
