@@ -27,18 +27,17 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
     Mergeable iff there is a head commit, CI's `build` check is green on it (so the merge path is
     self-sufficient and safe to run on comment events, not only after a successful build), every
     blocking rubric is green on it (fresh, not stale), and every changed path is under `prefix` or an
-    allowed root file (`allow`). A PR opened by the trusted Tau Ceti review bot may additionally
-    change lakefile.toml, which is how the incompatibility tracker pins an exact first-known-bad
-    Mathlib commit for repair. A PR touching any Lake pin, including that bot-only lakefile change,
-    additionally requires the bump-guard check to be green (a CI-validated forward-only bump), and
-    the lakefile exception itself requires CI's author-aware scope status to be green.
+    allowed root file (`allow`), and CI's trusted scope status is green. A PR opened by the trusted
+    Tau Ceti review bot may additionally change lakefile.toml, which is how the incompatibility
+    tracker pins an exact first-known-bad Mathlib commit for repair. A PR touching any Lake pin,
+    including that bot-only lakefile change, additionally requires the bump-guard check to be green
+    (a CI-validated forward-only bump).
     Returns (merge_ok, reason)."""
     allow = set(allow or []) | TRUSTED_AUTHOR_ALLOW.get(pr_author, set())
     # Lake pins may auto-merge only as a CI-validated forward bump. lakefile.toml reaches this rule
     # only through the exact trusted-author exception above.
     pin_files = {"lake-manifest.json", "lean-toolchain", "lakefile.toml"}
     touches_pin = bool(paths & pin_files)
-    touches_lakefile = "lakefile.toml" in paths
     code_only = bool(paths) and all(
         p.startswith(prefix) or p in allow for p in paths)
     if not head:
@@ -47,12 +46,12 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
         return False, f"build is not green on HEAD (={ci_build or 'missing'}); refusing to merge"
     if not all_green:
         return False, f"not all rubrics green on HEAD: {[r for r in candidates if states[r] != 'green']}"
+    if (scope or "").upper() != "SUCCESS":
+        return False, (f"trusted scope check is not green on HEAD (={scope or 'missing'}); "
+                       f"refusing to merge")
     if not code_only:
         return False, (f"PR touches paths outside {prefix} "
                        f"(allowed extras: {sorted(allow)}); needs human merge")
-    if touches_lakefile and (scope or "").upper() != "SUCCESS":
-        return False, (f"PR changes lakefile.toml but the trusted author-aware scope check is not "
-                       f"green (={scope or 'missing'}); refusing to use the bot exception")
     if touches_pin and (bump_guard or "").upper() != "SUCCESS":
         return False, (f"PR changes a Lake pin but bump-guard is not green "
                        f"(={bump_guard or 'missing'}); needs human merge")

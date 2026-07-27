@@ -47,6 +47,8 @@ jobs:
         run: |
           HEAD_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          PR_AUTHOR=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json author -q '.author.login // ""')
+          echo "PR_AUTHOR=$PR_AUTHOR" >> "$GITHUB_ENV"
           BASE_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid -q .baseRefOid)
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
           MERGE_BASE=$(gh api "/repos/TauCetiProject/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
@@ -92,12 +94,13 @@ jobs:
         run: |
           set -euo pipefail
           # Mergeable iff the newest scoreboard comment is AT THE CURRENT HEAD with every required rubric
-          # green (head-pinned), and the shared decide_merge rule holds (build green, TauCeti/-only +
-          # allowed root/pins, bump-guard for a pin). Reads the full `states` from the meta, falling back
+          # green (head-pinned), and the shared decide_merge rule holds (build + scope green,
+          # TauCeti/-only + allowed root/pins, bump-guard for a pin). Reads the full `states` from the meta, falling back
           # to the rendered table for comments posted before that field existed.
           python3 runner/merge_from_scoreboard.py \
             --repo TauCetiProject/TauCeti --pr "$PR" --head-sha "$HEAD_SHA" --comments-file comments.json \
             --diff-file diff.txt --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" \
+            --pr-author "$PR_AUTHOR" \
             --merge-decision-file "$PWD/merge.json"
 
       # ---- Auto-merge: mint the scoped merge token only now, and merge iff the decision is green.
