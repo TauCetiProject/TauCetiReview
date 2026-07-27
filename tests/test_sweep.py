@@ -116,14 +116,88 @@ def test_gate_is_shared_with_merge_only():
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
     diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
-    # green + TauCeti-only + build green -> mergeable
-    assert mfs.decide_from_comments(_scoreboard(head, green), head, required, diff, "SUCCESS", "")["merge"]
+    # green + TauCeti-only + build/scope green -> mergeable
+    assert mfs.decide_from_comments(
+        _scoreboard(head, green), head, required, diff, "SUCCESS", "", scope="SUCCESS")["merge"]
+    # The trusted base-side scope status is a hard gate for every automatic merge, not only the
+    # lakefile exception. This also prevents unusual quoted diff paths from bypassing path parsing.
+    assert not mfs.decide_from_comments(
+        _scoreboard(head, green), head, required, diff, "SUCCESS", "", scope="")["merge"]
     # a stale scoreboard (different head) is refused — the sweep must never enqueue an unreviewed commit
     assert not mfs.decide_from_comments(_scoreboard(head, green), "other99", required, diff,
-                                        "SUCCESS", "")["merge"]
+                                        "SUCCESS", "", scope="SUCCESS")["merge"]
     # a path outside TauCeti/ is refused
     diff2 = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
-    assert not mfs.decide_from_comments(_scoreboard(head, green), head, required, diff2, "SUCCESS", "")["merge"]
+    assert not mfs.decide_from_comments(
+        _scoreboard(head, green), head, required, diff2, "SUCCESS", "", scope="SUCCESS")["merge"]
+
+
+def test_workflows_pass_authenticated_author_and_status_contexts():
+    root = pathlib.Path(__file__).resolve().parent.parent
+    merge_only = (root / ".github/workflows/merge-only.yml").read_text()
+    review = (root / ".github/workflows/review.yml").read_text()
+    sweep_source = (root / "runner/sweep.py").read_text()
+
+    for workflow in (merge_only, review):
+        assert 'PR_AUTHOR=$(gh pr view "$PR"' in workflow
+        assert '--pr-author "$PR_AUTHOR"' in workflow
+        assert '--scope "$SCOPE"' in workflow
+    for context in ("build", "bump-guard", "scope"):
+        query = f'.__typename=="StatusContext" and .context=="{context}"'
+        assert query in merge_only
+        assert query in review
+    assert 'ref: ${{ inputs.review_ref }}' in merge_only
+    merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
+    assert 'ref: ${{ inputs.review_ref }}' in merge_sweep
+    assert '"headRefOid,baseRefName,id,labels,statusCheckRollup,author"' in sweep_source
+    assert 'pr_author = (v.get("author") or {}).get("login") or ""' in sweep_source
+    assert 'pr_author=pr_author, scope=scope' in sweep_source
+
+
+def test_status_states_reads_trusted_contexts_and_fails_closed():
+    rollup = [
+        {"__typename": "StatusContext", "context": "build", "state": "SUCCESS"},
+        {"__typename": "CheckRun", "name": "bump-guard", "conclusion": "SUCCESS"},
+        {"__typename": "StatusContext", "context": "scope", "state": "FAILURE"},
+    ]
+    assert sweep.status_states(rollup) == ("SUCCESS", "", "FAILURE")
+    assert sweep.status_states([]) == ("", "", "")
+
+
+def test_trusted_review_bot_may_merge_a_validated_lakefile_pin():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    diff = (
+        "diff --git a/lakefile.toml b/lakefile.toml\n"
+        "+rev = \"deadbeef\"\n"
+        "diff --git a/lake-manifest.json b/lake-manifest.json\n"
+        "+{}\n"
+    )
+    comments = _scoreboard(head, green)
+
+    # The exception is exact-author-only and still requires the trusted bump validator.
+    assert not mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "SUCCESS", pr_author="someone-else",
+        scope="SUCCESS")["merge"]
+    assert not mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "FAILURE",
+        pr_author="tauceti-review-bot[bot]", scope="SUCCESS")["merge"]
+    assert not mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "SUCCESS",
+        pr_author="tauceti-review-bot[bot]", scope="FAILURE")["merge"]
+    assert mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "SUCCESS",
+        pr_author="tauceti-review-bot[bot]", scope="SUCCESS")["merge"]
+    assert mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "SUCCESS",
+        pr_author="app/tauceti-review-bot", scope="SUCCESS")["merge"]
+
+    # Bot authorship does not grant a general infrastructure bypass.
+    workflow_diff = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
+    assert not mfs.decide_from_comments(
+        comments, head, required, workflow_diff, "SUCCESS", "SUCCESS",
+        pr_author="tauceti-review-bot[bot]", scope="SUCCESS")["merge"]
 
 
 def run():
