@@ -14,6 +14,7 @@ on:
   workflow_call:
     inputs:
       pr: { required: true, type: string }
+      review_ref: { required: false, type: string, default: main }
     secrets:
       # Only the App credentials the merge needs — the caller passes these explicitly rather than
       # inheriting all of TauCeti's secrets into this public-triggerable path.
@@ -39,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: TauCetiProject/TauCetiReview
-          ref: main
+          ref: ${{ inputs.review_ref }}
           persist-credentials: false
 
       - name: Resolve PR head and fetch diff
