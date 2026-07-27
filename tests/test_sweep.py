@@ -136,13 +136,29 @@ def test_workflows_pass_authenticated_author_and_status_contexts():
     root = pathlib.Path(__file__).resolve().parent.parent
     merge_only = (root / ".github/workflows/merge-only.yml").read_text()
     review = (root / ".github/workflows/review.yml").read_text()
+    sweep_source = (root / "runner/sweep.py").read_text()
 
-    assert 'PR_AUTHOR=$(gh pr view "$PR"' in merge_only
-    assert '--pr-author "$PR_AUTHOR"' in merge_only
+    for workflow in (merge_only, review):
+        assert 'PR_AUTHOR=$(gh pr view "$PR"' in workflow
+        assert '--pr-author "$PR_AUTHOR"' in workflow
+        assert '--scope "$SCOPE"' in workflow
     for context in ("build", "bump-guard", "scope"):
         query = f'.__typename=="StatusContext" and .context=="{context}"'
         assert query in merge_only
         assert query in review
+    assert '"headRefOid,baseRefName,id,labels,statusCheckRollup,author"' in sweep_source
+    assert 'pr_author = (v.get("author") or {}).get("login") or ""' in sweep_source
+    assert 'pr_author=pr_author, scope=scope' in sweep_source
+
+
+def test_status_states_reads_trusted_contexts_and_fails_closed():
+    rollup = [
+        {"__typename": "StatusContext", "context": "build", "state": "SUCCESS"},
+        {"__typename": "CheckRun", "name": "bump-guard", "conclusion": "SUCCESS"},
+        {"__typename": "StatusContext", "context": "scope", "state": "FAILURE"},
+    ]
+    assert sweep.status_states(rollup) == ("SUCCESS", "", "FAILURE")
+    assert sweep.status_states([]) == ("", "", "")
 
 
 def test_trusted_review_bot_may_merge_a_validated_lakefile_pin():

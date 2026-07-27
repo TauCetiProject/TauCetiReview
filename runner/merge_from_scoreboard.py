@@ -141,7 +141,9 @@ def resolve_commit_status(repo, head_sha, context):
             ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses", "--jq",
              f'map(select(.context == "{context}")) | sort_by(.id) | last | .state // ""'],
             check=True, capture_output=True, text=True).stdout
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"could not resolve trusted {context} status for {repo}@{head_sha[:12]}: {exc}",
+              file=sys.stderr)
         return ""
     return out.strip()
 

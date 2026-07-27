@@ -35,9 +35,10 @@ so safety rests entirely on breaking links 1–2: removing the reviewer's *acces
 
 - **I1** — never evaluate PR-controlled Lake (`lakefile`/manifest) in the privileged job;
   Mathlib source is cloned at the rev pinned in the *base* manifest. TauCeti's sole exception is
-  read as data by a trusted validator: a PR opened by the server-authenticated
-  `tauceti-review-bot` App may replace only Mathlib's lakefile `rev` with the identical immutable
-  SHA in its manifest, or restore that field to `master` afterward. That validated config is first
+  read as data by a trusted validator. Server-authenticated review-bot authorship is only a coarse
+  eligibility filter: every current head, including commits pushed later to a bot-opened PR, must
+  still prove that its sole lakefile change replaces Mathlib's `rev` with the identical immutable
+  SHA in its manifest, or restores that field to `master` afterward. That validated config is first
   evaluated inside the secretless landrun sandbox; after merge it becomes trusted base config for
   later builds. The exact-shape and forward-history checks therefore gate both evaluation and
   promotion into the trust root. Closes the pre-auth RCE.

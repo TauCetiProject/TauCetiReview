@@ -55,8 +55,8 @@ jobs:
             --jq '.merge_base_commit.sha' 2>/dev/null || echo "")
           echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
           echo "RUBRICS_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          # `build` and `bump-guard` are the authoritative commit STATUSES that pr-build / bump-guard
-          # POST (state encodes scope + diff-size + audit), so read them by `.context`/`.state`, not
+          # `build`, `bump-guard`, and `scope` are the authoritative commit STATUSES that trusted
+          # base CI posts, so read them by `.context`/`.state`, not
           # the job CheckRun (whose name differs — bump-guard's job is "guard"). Missing -> "" -> the
           # engine refuses to merge. Posted by the trusted base-repo CI; external authors cannot write
           # statuses to the base repo.

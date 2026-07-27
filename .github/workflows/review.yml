@@ -51,7 +51,7 @@ jobs:
         run: |
           HEAD_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
-          PR_AUTHOR=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json author -q .author.login)
+          PR_AUTHOR=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json author -q '.author.login // ""')
           echo "PR_AUTHOR=$PR_AUTHOR" >> "$GITHUB_ENV"
           # Provenance for the review comments and meta block: the PR base tip, the merge base
           # (the actual left side of the three-dot diff below), and the rubrics+engine commit.
