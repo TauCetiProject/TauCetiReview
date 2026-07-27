@@ -126,6 +126,42 @@ def test_gate_is_shared_with_merge_only():
     assert not mfs.decide_from_comments(_scoreboard(head, green), head, required, diff2, "SUCCESS", "")["merge"]
 
 
+def test_trusted_review_bot_may_merge_a_validated_lakefile_pin():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    diff = (
+        "diff --git a/lakefile.toml b/lakefile.toml\n"
+        "+rev = \"deadbeef\"\n"
+        "diff --git a/lake-manifest.json b/lake-manifest.json\n"
+        "+{}\n"
+    )
+    comments = _scoreboard(head, green)
+
+    # The exception is exact-author-only and still requires the trusted bump validator.
+    assert not mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "SUCCESS", pr_author="someone-else",
+        scope="SUCCESS")["merge"]
+    assert not mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "FAILURE",
+        pr_author="tauceti-review-bot[bot]", scope="SUCCESS")["merge"]
+    assert not mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "SUCCESS",
+        pr_author="tauceti-review-bot[bot]", scope="FAILURE")["merge"]
+    assert mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "SUCCESS",
+        pr_author="tauceti-review-bot[bot]", scope="SUCCESS")["merge"]
+    assert mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "SUCCESS",
+        pr_author="app/tauceti-review-bot", scope="SUCCESS")["merge"]
+
+    # Bot authorship does not grant a general infrastructure bypass.
+    workflow_diff = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
+    assert not mfs.decide_from_comments(
+        comments, head, required, workflow_diff, "SUCCESS", "SUCCESS",
+        pr_author="tauceti-review-bot[bot]", scope="SUCCESS")["merge"]
+
+
 def run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

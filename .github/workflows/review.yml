@@ -51,6 +51,8 @@ jobs:
         run: |
           HEAD_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          PR_AUTHOR=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json author -q .author.login)
+          echo "PR_AUTHOR=$PR_AUTHOR" >> "$GITHUB_ENV"
           # Provenance for the review comments and meta block: the PR base tip, the merge base
           # (the actual left side of the three-dot diff below), and the rubrics+engine commit.
           BASE_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid -q .baseRefOid)
@@ -69,6 +71,9 @@ jobs:
           BUMP_GUARD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.name=="bump-guard") | .conclusion] | first // ""')
           echo "BUMP_GUARD=$BUMP_GUARD" >> "$GITHUB_ENV"
+          SCOPE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
+            -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="scope") | .state] | first // ""')
+          echo "SCOPE=$SCOPE" >> "$GITHUB_ENV"
           gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
           # The PR title+body: the author's stated intent, sources, and dependencies. The
@@ -188,12 +193,13 @@ jobs:
           fi
           python3 runner/review.py \
             --repo TauCetiProject/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
+            --pr-author "$PR_AUTHOR" \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
             --rubrics-sha "$RUBRICS_SHA" --archive-dir store/outbox \
-            --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" $AM --merge-decision-file "$PWD/merge.json" \
+            --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" $AM --merge-decision-file "$PWD/merge.json" \
             --keys-dir "$RUNNER_TEMP/keys" --budget-file "$PWD/budget.json" \
             --scoreboard-file "$PWD/scoreboard.md" --threads-dir "$PWD/threads" \
             --post-plan-file "$PWD/post_plan.json"

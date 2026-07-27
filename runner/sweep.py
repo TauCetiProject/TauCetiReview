@@ -28,10 +28,10 @@ strand forever. This runs on a schedule and re-drives them:
                  stop. Also used if a PR is evicted past the threshold yet is NOT behind main.
 
 A `keep` label (also hold/wip/human/do-not-close) opts a PR out. Drafts, non-main bases, and PRs
-touching paths outside TauCeti/ are skipped. Every mutation is gated on DRY_RUN and bound to the
-reviewed head, and a real execution failure exits nonzero; benign races (already queued, head moved) do
-not. The merge decision is the SAME decide_from_comments the merge-only path uses, so the sweep can
-never enqueue something the normal gate would refuse.
+touching paths outside the author-aware merge policy are skipped. Every mutation is gated on DRY_RUN
+and bound to the reviewed head, and a real execution failure exits nonzero; benign races (already
+queued, head moved) do not. The merge decision is the SAME decide_from_comments the merge-only path
+uses, so the sweep can never enqueue something the normal gate would refuse.
 
 Env: GH_TOKEN (contents+pull-requests write), REPO (owner/name), optional DRY_RUN=1, EVICT_ESCALATE,
 MERGE_PREFIX.
@@ -200,14 +200,14 @@ def queue_numbers():
 
 
 def status_states(rollup):
-    """Read the authoritative `build` and `bump-guard` commit STATUSES (posted by trusted base CI) from
+    """Read authoritative commit STATUSES posted by trusted base CI from
     a statusCheckRollup. Missing -> '' -> the gate refuses (decide_merge)."""
     def state(ctx):
         for s in rollup or []:
             if s.get("__typename") == "StatusContext" and s.get("context") == ctx:
                 return s.get("state") or ""
         return ""
-    return state("build"), state("bump-guard")
+    return state("build"), state("bump-guard"), state("scope")
 
 
 def current_head(pr):
@@ -298,16 +298,17 @@ def main():
             continue
         try:
             v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
-                         "headRefOid,baseRefName,id,labels,statusCheckRollup"])
+                         "headRefOid,baseRefName,id,labels,statusCheckRollup,author"])
             head = v["headRefOid"]
             if (v.get("baseRefName") or "") != "main":
                 continue   # the sweep only drives PRs targeting main (the merge queue is main's)
             comments = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/issues/{n}/comments?per_page=100",
                                  "--jq", ".[] | {body, updated_at, created_at}"])
             diff = gh(["pr", "diff", str(n), "--repo", REPO]).stdout or ""
-            ci_build, bump_guard = status_states(v.get("statusCheckRollup"))
+            ci_build, bump_guard, scope = status_states(v.get("statusCheckRollup"))
+            pr_author = (v.get("author") or {}).get("login") or ""
             decision = decide_from_comments(comments, head, required, diff, ci_build, bump_guard,
-                                            MERGE_PREFIX)
+                                            MERGE_PREFIX, pr_author=pr_author, scope=scope)
             if not decision["merge"]:
                 continue   # not green at head / not TauCeti-only — the normal gate would not merge it
             cmp = gh_json(["api", f"/repos/{REPO}/compare/main...{head}"])
