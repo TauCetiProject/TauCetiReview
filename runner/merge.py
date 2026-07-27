@@ -47,7 +47,7 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
     if not all_green:
         return False, f"not all rubrics green on HEAD: {[r for r in candidates if states[r] != 'green']}"
     if (scope or "").upper() != "SUCCESS":
-        return False, (f"trusted scope check is not green on HEAD (={scope or 'missing'}); "
+        return False, (f"trusted CI scope status is not green on HEAD (={scope or 'missing'}); "
                        f"refusing to merge")
     if not code_only:
         return False, (f"PR touches paths outside {prefix} "
