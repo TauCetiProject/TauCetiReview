@@ -20,6 +20,7 @@ import json
 import pathlib
 import re
 import subprocess
+import sys
 
 from review import DEFAULT_RUBRICS, changed_paths, decide_merge
 
@@ -127,7 +128,8 @@ def resolve_pr_author(repo, pr):
         out = subprocess.run(
             ["gh", "api", f"repos/{repo}/pulls/{pr}", "--jq", ".user.login"],
             check=True, capture_output=True, text=True).stdout
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"could not resolve trusted PR author for {repo}#{pr}: {exc}", file=sys.stderr)
         return ""
     return out.strip()
 
@@ -137,7 +139,7 @@ def resolve_commit_status(repo, head_sha, context):
     try:
         out = subprocess.run(
             ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses", "--jq",
-             f'map(select(.context == "{context}")) | sort_by(.created_at) | last | .state // ""'],
+             f'map(select(.context == "{context}")) | sort_by(.id) | last | .state // ""'],
             check=True, capture_output=True, text=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return ""

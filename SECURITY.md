@@ -35,10 +35,12 @@ so safety rests entirely on breaking links 1–2: removing the reviewer's *acces
 
 - **I1** — never evaluate PR-controlled Lake (`lakefile`/manifest) in the privileged job;
   Mathlib source is cloned at the rev pinned in the *base* manifest. TauCeti's sole exception is
-  read as data by a trusted validator: a PR opened by `tauceti-review-bot[bot]` may replace only
-  Mathlib's lakefile `rev` with the identical immutable SHA in its manifest, or restore that field
-  to `master` afterward. That validated config is evaluated only later inside the secretless
-  landrun sandbox. Closes the pre-auth RCE.
+  read as data by a trusted validator: a PR opened by the server-authenticated
+  `tauceti-review-bot` App may replace only Mathlib's lakefile `rev` with the identical immutable
+  SHA in its manifest, or restore that field to `master` afterward. That validated config is first
+  evaluated inside the secretless landrun sandbox; after merge it becomes trusted base config for
+  later builds. The exact-shape and forward-history checks therefore gate both evaluation and
+  promotion into the trust root. Closes the pre-auth RCE.
 - **I2** — reviewers run in a clean workspace (PR source without `.git`, roadmap, Mathlib,
   diff) with a minimal **per-provider** env: only that provider's key, never the other key and
   never a GitHub token. Keys are staged to files, read into memory, and unlinked before any
@@ -66,10 +68,11 @@ only when **all** of:
 
 - every rubric **approves on the current commit** (latest verdict per rubric across that
   commit's rounds; I7 guarantees freshness);
-- every changed path is under `TauCeti/` or an explicitly allowed root pin; additionally, only a
-  PR whose server-authenticated author is `tauceti-review-bot[bot]` may touch `lakefile.toml`;
-- any PR touching a Lake pin or the bot-only lakefile path has a green trusted `bump-guard`, and
-  the lakefile exception additionally requires TauCeti CI's author-aware `scope` status to be green;
+- TauCeti CI's trusted, author-aware `scope` status is green on the current commit, and every
+  changed path is under `TauCeti/` or an explicitly allowed root pin; additionally, only a PR whose
+  server-authenticated author is the review-bot App (`tauceti-review-bot[bot]` through REST or
+  `app/tauceti-review-bot` through GraphQL) may touch `lakefile.toml`;
+- any PR touching a Lake pin or the bot-only lakefile path has a green trusted `bump-guard`;
 - CI's `build` check is green (status checks are **not** bypassed, only the review requirement).
 
 Toggle: `enable_automerge` on the trigger workflow. `gh workflow disable "Review"` pauses the

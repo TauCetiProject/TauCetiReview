@@ -116,14 +116,33 @@ def test_gate_is_shared_with_merge_only():
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
     diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
-    # green + TauCeti-only + build green -> mergeable
-    assert mfs.decide_from_comments(_scoreboard(head, green), head, required, diff, "SUCCESS", "")["merge"]
+    # green + TauCeti-only + build/scope green -> mergeable
+    assert mfs.decide_from_comments(
+        _scoreboard(head, green), head, required, diff, "SUCCESS", "", scope="SUCCESS")["merge"]
+    # The trusted base-side scope status is a hard gate for every automatic merge, not only the
+    # lakefile exception. This also prevents unusual quoted diff paths from bypassing path parsing.
+    assert not mfs.decide_from_comments(
+        _scoreboard(head, green), head, required, diff, "SUCCESS", "", scope="")["merge"]
     # a stale scoreboard (different head) is refused — the sweep must never enqueue an unreviewed commit
     assert not mfs.decide_from_comments(_scoreboard(head, green), "other99", required, diff,
-                                        "SUCCESS", "")["merge"]
+                                        "SUCCESS", "", scope="SUCCESS")["merge"]
     # a path outside TauCeti/ is refused
     diff2 = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
-    assert not mfs.decide_from_comments(_scoreboard(head, green), head, required, diff2, "SUCCESS", "")["merge"]
+    assert not mfs.decide_from_comments(
+        _scoreboard(head, green), head, required, diff2, "SUCCESS", "", scope="SUCCESS")["merge"]
+
+
+def test_workflows_pass_authenticated_author_and_status_contexts():
+    root = pathlib.Path(__file__).resolve().parent.parent
+    merge_only = (root / ".github/workflows/merge-only.yml").read_text()
+    review = (root / ".github/workflows/review.yml").read_text()
+
+    assert 'PR_AUTHOR=$(gh pr view "$PR"' in merge_only
+    assert '--pr-author "$PR_AUTHOR"' in merge_only
+    for context in ("build", "bump-guard", "scope"):
+        query = f'.__typename=="StatusContext" and .context=="{context}"'
+        assert query in merge_only
+        assert query in review
 
 
 def test_trusted_review_bot_may_merge_a_validated_lakefile_pin():

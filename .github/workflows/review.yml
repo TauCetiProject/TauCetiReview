@@ -64,12 +64,13 @@ jobs:
           # CI's build-check conclusion for this head (GitHub's own result, not author input): the
           # engine uses it to tell reviewers the code compiles so they don't re-litigate the build.
           CI_BUILD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
-            -q '[.statusCheckRollup[]? | select(.name=="build") | .conclusion] | first // ""')
+            -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="build") | .state] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
           # bump-guard's conclusion for this head: required green before a PR that changes a
-          # Lake pin (lake-manifest.json / lean-toolchain) may auto-merge (see runner/review.py).
+          # Lake pin (lake-manifest.json / lean-toolchain / the bot-only lakefile rev) may
+          # auto-merge (see runner/review.py).
           BUMP_GUARD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
-            -q '[.statusCheckRollup[]? | select(.name=="bump-guard") | .conclusion] | first // ""')
+            -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="bump-guard") | .state] | first // ""')
           echo "BUMP_GUARD=$BUMP_GUARD" >> "$GITHUB_ENV"
           SCOPE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="scope") | .state] | first // ""')
