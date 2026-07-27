@@ -146,6 +146,9 @@ def test_workflows_pass_authenticated_author_and_status_contexts():
         query = f'.__typename=="StatusContext" and .context=="{context}"'
         assert query in merge_only
         assert query in review
+    assert 'ref: ${{ inputs.review_ref }}' in merge_only
+    merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
+    assert 'ref: ${{ inputs.review_ref }}' in merge_sweep
     assert '"headRefOid,baseRefName,id,labels,statusCheckRollup,author"' in sweep_source
     assert 'pr_author = (v.get("author") or {}).get("login") or ""' in sweep_source
     assert 'pr_author=pr_author, scope=scope' in sweep_source
