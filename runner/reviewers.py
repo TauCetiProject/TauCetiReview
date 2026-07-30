@@ -368,11 +368,13 @@ def run_pi(prompt, cwd, model, env):
     templates and restrict tools to PI_TOOLS (read/grep/ls — no bash/edit/write), so the
     untrusted diff cannot make the reviewer run shell, mutate the workspace, or reach anything
     but its own key. `--mode json` emits a JSONL event stream; the final assistant `message_end`
-    carries the verdict text and pi-ai's own usage/cost, which we sum for the ledger."""
+    carries the verdict text and pi-ai's own usage/cost, which we sum for the ledger. As with the
+    other reviewer CLIs, the rendered prompt travels over stdin so a large diff cannot overflow
+    the OS argv limit."""
     cmd = ["pi", "--provider", "openrouter", "--model", model, "--print", "--mode", "json",
            "--no-session", "--no-context-files", "--no-skills", "--no-extensions",
-           "--no-prompt-templates", "--tools", PI_TOOLS, prompt]
-    r = sh(cmd, cwd=cwd, env=env)
+           "--no-prompt-templates", "--tools", PI_TOOLS]
+    r = sh(cmd, cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     text, cost, in_tok, out_tok, cached, err = "", 0.0, 0, 0, 0, ""
     for line in r.stdout.splitlines():

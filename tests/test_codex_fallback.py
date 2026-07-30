@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Coverage for the seamless codex Sol->Terra downgrade:
-  - large Claude/Codex prompts travel over stdin rather than overflowing the OS argv limit,
+  - large Claude/Codex/pi prompts travel over stdin rather than overflowing the OS argv limit,
   - run_codex parses the terminal failure's structured status/message (not by regex over escaped text),
   - codex_model_unavailable() needs BOTH a model-access message AND a non-transient status,
   - run_codex survives malformed failure payloads without crashing,
@@ -59,6 +59,7 @@ def test_large_prompts_use_stdin_not_argv():
     try:
         reviewers.run_codex(prompt, "/tmp", "gpt-5.6-sol", {})
         reviewers.run_claude(prompt, "/tmp", "sonnet", {})
+        reviewers.run_pi(prompt, "/tmp", "deepseek/deepseek-v3.2", {})
     finally:
         reviewers.sh = orig
 
@@ -71,6 +72,11 @@ def test_large_prompts_use_stdin_not_argv():
     assert prompt not in claude_cmd
     assert claude_cmd[1] == "-p", claude_cmd
     assert claude_kwargs["stdin_text"] == prompt
+
+    pi_cmd, pi_kwargs = calls[2]
+    assert prompt not in pi_cmd
+    assert "--print" in pi_cmd, pi_cmd
+    assert pi_kwargs["stdin_text"] == prompt
 
 
 def test_run_codex_parses_status_and_message_from_real_output():
