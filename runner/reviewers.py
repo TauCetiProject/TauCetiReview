@@ -95,6 +95,12 @@ def reviewer_env(provider, keys, subscription=False):
     home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=REV_HOME_BASE)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": home,
            "LANG": os.environ.get("LANG", "C.UTF-8"), "CI": "1"}
+    # On macOS, Claude Code's login-Keychain item is addressed by the login user. HOME alone is
+    # insufficient: omitting USER makes the CLI report "Not logged in" even though the fallback below
+    # correctly restores the real HOME. These identity strings are non-secret and carry no config.
+    user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if user:
+        env.update(USER=user, LOGNAME=os.environ.get("LOGNAME") or user)
     if provider in ("claude", "sonnet"):
         if subscription:
             # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
@@ -203,9 +209,11 @@ def build_prompt(rubrics_dir, rubric, context, marker):
 
 def run_claude(prompt, cwd, model, env):
     # --disable-slash-commands drops skills entirely; read-only tools only. With the clean HOME in
-    # reviewer_env this keeps the review independent of the runner's personal claude config.
-    r = sh(["claude", "-p", prompt, "--output-format", "json", "--model", model,
-            "--disable-slash-commands", "--allowedTools", "Read", "Grep", "Glob"], cwd=cwd, env=env)
+    # reviewer_env this keeps the review independent of the runner's personal claude config. Stream
+    # the prompt over stdin: large PR diffs can make a rendered rubric exceed the OS argv limit.
+    r = sh(["claude", "-p", "--output-format", "json", "--model", model,
+            "--disable-slash-commands", "--allowedTools", "Read", "Grep", "Glob"],
+           cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     try:
         d = json.loads(r.stdout)
@@ -269,11 +277,13 @@ def run_codex(prompt, cwd, model, env):
     # In subscription mode there is no key (and no isolated home): use the inherited codex login.
     if env.get("OPENAI_API_KEY"):
         sh(["codex", "login", "--with-api-key"], env=env, stdin_text=env["OPENAI_API_KEY"])
-    # inherit=none: codex's model-run shell commands get a clean env, not codex's own.
+    # inherit=none: codex's model-run shell commands get a clean env, not codex's own. `-` tells
+    # codex to read the prompt from stdin; putting a large rendered review in argv can exceed the
+    # OS argument-size limit before codex starts.
     cmd = (["codex", "exec", "--json", "-s", "read-only", "--skip-git-repo-check",
             "-c", "shell_environment_policy.inherit=none"]
-           + (["-m", model] if model else []) + [prompt])
-    r = sh(cmd, cwd=cwd, env=env)
+           + (["-m", model] if model else []) + ["-"])
+    r = sh(cmd, cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     text, usage, thread, events, errors = "", None, None, [], []
     fail_payload = err_payload = None  # turn.failed (authoritative) and first `error` event (fallback)
@@ -358,11 +368,13 @@ def run_pi(prompt, cwd, model, env):
     templates and restrict tools to PI_TOOLS (read/grep/ls — no bash/edit/write), so the
     untrusted diff cannot make the reviewer run shell, mutate the workspace, or reach anything
     but its own key. `--mode json` emits a JSONL event stream; the final assistant `message_end`
-    carries the verdict text and pi-ai's own usage/cost, which we sum for the ledger."""
+    carries the verdict text and pi-ai's own usage/cost, which we sum for the ledger. As with the
+    other reviewer CLIs, the rendered prompt travels over stdin so a large diff cannot overflow
+    the OS argv limit."""
     cmd = ["pi", "--provider", "openrouter", "--model", model, "--print", "--mode", "json",
            "--no-session", "--no-context-files", "--no-skills", "--no-extensions",
-           "--no-prompt-templates", "--tools", PI_TOOLS, prompt]
-    r = sh(cmd, cwd=cwd, env=env)
+           "--no-prompt-templates", "--tools", PI_TOOLS]
+    r = sh(cmd, cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     text, cost, in_tok, out_tok, cached, err = "", 0.0, 0, 0, 0, ""
     for line in r.stdout.splitlines():
