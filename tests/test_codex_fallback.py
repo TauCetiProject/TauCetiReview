@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Coverage for the seamless codex Sol->Terra downgrade:
+  - large Claude/Codex prompts travel over stdin rather than overflowing the OS argv limit,
   - run_codex parses the terminal failure's structured status/message (not by regex over escaped text),
   - codex_model_unavailable() needs BOTH a model-access message AND a non-transient status,
   - run_codex survives malformed failure payloads without crashing,
@@ -43,6 +44,34 @@ def _run_codex_with_stdout(stdout, returncode=1, stderr=""):
 
 
 # ----- run_codex parsing (status + message, and crash-hardening) -----
+
+def test_large_prompts_use_stdin_not_argv():
+    prompt = "review this\n" * 200_000
+    calls = []
+
+    def fake_sh(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        stdout = '{"result":"ok"}' if cmd[0] == "claude" else ""
+        return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    orig = reviewers.sh
+    reviewers.sh = fake_sh
+    try:
+        reviewers.run_codex(prompt, "/tmp", "gpt-5.6-sol", {})
+        reviewers.run_claude(prompt, "/tmp", "sonnet", {})
+    finally:
+        reviewers.sh = orig
+
+    codex_cmd, codex_kwargs = calls[0]
+    assert codex_cmd[-1] == "-", codex_cmd
+    assert prompt not in codex_cmd
+    assert codex_kwargs["stdin_text"] == prompt
+
+    claude_cmd, claude_kwargs = calls[1]
+    assert prompt not in claude_cmd
+    assert claude_cmd[1] == "-p", claude_cmd
+    assert claude_kwargs["stdin_text"] == prompt
+
 
 def test_run_codex_parses_status_and_message_from_real_output():
     out = _run_codex_with_stdout(REAL_UNAVAILABLE_STDOUT)
