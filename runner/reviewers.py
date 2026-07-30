@@ -95,6 +95,12 @@ def reviewer_env(provider, keys, subscription=False):
     home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=REV_HOME_BASE)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": home,
            "LANG": os.environ.get("LANG", "C.UTF-8"), "CI": "1"}
+    # On macOS, Claude Code's login-Keychain item is addressed by the login user. HOME alone is
+    # insufficient: omitting USER makes the CLI report "Not logged in" even though the fallback below
+    # correctly restores the real HOME. These identity strings are non-secret and carry no config.
+    user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if user:
+        env.update(USER=user, LOGNAME=os.environ.get("LOGNAME") or user)
     if provider in ("claude", "sonnet"):
         if subscription:
             # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
