@@ -33,6 +33,22 @@ from render import meta_block, render_contest_reply, render_scoreboard, render_t
 DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
                    "generality", "placement", "naming", "documentation", "proof-quality"]
 
+# Per-attempt fields kept in the local store but never published. The archive repo is public, so
+# neither the session id nor the agent's stderr (which can carry paths, env detail, or a provider
+# message quoting the request) may leave this machine.
+ATTEMPT_PRIVATE_KEYS = ("session_id", "raw_stderr")
+
+
+def stderr_summary(res, limit=200):
+    """The one line of a failed attempt worth showing a human: the last non-empty line of stderr.
+    The agent CLIs put the operative diagnosis there — `Not logged in · Please run /login` for the
+    macOS auth failure in TauCetiReview#105, and provider API errors generally — while everything
+    above it is progress chatter. Empty when there is nothing to say."""
+    for line in reversed((res.get("raw_stderr") or "").splitlines()):
+        if line.strip():
+            return line.strip()[:limit]
+    return ""
+
 
 
 def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
@@ -146,11 +162,16 @@ def run_rubric(ctx, rubric):
         finally:
             cleanup_rev_home(rev_home)   # throwaway HOME, one per attempt — don't accumulate
         # Keep each attempt's execution facts: the retry path returns only the last result,
-        # but the first attempt's spend/usage/failure is provenance too.
+        # but the first attempt's spend/usage/failure is provenance too. raw_stderr rides along
+        # because it is the ONLY field that says *why* a failed attempt failed: a total auth
+        # failure otherwise reads as returncode=1 at $0.00, indistinguishable from a model that
+        # simply produced nothing (TauCetiReview#105). Local store only — ATTEMPT_PRIVATE_KEYS
+        # strips it from the public archive record below.
         attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
                                            "usage", "session_id", "parse_error")
                          if r.get(k) is not None}
-                        | {"model": model, "secs": round(time.monotonic() - t, 1)})
+                        | {"model": model, "secs": round(time.monotonic() - t, 1)}
+                        | ({"raw_stderr": r["raw_stderr"]} if r.get("raw_stderr") else {}))
         return r
 
     def has_verdict(r):
@@ -230,7 +251,7 @@ def run_rubric(ctx, rubric):
             "diff_prompt_sha256": prov.get("diff_prompt_sha256"),
             "diff_prompt_truncated": prov.get("diff_prompt_truncated"),
             "started_at": started_at, "duration_s": res["duration_s"],
-            "attempts": [{k: v for k, v in at.items() if k != "session_id"}
+            "attempts": [{k: v for k, v in at.items() if k not in ATTEMPT_PRIVATE_KEYS}
                          for at in attempts],
             "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
             "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,
@@ -270,6 +291,17 @@ def run_rubric(ctx, rubric):
     print(f"[{rubric}] {provider}/{model} rc={res['returncode']} "
           f"verdict={v.get('verdict', 'PARSE_FAILED')} cost=${res.get('cost_usd') or 0:.4f} "
           f"today=${spent_today:.2f}")
+    # A rubric that produced no verdict is the case a human has to diagnose, and the line above says
+    # only that it happened. Echo each attempt's stderr summary (deduped: a retry usually repeats the
+    # first failure verbatim) so the cause is in the same output as the symptom. `Not logged in` at
+    # $0.00 read as an ordinary "error" for two whole PRs before anyone looked (TauCetiReview#105).
+    if not v:
+        seen = []
+        for at in attempts:
+            s = stderr_summary(at)
+            if s and s not in seen:
+                seen.append(s)
+                print(f"[{rubric}]   ! {s}", file=sys.stderr)
 
 
 def main():
