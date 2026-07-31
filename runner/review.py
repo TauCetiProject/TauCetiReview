@@ -9,7 +9,7 @@ run stay deferred until the block clears. With `--auto-subset`, a re-review runs
 rubrics whose last round was not `approve`. The workflow commits the store after the run.
 """
 
-import argparse, datetime, hashlib, json, os, pathlib, random, secrets, sys, time
+import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, sys, time
 
 import archive
 from dataclasses import dataclass, field
@@ -33,17 +33,57 @@ from render import meta_block, render_contest_reply, render_scoreboard, render_t
 DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
                    "generality", "placement", "naming", "documentation", "proof-quality"]
 
-# Per-attempt fields kept in the local store but never published. The archive repo is public, so
-# neither the session id nor the agent's stderr (which can carry paths, env detail, or a provider
-# message quoting the request) may leave this machine.
-ATTEMPT_PRIVATE_KEYS = ("session_id", "raw_stderr")
+# Fields that must never be written to a record this runner persists. BOTH sinks are public: the
+# archive record goes to TauCetiData, and `--store` is a checkout of this repo's `reviews` branch
+# which the review workflow commits and pushes. Raw stderr is arbitrary provider output and can carry
+# a key fragment, an authorization header, or a quoted request; a session id names a transcript. They
+# are stripped recursively, so a field added to an attempt cannot start publishing either by accident.
+PRIVATE_KEYS = ("session_id", "raw_stderr")
+
+
+def public_record(value):
+    """`value` with every PRIVATE_KEYS entry removed, at any depth. Applied to everything this runner
+    writes to a persisted sink."""
+    if isinstance(value, dict):
+        return {k: public_record(v) for k, v in value.items() if k not in PRIVATE_KEYS}
+    if isinstance(value, list):
+        return [public_record(v) for v in value]
+    return value
+
+
+# What went wrong, as a closed vocabulary safe to publish and to key metrics off. This exists because
+# the untyped alternative is not publishable: TauCetiReview#105 was a total auth failure that rendered
+# as a bare "error" at $0.00 on a scoreboard headed "changes requested", and the only thing that said
+# otherwise was raw provider text nobody may print. A named kind carries the diagnosis without the
+# payload. Ordered: the first pattern to match wins, so the specific precede `unknown`.
+_ERROR_KINDS = (
+    ("not_authenticated", re.compile(r"not logged in|/login|invalid authentication|unauthorized|401", re.I)),
+    ("rate_limited", re.compile(r"rate limit|too many requests|429", re.I)),
+    ("overloaded", re.compile(r"overloaded|service unavailable|\b(?:502|503|529)\b", re.I)),
+    ("timed_out", re.compile(r"timed? ?out|deadline exceeded|\b504\b", re.I)),
+    ("model_unavailable", re.compile(r"not supported when using|do not have access|unknown model|\b404\b", re.I)),
+    ("transport", re.compile(r"ECONNRESET|ECONNREFUSED|socket hang up|connection (?:error|reset)", re.I)),
+)
+
+
+def error_kind(res):
+    """Why a result that produced no verdict failed, as an allowlisted token. Callers gate on "this
+    produced no verdict"; this only classifies. It reads stderr but returns none of it, so the answer
+    is safe to publish anywhere."""
+    hay = f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}"
+    for kind, pattern in _ERROR_KINDS:
+        if pattern.search(hay):
+            return kind
+    if res.get("returncode"):
+        return "unknown_error"
+    return "no_verdict"  # the CLI exited 0 but emitted nothing this runner could parse
 
 
 def stderr_summary(res, limit=200):
-    """The one line of a failed attempt worth showing a human: the last non-empty line of stderr.
-    The agent CLIs put the operative diagnosis there — `Not logged in · Please run /login` for the
-    macOS auth failure in TauCetiReview#105, and provider API errors generally — while everything
-    above it is progress chatter. Empty when there is nothing to say."""
+    """The last non-empty line of stderr: where the agent CLIs put the operative diagnosis (`Not
+    logged in · Please run /login` for TauCetiReview#105, provider API errors generally) with the
+    progress chatter above it. UNSANITISED provider output — for a local operator's terminal only,
+    never for a persisted record and never under CI, whose logs are as public as the repo."""
     for line in reversed((res.get("raw_stderr") or "").splitlines()):
         if line.strip():
             return line.strip()[:limit]
@@ -161,17 +201,17 @@ def run_rubric(ctx, rubric):
             r = fn(prompt, a.tool_cwd, model, env)
         finally:
             cleanup_rev_home(rev_home)   # throwaway HOME, one per attempt — don't accumulate
-        # Keep each attempt's execution facts: the retry path returns only the last result,
-        # but the first attempt's spend/usage/failure is provenance too. raw_stderr rides along
-        # because it is the ONLY field that says *why* a failed attempt failed: a total auth
-        # failure otherwise reads as returncode=1 at $0.00, indistinguishable from a model that
-        # simply produced nothing (TauCetiReview#105). Local store only — ATTEMPT_PRIVATE_KEYS
-        # strips it from the public archive record below.
+        # Keep each attempt's execution facts: the retry path returns only the last result, but the
+        # first attempt's spend/usage/failure is provenance too. error_kind rides along because it is
+        # the only field that says *why* an attempt failed: a total auth failure otherwise reads as
+        # returncode=1 at $0.00, indistinguishable from a model that simply produced nothing
+        # (TauCetiReview#105). It is a closed vocabulary, so unlike the stderr it derives from, it is
+        # safe in a record that gets committed and pushed.
         attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
                                            "usage", "session_id", "parse_error")
                          if r.get(k) is not None}
                         | {"model": model, "secs": round(time.monotonic() - t, 1)}
-                        | ({"raw_stderr": r["raw_stderr"]} if r.get("raw_stderr") else {}))
+                        | ({} if has_verdict(r) else {"error_kind": error_kind(r)}))
         return r
 
     def has_verdict(r):
@@ -251,8 +291,7 @@ def run_rubric(ctx, rubric):
             "diff_prompt_sha256": prov.get("diff_prompt_sha256"),
             "diff_prompt_truncated": prov.get("diff_prompt_truncated"),
             "started_at": started_at, "duration_s": res["duration_s"],
-            "attempts": [{k: v for k, v in at.items() if k not in ATTEMPT_PRIVATE_KEYS}
-                         for at in attempts],
+            "attempts": public_record(attempts),
             "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
             "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,
             "verdict": vo.get("verdict") or "error",
@@ -281,7 +320,9 @@ def run_rubric(ctx, rubric):
     spent_today += cost
     ran.append(rubric)
     run_results.append(res)
-    (outdir / f"{rubric}.json").write_text(json.dumps(res, indent=2))
+    # `--store` is a checkout of the `reviews` branch and the review workflow commits and pushes it,
+    # so this file is as public as the repo. It carried the raw stderr and the session id until now.
+    (outdir / f"{rubric}.json").write_text(json.dumps(public_record(res), indent=2))
     # Persist spend + state incrementally so a later crash cannot lose what was billed.
     ctx.ledger.set_spent(day, spent_today)
     if not a.dry_run:
@@ -292,16 +333,16 @@ def run_rubric(ctx, rubric):
           f"verdict={v.get('verdict', 'PARSE_FAILED')} cost=${res.get('cost_usd') or 0:.4f} "
           f"today=${spent_today:.2f}")
     # A rubric that produced no verdict is the case a human has to diagnose, and the line above says
-    # only that it happened. Echo each attempt's stderr summary (deduped: a retry usually repeats the
-    # first failure verbatim) so the cause is in the same output as the symptom. `Not logged in` at
-    # $0.00 read as an ordinary "error" for two whole PRs before anyone looked (TauCetiReview#105).
+    # only that it happened: `Not logged in` at $0.00 read as an ordinary "error" for two whole PRs
+    # before anyone looked (TauCetiReview#105). The classified kind is safe anywhere. The raw stderr
+    # line is not — under GITHUB_ACTIONS the workflow log is as public as the repo — so it prints only
+    # for a local operator, which is precisely the case that had nothing to go on.
     if not v:
-        seen = []
-        for at in attempts:
-            s = stderr_summary(at)
-            if s and s not in seen:
-                seen.append(s)
-                print(f"[{rubric}]   ! {s}", file=sys.stderr)
+        print(f"[{rubric}] no verdict: {error_kind(res)}", file=sys.stderr)
+        if not os.environ.get("GITHUB_ACTIONS"):
+            line = stderr_summary(res)
+            if line:
+                print(f"[{rubric}]   ! {line}", file=sys.stderr)
 
 
 def main():
