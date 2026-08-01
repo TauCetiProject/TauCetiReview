@@ -28,7 +28,7 @@ strand forever. This runs on a schedule and re-drives them:
                  stop. Also used if a PR is evicted past the threshold yet is NOT behind main.
 
 A `keep` label (also hold/wip/human/do-not-close) opts a PR out. Drafts, non-main bases, and PRs
-touching paths outside the author-aware merge policy are skipped. Every mutation is gated on DRY_RUN
+touching paths outside the merge policy are skipped. Every mutation is gated on DRY_RUN
 and bound to the reviewed head, and a real execution failure exits nonzero; benign races (already
 queued, head moved) do not. The merge decision is the SAME decide_from_comments the merge-only path
 uses, so the sweep can never enqueue something the normal gate would refuse.
@@ -298,7 +298,7 @@ def main():
             continue
         try:
             v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
-                         "headRefOid,baseRefName,id,labels,statusCheckRollup,author"])
+                         "headRefOid,baseRefName,id,labels,statusCheckRollup"])
             head = v["headRefOid"]
             if (v.get("baseRefName") or "") != "main":
                 continue   # the sweep only drives PRs targeting main (the merge queue is main's)
@@ -306,9 +306,8 @@ def main():
                                  "--jq", ".[] | {body, updated_at, created_at}"])
             diff = gh(["pr", "diff", str(n), "--repo", REPO]).stdout or ""
             ci_build, bump_guard, scope = status_states(v.get("statusCheckRollup"))
-            pr_author = (v.get("author") or {}).get("login") or ""
             decision = decide_from_comments(comments, head, required, diff, ci_build, bump_guard,
-                                            MERGE_PREFIX, pr_author=pr_author, scope=scope)
+                                            MERGE_PREFIX, scope=scope)
             if not decision["merge"]:
                 continue   # not green at head / not TauCeti-only — the normal gate would not merge it
             cmp = gh_json(["api", f"/repos/{REPO}/compare/main...{head}"])
