@@ -51,8 +51,6 @@ jobs:
         run: |
           HEAD_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
-          PR_AUTHOR=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json author -q '.author.login // ""')
-          echo "PR_AUTHOR=$PR_AUTHOR" >> "$GITHUB_ENV"
           # Provenance for the review comments and meta block: the PR base tip, the merge base
           # (the actual left side of the three-dot diff below), and the rubrics+engine commit.
           BASE_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid -q .baseRefOid)
@@ -67,7 +65,7 @@ jobs:
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="build") | .state] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
           # bump-guard's conclusion for this head: required green before a PR that changes a
-          # Lake pin (lake-manifest.json / lean-toolchain / the bot-only lakefile rev) may
+          # Lake pin (lake-manifest.json / lean-toolchain) may
           # auto-merge (see runner/review.py).
           BUMP_GUARD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="bump-guard") | .state] | first // ""')
@@ -194,7 +192,6 @@ jobs:
           fi
           python3 runner/review.py \
             --repo TauCetiProject/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
-            --pr-author "$PR_AUTHOR" \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
