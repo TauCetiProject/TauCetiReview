@@ -7,7 +7,9 @@ our older duplicates — and only ever mutates comments we authored. Dependency-
 `python tests/test_post.py` or under pytest.
 """
 import sys
+import json
 import pathlib
+import tempfile
 import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
@@ -145,6 +147,169 @@ def test_find_returns_empty_on_api_error():
         assert post.find_scoreboard_comments("o/r", 1) == []
     finally:
         post.subprocess.run = orig
+
+
+def test_find_review_roots_extracts_identity_head_and_run():
+    body = ('<!--tauceti-rubric:api-design-->\ntext\n'
+            '<!--tauceti-meta:v1 {"head_sha":"abc","runs":[{"id":"r-1"}]}-->')
+    comment = {"id": 7, "node_id": "N7", "path": "x.lean", "body": body,
+               "commit_id": "old", "in_reply_to_id": None,
+               "user": {"login": "bot"}, "created_at": "2026-08-04T00:00:00Z"}
+    orig = post.subprocess.run
+    post.subprocess.run = _fake_run(json.dumps(comment))
+    try:
+        roots = post.find_review_roots("o/r", 1)
+    finally:
+        post.subprocess.run = orig
+    assert roots == [{"id": 7, "node_id": "N7", "path": "x.lean", "login": "bot",
+                      "rubric": "api-design", "head_sha": "abc", "run_ids": ["r-1"],
+                      "created_at": "2026-08-04T00:00:00Z"}], roots
+
+
+# --- transactional publication -----------------------------------------------------------------
+
+def _post_fixture(*, thread_id=None, pending="r-new"):
+    root = pathlib.Path(tempfile.mkdtemp(prefix="tauceti-post-"))
+    body = root / "thread.md"; body.write_text("thread")
+    scoreboard = root / "scoreboard.md"; scoreboard.write_text("scoreboard")
+    cf = {"rubric": "api-design", "run_id": "r-new",
+          "pending_thread_run_id": pending,
+          "thread": ({"comment_id": thread_id, "path": "code/x.lean"}
+                     if thread_id else None)}
+    ledger_path = root / "ledger.json"
+    ledger_path.write_text(json.dumps({"days": {}, "prs": {"1": {
+        "rounds": [], "scoreboard_comment_id": 500,
+        "pending_publication_head_sha": "h" * 40,
+        "state": {"api-design": cf}}}}))
+    plan = {"head_sha": "h" * 40, "round": 1, "scoreboard_comment_id": 500,
+            "scoreboard_body": str(scoreboard), "threads": [{
+                "rubric": "api-design", "action": "upsert", "required": True,
+                "run_id": "r-new", "body": str(body), "comment_id": thread_id,
+                "path": "code/x.lean"}]}
+    return ledger_path, plan
+
+
+def _execute(fake_gh, roots, *, thread_id=None):
+    ledger_path, plan = _post_fixture(thread_id=thread_id)
+    saved = post.gh_api, post.find_review_roots, post.current_login
+    post.gh_api = fake_gh
+    post.find_review_roots = lambda repo, pr: roots
+    post.current_login = lambda: "bot"
+    try:
+        status = post.execute_post("o/r", 1, plan, ledger_path)
+    finally:
+        post.gh_api, post.find_review_roots, post.current_login = saved
+    return status, json.loads(ledger_path.read_text())
+
+
+class TransactionGH:
+    def __init__(self, *, root_ok=True, scoreboard_ok=True):
+        self.root_ok = root_ok
+        self.scoreboard_ok = scoreboard_ok
+        self.calls = []
+
+    def __call__(self, method, endpoint, fields=None, body_file=None, failures=None, action=""):
+        self.calls.append((method, endpoint))
+        is_scoreboard = "/issues/comments/" in endpoint
+        if is_scoreboard:
+            if self.scoreboard_ok:
+                return {}
+        elif self.root_ok:
+            return ({"id": 700, "node_id": "N700"} if method == "POST" else {})
+        if failures is not None:
+            failures.append({"action": action, "error": "injected"})
+        return None
+
+
+def test_required_root_precedes_scoreboard_and_commits_markers():
+    fake = TransactionGH()
+    status, ledger = _execute(fake, [])
+    assert status == 0
+    assert fake.calls == [
+        ("POST", "/repos/o/r/pulls/1/comments"),
+        ("PATCH", "/repos/o/r/issues/comments/500")], fake.calls
+    pr = ledger["prs"]["1"]
+    assert pr["published_head_sha"] == "h" * 40
+    assert "pending_publication_head_sha" not in pr
+    cf = pr["state"]["api-design"]
+    assert cf["thread"]["comment_id"] == 700
+    assert "pending_thread_run_id" not in cf
+
+
+def test_required_failure_withholds_scoreboard_and_keeps_pending():
+    fake = TransactionGH(root_ok=False)
+    status, ledger = _execute(fake, [])
+    assert status == 1
+    assert all("/issues/comments/" not in endpoint for _, endpoint in fake.calls), fake.calls
+    pr = ledger["prs"]["1"]
+    assert pr["pending_publication_head_sha"] == "h" * 40
+    assert pr["state"]["api-design"]["pending_thread_run_id"] == "r-new"
+
+
+def test_scoreboard_failure_saves_root_but_keeps_transaction_pending():
+    fake = TransactionGH(scoreboard_ok=False)
+    status, ledger = _execute(fake, [])
+    assert status == 1
+    cf = ledger["prs"]["1"]["state"]["api-design"]
+    assert cf["thread"]["comment_id"] == 700, "confirmed root id must survive the failure"
+    assert cf["pending_thread_run_id"] == "r-new"
+    assert ledger["prs"]["1"]["pending_publication_head_sha"] == "h" * 40
+
+
+def test_crash_retry_adopts_exact_remote_root_without_duplicate():
+    fake = TransactionGH()
+    roots = [{"id": 701, "node_id": "N701", "path": "code/x.lean", "login": "bot",
+              "rubric": "api-design", "head_sha": "h" * 40, "run_ids": ["r-new"],
+              "created_at": "2026-08-04T00:00:00Z"}]
+    status, ledger = _execute(fake, roots)
+    assert status == 0
+    assert fake.calls == [("PATCH", "/repos/o/r/issues/comments/500")], fake.calls
+    assert ledger["prs"]["1"]["state"]["api-design"]["thread"]["comment_id"] == 701
+
+
+def test_foreign_known_root_is_not_edited():
+    fake = TransactionGH()
+    roots = [{"id": 41, "node_id": "N41", "path": "code/x.lean", "login": "other-bot",
+              "rubric": "api-design", "head_sha": "g" * 40, "run_ids": ["r-old"],
+              "created_at": "2026-08-03T00:00:00Z"}]
+    status, ledger = _execute(fake, roots, thread_id=41)
+    assert status == 0
+    assert ("PATCH", "/repos/o/r/pulls/comments/41") not in fake.calls
+    assert fake.calls[0] == ("POST", "/repos/o/r/pulls/1/comments"), fake.calls
+    assert ledger["prs"]["1"]["state"]["api-design"]["thread"]["comment_id"] == 700
+
+
+def test_optional_close_failure_does_not_roll_back_publication():
+    ledger_path, plan = _post_fixture()
+    close_body = ledger_path.parent / "close.md"; close_body.write_text("close")
+    plan["threads"].append({"rubric": "reuse", "action": "close", "required": False,
+                            "body": str(close_body), "comment_id": 80})
+    ledger = json.loads(ledger_path.read_text())
+    ledger["prs"]["1"]["state"]["reuse"] = {"thread": {"comment_id": 80}}
+    ledger_path.write_text(json.dumps(ledger))
+    roots = [{"id": 80, "node_id": "N80", "path": "x.lean", "login": "bot",
+              "rubric": "reuse", "head_sha": "g" * 40, "run_ids": ["r-old"],
+              "created_at": "2026-08-03T00:00:00Z"}]
+
+    class OptionalFailureGH(TransactionGH):
+        def __call__(self, method, endpoint, fields=None, body_file=None, failures=None, action=""):
+            if endpoint.endswith("/pulls/comments/80"):
+                self.calls.append((method, endpoint))
+                failures.append({"action": action, "error": "injected optional failure"})
+                return None
+            return super().__call__(method, endpoint, fields, body_file, failures, action)
+
+    fake = OptionalFailureGH()
+    saved = post.gh_api, post.find_review_roots, post.current_login
+    post.gh_api = fake
+    post.find_review_roots = lambda repo, pr: roots
+    post.current_login = lambda: "bot"
+    try:
+        status = post.execute_post("o/r", 1, plan, ledger_path)
+    finally:
+        post.gh_api, post.find_review_roots, post.current_login = saved
+    assert status == 0
+    assert fake.calls[-1] == ("PATCH", "/repos/o/r/pulls/comments/80"), fake.calls
 
 
 if __name__ == "__main__":

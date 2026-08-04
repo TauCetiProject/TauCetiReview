@@ -128,6 +128,74 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
         print(f"WARNING: archive round write failed: {e}", file=sys.stderr)
 
 
+def thread_action_rubrics(candidates, ran, state_map, head):
+    """Rubrics whose thread state must be reconciled by this invocation.
+
+    `ran` preserves the normal update/close behaviour for results produced now.  The other two
+    predicates are the crash-recovery path: an adverse case file without a root is legacy or was
+    interrupted before its first post, while `pending_thread_run_id` is the write-ahead marker set
+    before every new adverse result.  Infrastructure errors remain excluded by
+    posts_review_thread().  Candidate order keeps post plans deterministic.
+    """
+    ran = set(ran)
+    out = []
+    for rubric in candidates:
+        cf = state_map.get(rubric) or {}
+        adverse = posts_review_thread(state_of(cf, head))
+        missing_root = not (cf.get("thread") or {}).get("comment_id")
+        if rubric in ran or (adverse and (missing_root or cf.get("pending_thread_run_id"))):
+            out.append(rubric)
+    return out
+
+
+def render_thread_plan(candidates, ran, state_map, head, prov, diff_full, threads_dir,
+                       merge_path_prefix, had_contest=None, repairs_only=False):
+    """Render the thread half of a trusted post plan.
+
+    Required adverse upserts are the review-publication transaction: the final scoreboard may not
+    land until they do.  Close notes and direct contest answers remain best-effort UI actions.
+    `repairs_only` is used by the daily-cap path, where no model may run but persisted findings must
+    still be made contestable.
+    """
+    had_contest = had_contest or {}
+    paths_sorted = sorted(changed_paths(diff_full))
+    fallback_path = next((p for p in paths_sorted if p.startswith(merge_path_prefix)),
+                         paths_sorted[0] if paths_sorted else "")
+    threads_dir.mkdir(parents=True, exist_ok=True)
+    actions = []
+    for rubric in thread_action_rubrics(candidates, [] if repairs_only else ran,
+                                        state_map, head):
+        cf = state_map.get(rubric) or {}
+        s = state_of(cf, head)
+        thread = cf.get("thread")
+        bpath = threads_dir / f"{rubric}.md"
+        if posts_review_thread(s):
+            bpath.write_text(render_thread(cf, prov=prov))
+            actions.append(
+                {"rubric": rubric, "action": "upsert", "required": True,
+                 "run_id": cf.get("run_id"), "body": str(bpath),
+                 "comment_id": (thread or {}).get("comment_id"),
+                 "path": pick_anchor(cf, fallback_path, set(paths_sorted))})
+        elif not repairs_only and s in ("green", "stale") and thread:
+            bpath.write_text(f"<!--tauceti-rubric:{rubric}-->\n### ✅ {rubric} — now passing on "
+                             f"`{head[:7]}`.\n\n"
+                             + meta_block("thread", rubric=rubric, **thread_meta(cf, prov)))
+            actions.append(
+                {"rubric": rubric, "action": "close", "required": False,
+                 "body": str(bpath), "comment_id": thread.get("comment_id"),
+                 "node_id": thread.get("node_id")})
+        if (not repairs_only and rubric in had_contest
+                and (thread or {}).get("comment_id") and s != "error"):
+            rpath = threads_dir / f"{rubric}.reply.md"
+            rpath.write_text(render_contest_reply(cf, head, prov,
+                                                  answered_id=had_contest[rubric]))
+            actions.append(
+                {"rubric": rubric, "action": "reply", "required": False,
+                 "body": str(rpath), "in_reply_to": thread["comment_id"],
+                 "reply_dedupe": had_contest[rubric]})
+    return actions
+
+
 
 @dataclass
 class RunContext:
@@ -152,6 +220,7 @@ class RunContext:
     day: str
     ledger: Ledger
     spent_today: float
+    pr_state: dict = field(default_factory=dict)  # PR-level publication write-ahead marker
     codex_model_explicit: bool = False   # --codex-model was passed → honor the pin, skip auto-fallback
     ran: list = field(default_factory=list)
     run_results: list = field(default_factory=list)
@@ -304,6 +373,10 @@ def run_rubric(ctx, rubric):
         except Exception as e:
             print(f"WARNING: archive write failed for {rubric}: {e}", file=sys.stderr)
     cf = update_case_file(state_map, rubric, res, head)
+    # PR-level write-ahead marker for the final scoreboard. The case-file marker protects adverse
+    # thread publication; this also covers an all-green run whose scoreboard POST/PATCH is
+    # interrupted. The trusted poster clears it only after the current-head scoreboard lands.
+    ctx.pr_state["pending_publication_head_sha"] = head
     if is_reply and reply_text:
         cf["author_replies"].append(
             {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -604,7 +677,8 @@ def main():
         # Budget signal, reusing the same computation as the post-review path (no round is added
         # here, so this reflects the ledger's existing full-round count).
         if a.budget_file:
-            prior_full = sum(1 for r in pr_state.get("rounds", []) if r.get("mode") != "reply")
+            prior_full = sum(1 for r in pr_state.get("rounds", [])
+                             if r.get("mode") not in ("reply", "repair"))
             full_rounds = prior_full
             budget_spent = full_rounds >= a.review_budget and not all_green
             pathlib.Path(a.budget_file).write_text(json.dumps(
@@ -615,9 +689,9 @@ def main():
         return
 
     # Per-PR daily round cap: bound how often one PR can spend (rapid commits or repeated
-    # /review); the global daily budget still applies on top. Checked after init, and a capped
-    # run still writes a scoreboard + scoreboard-only post plan, so the "running now" header
-    # the init step just posted is replaced by an honest "paused" one instead of sticking.
+    # /review); the global daily budget still applies on top. Checked after init. Persisted adverse
+    # results are still published here without a model call: a spend cap must never strand a
+    # scoreboard-only blocker that the author cannot contest.
     todays_rounds = sum(1 for r in pr_state["rounds"] if (r.get("ts") or "").startswith(today()))
     if todays_rounds >= a.max_rounds_per_day:
         outdir = store / "reviews" / str(a.pr) / str(round_num)
@@ -628,11 +702,16 @@ def main():
         sb_path = pathlib.Path(a.scoreboard_file) if a.scoreboard_file else (outdir / "scoreboard.md")
         sb_path.write_text(sb)
         (outdir / "scoreboard.md").write_text(sb)
+        diff_full = pathlib.Path(a.diff_file).read_text()
+        threads_dir = pathlib.Path(a.threads_dir) if a.threads_dir else (outdir / "threads")
+        thread_actions = render_thread_plan(
+            candidates, [], state_map, head, prov, diff_full, threads_dir,
+            a.merge_path_prefix, repairs_only=True)
         if a.post_plan_file:
             pathlib.Path(a.post_plan_file).write_text(json.dumps(
                 {"head_sha": head, "round": round_num,
                  "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
-                 "scoreboard_body": str(sb_path), "threads": []}, indent=2))
+                 "scoreboard_body": str(sb_path), "threads": thread_actions}, indent=2))
         if a.merge_decision_file:
             pathlib.Path(a.merge_decision_file).write_text(json.dumps(
                 {"merge": False, "reason": "per-PR daily round cap reached", "head_sha": head}))
@@ -734,7 +813,8 @@ def main():
         dispatchable.add(CODEX_FALLBACK_MODEL)
     require_priced(dispatchable)
     stopped, halted = None, None
-    ctx = RunContext(a=a, state_map=state_map, reply_text=reply_text, base_context=base_context,
+    ctx = RunContext(a=a, state_map=state_map, pr_state=pr_state,
+                     reply_text=reply_text, base_context=base_context,
                      head=head, providers=providers, runners=runners, keys=keys,
                      subscription=subscription, rubrics_version=rubrics_version, round_num=round_num,
                      prov=prov, diff_full=diff_full, outdir=outdir, day=day, ledger=led,
@@ -783,11 +863,16 @@ def main():
     all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
     # A commit round that re-ran ONLY contested-but-clean rubrics (no blocker, no Phase-2 sweep) is a
     # reply round, not a full review pass: an author's back-and-forth must not burn the review budget
-    # (the engine's auto-close signal) nor the worker's review-round budget. `full_rounds` (mode !=
-    # reply, including this one) goes into the scoreboard meta so the worker can exclude reply rounds.
-    effective_mode = "reply" if (a.mode == "commit" and ran and set(ran) <= contest_queued) else a.mode
-    prior_full = sum(1 for r in pr_state.get("rounds", []) if r.get("mode") != "reply")
-    full_rounds = prior_full + (0 if effective_mode == "reply" else 1)
+    # (the engine's auto-close signal) nor the worker's review-round budget. `full_rounds` excludes
+    # reply and repair runs so neither author back-and-forth nor model-free retries consume it.
+    publication_repair = (not ran and (
+        pr_state.get("pending_publication_head_sha") == head
+        or bool(thread_action_rubrics(candidates, [], state_map, head))))
+    effective_mode = ("reply" if (a.mode == "commit" and ran and set(ran) <= contest_queued)
+                      else "repair" if publication_repair else a.mode)
+    prior_full = sum(1 for r in pr_state.get("rounds", [])
+                     if r.get("mode") not in ("reply", "repair"))
+    full_rounds = prior_full + (0 if effective_mode in ("reply", "repair") else 1)
     prov["mode"] = effective_mode
     prov["full_rounds"] = full_rounds
     if stopped:
@@ -827,49 +912,13 @@ def main():
         if not a.dry_run:
             led.persist()
         return
-    paths_sorted = sorted(changed_paths(diff_full))
-    fallback_path = next((p for p in paths_sorted if p.startswith(a.merge_path_prefix)),
-                         paths_sorted[0] if paths_sorted else "")
     threads_dir = pathlib.Path(a.threads_dir) if a.threads_dir else (outdir / "threads")
-    threads_dir.mkdir(parents=True, exist_ok=True)
     plan = {"head_sha": head, "round": round_num,
-                 "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
-            "scoreboard_body": str(sb_path), "threads": []}
-    # Only act on threads for rubrics that ran this invocation; others are unchanged.
-    for rubric in ran:
-        cf = state_map.get(rubric) or {}
-        s = state_of(cf, head)
-        thread = cf.get("thread")
-        bpath = threads_dir / f"{rubric}.md"
-        if posts_review_thread(s):
-            bpath.write_text(render_thread(cf, prov=prov))
-            plan["threads"].append(
-                {"rubric": rubric, "action": "upsert", "body": str(bpath),
-                 "comment_id": (thread or {}).get("comment_id"),
-                 "path": pick_anchor(cf, fallback_path, set(paths_sorted))})
-        # NOTE: `error` (no parseable verdict — an infra failure, not a finding) deliberately falls
-        # through here: it stays blocking and shows on the scoreboard, but spawns NO review thread, so a
-        # reviewer-backend outage can't flood the PR with "no parseable verdict" comments. See
-        # posts_review_thread. An existing thread from a prior genuine finding is left untouched.
-        elif s in ("green", "stale") and thread:
-            bpath.write_text(f"<!--tauceti-rubric:{rubric}-->\n### ✅ {rubric} — now passing on "
-                             f"`{head[:7]}`.\n\n"
-                             + meta_block("thread", rubric=rubric, **thread_meta(cf, prov)))
-            plan["threads"].append(
-                {"rubric": rubric, "action": "close", "body": str(bpath),
-                 "comment_id": thread.get("comment_id"), "node_id": thread.get("node_id")})
-        # Whenever this run consumed a fresh author contest — no matter why the rubric was queued —
-        # post a DIRECT reply in its thread so the author sees an answer, not a silently-edited root.
-        # The root id already exists (a contest implies a prior thread). Deduped post-side by marker.
-        # Skip on `error`: an infra failure produced no verdict, so a "the finding stands" reply would be
-        # misleading and is the same junk-comment class as the suppressed error thread — stay silent and
-        # let the next clean round answer the contest.
-        if rubric in had_contest and (thread or {}).get("comment_id") and s != "error":
-            rpath = threads_dir / f"{rubric}.reply.md"
-            rpath.write_text(render_contest_reply(cf, head, prov, answered_id=had_contest[rubric]))
-            plan["threads"].append(
-                {"rubric": rubric, "action": "reply", "body": str(rpath),
-                 "in_reply_to": thread["comment_id"], "reply_dedupe": had_contest[rubric]})
+            "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
+            "scoreboard_body": str(sb_path),
+            "threads": render_thread_plan(
+                candidates, ran, state_map, head, prov, diff_full, threads_dir,
+                a.merge_path_prefix, had_contest=had_contest)}
     if a.post_plan_file:
         pathlib.Path(a.post_plan_file).write_text(json.dumps(plan, indent=2))
 
@@ -901,6 +950,14 @@ def main():
              "head_sha": head}))
         print(f"[budget] full_rounds {full_rounds}/{a.review_budget} (round {round_num}), "
               f"all_green={all_green}, stopped={bool(stopped)}, spent={budget_spent}")
+
+    # A process-restart repair publishes already-persisted findings and the scoreboard but records
+    # no review round: it called no model, spent nothing, and must not consume either review cap.
+    if publication_repair:
+        print(f"\nPUBLICATION REPAIR (ran 0; cost $0.00) — post plan written from durable state.")
+        if not a.dry_run:
+            led.persist()
+        return
 
     round_cost = round(spent_today - spent_start, 6)
     pr_state["rounds"].append(

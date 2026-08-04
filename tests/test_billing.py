@@ -61,6 +61,11 @@ def _workspace(rubrics):
     return d, rd, store
 
 
+def _seed(store, state, rounds=None, **pr_fields):
+    pr = {"rounds": rounds or [], "state": state, "scoreboard_comment_id": 500, **pr_fields}
+    (store / "ledger.json").write_text(json.dumps({"days": {}, "prs": {"1": pr}}, indent=2))
+
+
 def _run(store, rd, diff, *, mode, rubrics, daily_budget=5.0, max_call_cost=1.0, extra=None):
     argv = ["review", "--pr", "1", "--repo", "Owner/Repo", "--rubrics", ",".join(rubrics),
             "--rubrics-dir", str(rd), "--tool-cwd", str(store.parent / "code"),
@@ -123,8 +128,85 @@ def main():
     check("spend = 1*COST", round(led["days"][today()], 6), round(COST, 6))
     check("correctness blocking", pr["rounds"][0]["states"]["correctness"], "blocking_block")
 
-    # --- C: manual, daily budget allows only one call (reservation) → second is deferred ---
-    print("C. daily-budget reservation stops the second rubric")
+    # --- C: #1943 shape: a blocker persisted before the crash, another rubric resumes. The final
+    # plan must include BOTH the rubric that ran and the carried blocker whose thread never landed.
+    print("C. recovered round publishes a carried blocker that did not re-run")
+    _VERDICTS.clear(); _VERDICTS.update(reuse="approve")
+    d, rd, store = _workspace(["correctness", "reuse"])
+    _seed(store, {"correctness": {
+        "rubric": "correctness", "provider": "claude", "model": "m",
+        "verdict": "request_changes", "summary": "persisted before SIGTERM",
+        "findings": [{"file": "code/x.lean", "issue": "x"}],
+        "reviewed_sha": HEAD, "run_id": "r-crashed", "thread": None,
+        "author_replies": []}})
+    plan_path, threads_dir = d / "plan.json", d / "threads"
+    led = _run(store, rd, d / "diff.txt", mode="commit",
+               rubrics=["correctness", "reuse"],
+               extra=["--post-plan-file", str(plan_path), "--threads-dir", str(threads_dir)])
+    plan = json.loads(plan_path.read_text())
+    check("only the unfinished rubric ran", led["prs"]["1"]["rounds"][0]["ran"], ["reuse"])
+    check("carried blocker is a required upsert",
+          [(t["rubric"], t["action"], t["required"]) for t in plan["threads"]],
+          [("correctness", "upsert", True)])
+
+    # --- D: a pending update to an existing root is a model-free publication repair. It produces a
+    # required PATCH plan but consumes neither a model call nor a review round.
+    print("D. pending thread update repairs without a review round")
+    _VERDICTS.clear()
+    d, rd, store = _workspace(["correctness"])
+    _seed(store, {"correctness": {
+        "rubric": "correctness", "provider": "claude", "model": "m",
+        "verdict": "request_changes", "summary": "new finding body",
+        "findings": [{"file": "code/x.lean", "issue": "x"}],
+        "reviewed_sha": HEAD, "run_id": "r-new", "pending_thread_run_id": "r-new",
+        "thread": {"comment_id": 41, "path": "code/x.lean"}, "author_replies": []}},
+        rounds=[{"round": 1, "mode": "commit", "ts": "2026-01-01T00:00:00Z", "cost": 1}])
+    plan_path = d / "plan.json"
+    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
+               extra=["--post-plan-file", str(plan_path)])
+    plan = json.loads(plan_path.read_text())
+    check("repair records no new round", len(led["prs"]["1"]["rounds"]), 1)
+    check("repair plans current run", (plan["threads"][0]["run_id"],
+                                        plan["threads"][0]["comment_id"]), ("r-new", 41))
+
+    # --- E: the daily cap prevents spend, not publication repair.
+    print("E. daily cap still publishes persisted blockers")
+    d, rd, store = _workspace(["correctness"])
+    _seed(store, {"correctness": {
+        "rubric": "correctness", "provider": "claude", "model": "m",
+        "verdict": "block", "summary": "must be contestable", "findings": [],
+        "reviewed_sha": HEAD, "run_id": "r-cap", "thread": None,
+        "author_replies": []}},
+        rounds=[{"round": 1, "mode": "commit", "ts": today() + "T00:00:00Z", "cost": 1}])
+    plan_path = d / "plan.json"
+    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
+               extra=["--max-rounds-per-day", "1", "--post-plan-file", str(plan_path)])
+    plan = json.loads(plan_path.read_text())
+    check("cap adds no round", len(led["prs"]["1"]["rounds"]), 1)
+    check("cap plan carries blocker", [t["rubric"] for t in plan["threads"]], ["correctness"])
+
+    # --- F: all-green scoreboard recovery uses the PR marker and errors never create threads.
+    print("F. scoreboard marker repairs green state; errors stay threadless")
+    d, rd, store = _workspace(["correctness"])
+    _seed(store, {"correctness": {
+        "rubric": "correctness", "provider": "claude", "model": "m",
+        "verdict": "approve", "summary": "green", "findings": [],
+        "reviewed_sha": HEAD, "approved_sha": HEAD, "run_id": "r-green",
+        "thread": None, "author_replies": []}},
+        rounds=[{"round": 1, "mode": "commit", "ts": "2026-01-01T00:00:00Z", "cost": 1}],
+        pending_publication_head_sha=HEAD)
+    plan_path = d / "plan.json"
+    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
+               extra=["--post-plan-file", str(plan_path)])
+    check("green scoreboard retry adds no round", len(led["prs"]["1"]["rounds"]), 1)
+    error_actions = review.thread_action_rubrics(
+        ["correctness"], [], {"correctness": {
+            "verdict": "error", "reviewed_sha": HEAD,
+            "pending_thread_run_id": "r-error", "thread": None}}, HEAD)
+    check("infra error excluded from thread repair", error_actions, [])
+
+    # --- G: manual, daily budget allows only one call (reservation) → second is deferred ---
+    print("G. daily-budget reservation stops the second rubric")
     _VERDICTS.clear(); _VERDICTS.update(correctness="approve", reuse="approve")
     d, rd, store = _workspace(["correctness", "reuse"])
     led = _run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness", "reuse"],
