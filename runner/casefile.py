@@ -21,6 +21,20 @@ def update_case_file(state_map, rubric, res, head_sha):
               cost_usd=res.get("cost_usd"), cost_estimated=res.get("cost_estimated"))
     if verdict == "approve":
         cf["approved_sha"] = head_sha
+        # A green result has no adverse finding that must be published before the scoreboard.
+        # Drop a pending marker left by an earlier blocking result; closing an existing thread is
+        # useful UI cleanup, but it is deliberately not part of the review-publication commit.
+        cf.pop("pending_thread_run_id", None)
+    elif verdict in ("request_changes", "block"):
+        # The model result is persisted before the trusted posting phase runs.  This marker is the
+        # write-ahead record that lets a later invocation finish publishing the finding if the
+        # process dies anywhere between this ledger write and the GitHub review-comment POST/PATCH.
+        # post.py clears it only after the matching thread body has definitely landed.
+        cf["pending_thread_run_id"] = res.get("run_id")
+    else:
+        # An infrastructure error blocks the scoreboard but is not a contestable finding and must
+        # never produce a review thread.
+        cf.pop("pending_thread_run_id", None)
     cf.setdefault("thread", None)
     cf.setdefault("author_replies", [])
     return cf
