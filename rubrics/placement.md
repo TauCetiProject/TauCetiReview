@@ -12,13 +12,16 @@ imports whose wrongness is evident from the diff or the dependency topic.
   there.
 - Reject generic placement for declarations whose hypotheses or names are roadmap-specific:
   do not let roadmap-specific lemmas masquerade as reusable by living in a generic file.
-- New files join an existing topic subdirectory when one fits. Two files sharing a
-  leading CamelCase component should be a directory: a PR whose new file would put both
-  `Foo.lean` and `FooBar.lean` (or two `Foo*.lean` files) in one directory moves them in
-  the same PR, creating `Foo/` with `Foo.lean` as `Foo/Basic.lean` (`Foo/Defs.lean` when
+- New files join an existing topic subdirectory when one fits. When two files share a
+  leading CamelCase component and that component names the common subject they organize
+  around, they should be a directory: a PR whose new file would put both `Foo.lean` and
+  `FooBar.lean` (or two `Foo*.lean` files) in one directory moves them in the same PR,
+  creating `Foo/` with `Foo.lean` as `Foo/Basic.lean` (`Foo/Defs.lean` when
   definitions-only) and each `FooBar.lean` as `Foo/Bar.lean` (mechanical `git mv` plus
   imports; no declaration renames), the new file placed there. `request_changes` when a
-  PR instead leaves flat prefix-sharing siblings behind.
+  PR instead leaves those siblings flat. When the shared component does not name their
+  common subject (a mathematician's name across unrelated subjects, or a generic
+  adjective), raise no finding from the shared prefix.
 
 ## Imports
 
