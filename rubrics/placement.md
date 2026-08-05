@@ -22,6 +22,9 @@ imports whose wrongness is evident from the diff or the dependency topic.
   PR instead leaves those siblings flat. When the shared component does not name their
   common subject (a mathematician's name across unrelated subjects, or a generic
   adjective), raise no finding from the shared prefix.
+- A relocation updates every in-repository import and deletes the old module path in the same PR.
+  Require deletion of forwarding import modules and `deprecated_module` shims; preserving an old
+  path for external users is not part of placement.
 
 ## Imports
 
@@ -32,6 +35,7 @@ imports whose wrongness is evident from the diff or the dependency topic.
 ## Verdict
 
 - `request_changes` for a declaration in the wrong home, material that belongs in an earlier
-  file, roadmap-specific material hidden in a generic file, or an evidently wrong import.
+  file, roadmap-specific material hidden in a generic file, a compatibility-only module, or an
+  evidently wrong import.
 - `approve` when each declaration is in its natural place and no import is unused or
   unnecessarily broad.

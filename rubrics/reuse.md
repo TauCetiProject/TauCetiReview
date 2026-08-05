@@ -26,6 +26,9 @@ Run each of these searches. Choose relevant search terms and grep (under
 - Within the diff itself, look for private lemmas restating public ones up to defeq,
   composite lemmas that their component `@[simp]` lemmas already prove, and `∧`-bundles of
   existing lemmas.
+- Treat compatibility-only aliases, wrapper declarations, forwarding import modules, deprecated
+  shims, and duplicate theorem names as unnecessary duplication. The canonical replacement is
+  the located existing API; require the compatibility artifact's deletion.
 
 ## Rejecting it
 

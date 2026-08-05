@@ -28,11 +28,21 @@ plausible-looking names, or apparent competence. A wrong abstraction or a vacuou
 reads just as smoothly as a correct one. Verify the substance yourself (grep, read the actual
 definitions, check the math) rather than trusting that it looks right.
 
+## Compatibility policy
+
+Tau Ceti deliberately provides no backwards-compatibility layer. When an API or module is moved,
+renamed, replaced, or deleted, all in-repository uses move to the canonical replacement and the
+old surface disappears in the same PR. Never request a compatibility alias, wrapper declaration,
+forwarding import module, deprecated shim (including `deprecated_module`), or duplicate theorem
+name. The source compatibility of external users pinned to an older revision is not a review
+requirement and does not qualify as a user-visible risk here. Still report damage to the canonical
+post-PR API from your angle; this policy concerns only artifacts that preserve an obsolete surface.
+
 ## What to report
 
 Every finding must identify a user-visible risk: wrong mathematics, wrong scope, duplicated
-API, a misleading interface, misplaced material, an unstable proof, broken compatibility, or
-missing credit. Do not file taste preferences.
+API, a misleading interface, misplaced material, an unstable proof, or missing credit. Do not
+file taste preferences.
 
 Do not infer intent from green CI: a green PR can still be wrong, redundant, misplaced, or
 uncredited. But do not re-report what CI already enforces (the build, the axiom allowlist,
