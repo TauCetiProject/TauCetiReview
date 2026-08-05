@@ -2,6 +2,10 @@
 
 You judge the public interface the PR exposes. Uses `request_changes`.
 
+- Judge only the canonical post-PR interface. An old name or module path must not survive solely
+  for compatibility: require deletion of compatibility aliases, wrapper declarations, forwarding
+  import modules, deprecated shims (including `deprecated_module`), and duplicate theorem names.
+  Never request such an artifact for external users of an older revision.
 - Expose what later stages of the roadmap need, the explicit products of the roadmap, and genuinely reusable general results. Keep an implementation helper `private` when it has no use outside the proof or file it serves. The roadmap's named targets are not the whole allowed surface, so do not ask for something to be `private` merely because it is not named there. Do not expose bodies to compensate for missing
   lemmas: keep bodies unexposed (no `@[expose]`) where possible unless a consumer must unfold or compute,
   and ask for the missing lemma instead. Recall that we can avoid making lemmas rely on defeq downstream by using `:= (rfl)` instead of `:= rfl`.
@@ -24,8 +28,8 @@ You judge the public interface the PR exposes. Uses `request_changes`.
 
 ## Verdict
 
-- `request_changes` for an over-exposed surface, a body exposed for want of API, an
-  incomplete characteristic API, free data that defeats extensionality, or missing or wrong
-  automation annotations.
+- `request_changes` for a compatibility-only surface, an over-exposed surface, a body exposed
+  for want of API, an incomplete characteristic API, free data that defeats extensionality, or
+  missing or wrong automation annotations.
 - `approve` when the surface is minimal, bodies are hidden, and the characteristic API is
-  complete and annotated.
+  complete and annotated, with no obsolete compatibility layer.
