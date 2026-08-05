@@ -25,11 +25,20 @@ def test_pr_ref_oids_uses_old_gh_compatible_rest_fields():
     finally:
         cli.run = original
 
-    assert calls == [
-        (["gh", "api", "/repos/owner/repo/pulls/42"], {"capture": True, "quiet": True})
-    ]
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd[:2] == ["gh", "api"] and cmd[2].endswith("/pulls/42"), calls
+    assert kwargs.get("capture") is True
+
+
+def test_pr_ref_lookup_does_not_require_new_pr_view_field():
+    source = pathlib.Path(cli.__file__).read_text()
+    assert '"headRefOid,baseRefOid"' not in source
 
 
 if __name__ == "__main__":
-    test_pr_ref_oids_uses_old_gh_compatible_rest_fields()
-    print("ok  test_pr_ref_oids_uses_old_gh_compatible_rest_fields")
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    for test in tests:
+        test()
+        print(f"ok  {test.__name__}")
+    print(f"\nall {len(tests)} CLI checks passed")

@@ -147,8 +147,9 @@ def pr_ref_oids(repo, pr):
     """Return the PR's head and base tips without requiring newer `gh pr view` JSON fields.
 
     `baseRefOid` was not exposed by `gh pr view --json` until gh 2.63. The REST payload has
-    carried the equivalent head.sha and base.sha fields for much longer, so use it to keep the
-    subscription CLI working with distro-packaged gh releases such as Ubuntu's 2.45.
+    carried head.sha and base.sha — the same values GraphQL exposes as headRefOid and baseRefOid —
+    for much longer, so use it to keep the subscription CLI working with distro-packaged gh
+    releases such as Ubuntu's 2.45.
     """
     r = run(["gh", "api", f"/repos/{repo}/pulls/{pr}"], capture=True, quiet=True)
     data = json.loads(r.stdout)
