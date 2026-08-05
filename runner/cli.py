@@ -143,6 +143,19 @@ def gh_json(repo, pr, fields):
     return json.loads(r.stdout)
 
 
+def pr_ref_oids(repo, pr):
+    """Return the PR's head and base tips without requiring newer `gh pr view` JSON fields.
+
+    `baseRefOid` was not exposed by `gh pr view --json` until gh 2.63. The REST payload has
+    carried head.sha and base.sha — the same values GraphQL exposes as headRefOid and baseRefOid —
+    for much longer, so use it to keep the subscription CLI working with distro-packaged gh
+    releases such as Ubuntu's 2.45.
+    """
+    r = run(["gh", "api", f"/repos/{repo}/pulls/{pr}"], capture=True, quiet=True)
+    data = json.loads(r.stdout)
+    return data["head"]["sha"], data["base"]["sha"]
+
+
 def merge_base_sha(repo, base, head):
     """The merge base of base...head, from the compare API — the actual left side of the diff
     `gh pr diff` produces (baseRefOid is the branch tip, which may have moved on). Best-effort."""
@@ -536,8 +549,7 @@ def main():
 
     # PR head, base, diff, and description (author-provided context, no more trusted than the
     # diff). The base/merge-base SHAs are provenance: they pin exactly which diff was reviewed.
-    refs = gh_json(a.repo, a.pr, "headRefOid,baseRefOid")
-    head, base = refs["headRefOid"], refs.get("baseRefOid", "")
+    head, base = pr_ref_oids(a.repo, a.pr)
     print(f"PR #{a.pr} head: {head[:12]}", file=sys.stderr)
     if a.expect_head and not (head.startswith(a.expect_head) or a.expect_head.startswith(head)):
         die(f"PR #{a.pr} head is {head[:12]}, expected {a.expect_head[:12]}. The push may not have "
