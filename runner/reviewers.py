@@ -2,7 +2,9 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 
-import json, os, pathlib, re, shutil, subprocess, tempfile, time
+import json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
+from contextlib import closing
+from urllib.parse import quote
 
 from pricing import CACHE_READ, DEFAULT_PRICE, OPENROUTER_MODELS, PRICES
 
@@ -69,6 +71,48 @@ def sh(cmd, cwd=None, env=None, stdin_text=None):
                           stdin=(None if stdin_text is not None else subprocess.DEVNULL))
 
 
+def _kiro_auth_db():
+    """The current browser-login database without changing the process environment."""
+    if sys.platform == "darwin":
+        base = pathlib.Path(os.path.expanduser("~/Library/Application Support"))
+    elif os.environ.get("XDG_DATA_HOME"):
+        base = pathlib.Path(os.environ["XDG_DATA_HOME"])
+    else:
+        base = pathlib.Path(os.path.expanduser("~/.local/share"))
+    return base / "kiro-cli" / "data.sqlite3"
+
+
+def _kiro_data_dir(home):
+    home = pathlib.Path(home)
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "kiro-cli"
+    return home / ".local" / "share" / "kiro-cli"
+
+
+def _copy_kiro_auth_db(src, dst):
+    """Snapshot the live SQLite credential store without losing WAL state."""
+    src, dst = pathlib.Path(src), pathlib.Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.unlink(missing_ok=True)
+    try:
+        dst.touch(mode=0o600)
+        with closing(sqlite3.connect("file:" + quote(str(src.resolve())) + "?mode=ro", uri=True)) as source:
+            with closing(sqlite3.connect(dst)) as target:
+                source.backup(target)
+        os.chmod(dst, 0o600)
+    except (OSError, sqlite3.Error):
+        dst.unlink(missing_ok=True)
+        raise
+
+
+def exact_kiro_model(model):
+    """Return a non-Auto Kiro model id or reject the dispatch."""
+    model = (model or "").strip()
+    if not model or model.lower().startswith("auto"):
+        raise ValueError(f"Kiro needs an exact model id, not the Auto router: {model!r}")
+    return model
+
+
 
 def reviewer_env(provider, keys, subscription=False):
     """A minimal, isolated environment for a reviewer subprocess. Returns `(env, home)`; the caller
@@ -113,6 +157,22 @@ def reviewer_env(provider, keys, subscription=False):
                 env["HOME"] = os.path.expanduser("~")  # fallback: keychain/other; less reproducible
         else:
             env["ANTHROPIC_API_KEY"] = keys["anthropic"]
+    elif provider == "kiro":
+        # Kiro stores browser-login state outside KIRO_HOME. Use its native
+        # macOS location there and XDG data on Linux.
+        # Copy only that SQLite store into the throwaway HOME so a review can refresh
+        # its own copy without exposing personal agents/settings. When an API key is
+        # present, keep XDG data empty: Kiro otherwise gives a browser login precedence.
+        env["KIRO_HOME"] = os.path.join(home, ".kiro")
+        if sys.platform != "darwin":
+            env["XDG_DATA_HOME"] = os.path.join(home, ".local", "share")
+        key = (keys.get("kiro", "") or "").strip()
+        if key:
+            env["KIRO_API_KEY"] = key
+        elif subscription:
+            src = _kiro_auth_db()
+            if src.exists():
+                _copy_kiro_auth_db(src, _kiro_data_dir(home) / "data.sqlite3")
     elif provider in OPENROUTER_MODELS:
         # OpenRouter via pi: there is no subscription/OAuth concept — it is always an API
         # key, in both auth modes. The clean HOME carries ONLY this key, so a prompt-injected
@@ -354,6 +414,38 @@ def run_codex(prompt, cwd, model, env):
         out["cost_usd"] = round(((inp - cached) * pin + cached * CACHE_READ.get(model, pin)
                                  + usage.get("output_tokens", 0) * pout) / 1e6, 6)
         out["cost_estimated"] = True
+    return out
+
+
+def run_kiro(prompt, cwd, model, env):
+    """Run one exact Kiro model with read-only filesystem tools.
+
+    The complete review prompt is supplied on stdin, which Kiro documents as
+    headless context and avoids the OS argv limit for large diffs. Kiro 2.x does
+    not expose per-turn token accounting here, so subscription credit use is not
+    converted into fictional USD; the result records the exact model instead.
+    """
+    model = exact_kiro_model(model)
+    cmd = [
+        "kiro-cli",
+        "chat",
+        "--no-interactive",
+        "--trust-tools=read,grep,glob",
+        "--model",
+        model,
+        "--effort",
+        "high",
+        "Follow the complete review instructions and context supplied on standard input.",
+    ]
+    r = sh(cmd, cwd=cwd, env=env, stdin_text=prompt)
+    out = {
+        "returncode": r.returncode,
+        "text": r.stdout,
+        "raw_stderr": r.stderr[-3000:],
+        "session_id": None,
+    }
+    if r.returncode != 0 or not r.stdout.strip():
+        out["raw_stdout"] = r.stdout[-3000:]
     return out
 
 
