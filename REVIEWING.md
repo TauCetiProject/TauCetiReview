@@ -59,7 +59,7 @@ tauceti-review 42 --post                # also post the scoreboard + threads, as
 tauceti-review 42 --rubrics scope,correctness,reuse
 tauceti-review 42 --reviewer claude     # use only Claude even if both are installed
 tauceti-review 42 --reviewer kiro --kiro-model gpt-5.6-sol
-tauceti-review 42 --reviewer kiro --kiro-model claude-opus-4.8
+tauceti-review 42 --reviewer kiro --kiro-model claude-opus-5
 tauceti-review 42 --reviewer deepseek   # use DeepSeek via OpenRouter + the `pi` agent
 tauceti-review 42 --no-mathlib          # skip the Mathlib clone (faster; weaker reuse checks)
 ```
@@ -71,8 +71,8 @@ Add `--post` to publish. Useful flags:
 |---|---|
 | `--post` | post the scoreboard comment + per-rubric review threads to the PR, under your GitHub login |
 | `--rubrics a,b,c` | review only these rubrics (default: all of them) |
-| `--reviewer claude\|codex\|kiro\|sonnet\|deepseek\|minimax\|grok` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). `kiro` is explicit-only and always uses the exact `--kiro-model`. `sonnet` is the `claude` CLI pinned to Sonnet. `deepseek`/`minimax`/`grok` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. All but `claude`/`codex` are explicit-only (never auto-drawn) |
-| `--kiro-model MODEL` | exact Kiro model ID; defaults to `gpt-5.6-sol`. Use `claude-opus-4.8` for Kiro's current Opus |
+| `--reviewer claude\|codex\|kiro\|sonnet\|deepseek\|minimax\|grok` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). Direct `claude` is pinned to exact `claude-opus-5`. `kiro` is explicit-only and always uses the exact `--kiro-model`. `sonnet` is the `claude` CLI pinned to Sonnet. `deepseek`/`minimax`/`grok` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. All but `claude`/`codex` are explicit-only (never auto-drawn) |
+| `--kiro-model MODEL` | exact Kiro model ID; defaults to `gpt-5.6-sol`. Use `claude-opus-5` for Kiro's current Opus |
 | `--mode commit` | review only rubrics not already passing in the local store (default `manual` = all) |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |

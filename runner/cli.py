@@ -408,7 +408,7 @@ def main():
                          "Default: every auto-drawn reviewer you "
                          "have available (claude, codex)")
     ap.add_argument("--kiro-model", default="gpt-5.6-sol",
-                    help="exact Kiro model (default: gpt-5.6-sol; e.g. claude-opus-4.8)")
+                    help="exact Kiro model (default: gpt-5.6-sol; e.g. claude-opus-5)")
     ap.add_argument("--no-mathlib", action="store_true",
                     help="skip fetching the pinned Mathlib source (faster; reuse checks weaker)")
     ap.add_argument("--roadmap-dir", default="",

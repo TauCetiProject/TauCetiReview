@@ -21,7 +21,7 @@ from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL,
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge
-from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
+from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import build_reactivation_block, normalize_finding_path, pick_anchor, update_case_file
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
 
@@ -508,7 +508,8 @@ def main():
     ap.add_argument("--budget-file", default="",
                     help="write the budget signal JSON ({budget_spent, round, all_green, ...}) here, "
                          "for a separate step that reconciles the review-budget-spent label")
-    ap.add_argument("--claude-model", default=CLAUDE_MODEL)
+    ap.add_argument("--claude-model", default=CLAUDE_MODEL,
+                    help=f"exact direct-Claude reviewer model (default: {CLAUDE_MODEL}); Opus 4.8 is retired")
     ap.add_argument("--codex-model", default=None,
                     help=f"codex reviewer model (default: {CODEX_MODEL}). Passing this explicitly also "
                          "opts OUT of the automatic unavailable-model fallback — the pinned model is "
@@ -558,6 +559,7 @@ def main():
     a = ap.parse_args()
     try:
         a.kiro_model = exact_kiro_model(a.kiro_model)
+        reject_retired_opus(a.claude_model)
     except ValueError as e:
         sys.exit(str(e))
 
