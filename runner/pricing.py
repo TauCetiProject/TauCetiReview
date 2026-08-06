@@ -5,7 +5,7 @@ Run as a script (runner/ on sys.path), so imports are flat siblings, not package
 import hashlib, json, os, pathlib
 
 
-CLAUDE_MODEL = "claude-opus-4-8"
+CLAUDE_MODEL = "claude-opus-5"
 
 CODEX_MODEL = "gpt-5.6-sol"
 

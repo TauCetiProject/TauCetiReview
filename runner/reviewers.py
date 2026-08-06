@@ -110,7 +110,14 @@ def exact_kiro_model(model):
     model = (model or "").strip()
     if not model or model.lower().startswith("auto"):
         raise ValueError(f"Kiro needs an exact model id, not the Auto router: {model!r}")
+    reject_retired_opus(model)
     return model
+
+
+def reject_retired_opus(model):
+    """Reject the superseded Opus generation for both direct Claude and Kiro."""
+    if (model or "").strip().lower() in {"claude-opus-4.8", "claude-opus-4-8"}:
+        raise ValueError("Claude Opus 4.8 is retired; use the exact claude-opus-5 model")
 
 
 

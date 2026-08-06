@@ -29,14 +29,14 @@ SESSION = "019e8fe4-41ce-7cd2-b837-6b641bf22984"
 def realistic_result():
     """The shape run_rubric persists, with both private fields at both depths."""
     return {
-        "returncode": 1, "cost_usd": 0.0, "provider": "claude", "model": "claude-opus-4-8",
+        "returncode": 1, "cost_usd": 0.0, "provider": "claude", "model": "claude-opus-5",
         "rubric": "correctness", "run_id": "r-2026-1384-correctness-abc123",
         "raw_stderr": f"{SECRET}\n{NOT_LOGGED_IN}\n", "session_id": SESSION,
         "text": "", "verdict_obj": None,
         "attempts": [
-            {"returncode": 1, "secs": 0.9, "model": "claude-opus-4-8", "error_kind": "not_authenticated",
+            {"returncode": 1, "secs": 0.9, "model": "claude-opus-5", "error_kind": "not_authenticated",
              "session_id": SESSION, "raw_stderr": f"{SECRET}\n{NOT_LOGGED_IN}"},
-            {"returncode": 1, "secs": 0.8, "model": "claude-opus-4-8", "error_kind": "not_authenticated",
+            {"returncode": 1, "secs": 0.8, "model": "claude-opus-5", "error_kind": "not_authenticated",
              "session_id": SESSION, "raw_stderr": NOT_LOGGED_IN},
         ],
     }
