@@ -395,17 +395,20 @@ def main():
                          "manual: force a full re-review of every rubric")
     ap.add_argument("--auth", default="subscription", choices=["subscription", "api"],
                     help="subscription (default): use your logged-in claude/codex; api: use "
-                         "ANTHROPIC_API_KEY / OPENAI_API_KEY from the environment (billed)")
+                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment (billed)")
     ap.add_argument("--post", action="store_true",
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")
     ap.add_argument("--reviewer", default="",
-                    help="restrict to these reviewers (comma-separated: claude, codex, sonnet, "
+                    help="restrict to these reviewers (comma-separated: claude, codex, kiro, sonnet, "
                          "deepseek, minimax, grok). sonnet is the claude CLI pinned to Sonnet; "
                          "deepseek/minimax/grok run an OpenRouter model through the `pi` agent and "
                          "need `pi` on PATH + OPENROUTER_API_KEY. sonnet/deepseek/minimax/grok are "
-                         "explicit-only (never auto-drawn). Default: every auto-drawn reviewer you "
+                         "kiro uses an exact --kiro-model and is explicit-only (never auto-drawn). "
+                         "Default: every auto-drawn reviewer you "
                          "have available (claude, codex)")
+    ap.add_argument("--kiro-model", default="gpt-5.6-sol",
+                    help="exact Kiro model (default: gpt-5.6-sol; e.g. claude-opus-4.8)")
     ap.add_argument("--no-mathlib", action="store_true",
                     help="skip fetching the pinned Mathlib source (faster; reuse checks weaker)")
     ap.add_argument("--roadmap-dir", default="",
@@ -469,6 +472,10 @@ def main():
                          "survey prefilters capped PRs) drive the prefilter and the engine from one value.")
     a = ap.parse_args()
 
+    a.kiro_model = (a.kiro_model or "").strip()
+    if not a.kiro_model or a.kiro_model.lower().startswith("auto"):
+        die(f"--kiro-model needs an exact model id, not Kiro Auto: {a.kiro_model!r}")
+
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
     # host runs this after a --no-sync review (e.g. a bubble) to publish with its own creds. Loud:
     # `run` (no allow_fail) exits nonzero if archive.py sync fails after its retries.
@@ -518,6 +525,13 @@ def main():
     claude_ok = shutil.which("claude") if a.auth == "subscription" else os.environ.get("ANTHROPIC_API_KEY")
     if "sonnet" in want and claude_ok and "sonnet" not in avail:
         avail.append("sonnet")
+    # Kiro is subscription-credit backed and never auto-drawn. A browser login
+    # works in subscription mode; --auth api requires the documented KIRO_API_KEY.
+    kiro_ok = shutil.which("kiro-cli") and (
+        a.auth == "subscription" or (os.environ.get("KIRO_API_KEY") or "").strip()
+    )
+    if "kiro" in want and kiro_ok and "kiro" not in avail:
+        avail.append("kiro")
     # OpenRouter reviewers (DeepSeek/MiniMax/Grok, driven by the `pi` agent) are pay-per-token, so
     # they are NEVER drawn by default — they join the pool ONLY when you name them in --reviewer
     # (the budget gate: no auto-dispatch), and then only if `pi` and OPENROUTER_API_KEY are present.
@@ -525,7 +539,8 @@ def main():
         avail += [p for p in ("deepseek", "minimax", "grok") if p in want and p not in avail]
     if not avail:
         if a.auth == "subscription":
-            die("need at least one of `claude` / `codex` on PATH (and logged in), or `pi` + "
+            die("need at least one of `claude` / `codex` on PATH (and logged in), an explicit "
+                "`--reviewer kiro` with `kiro-cli`, or `pi` + "
                 "OPENROUTER_API_KEY and `--reviewer deepseek|minimax` for an OpenRouter review. "
                 "Install the Claude Code and/or Codex CLI, or pass --auth api.")
         die("--auth api needs ANTHROPIC_API_KEY / OPENAI_API_KEY, or `pi` + OPENROUTER_API_KEY "
@@ -533,8 +548,9 @@ def main():
     if want:
         avail = [p for p in avail if p in want]
         if not avail:
-            die(f"--reviewer {a.reviewer} matches none of the available reviewers (a DeepSeek/"
-                "MiniMax reviewer needs `pi` on PATH + OPENROUTER_API_KEY).")
+            die(f"--reviewer {a.reviewer} matches none of the available reviewers (Kiro needs "
+                "`kiro-cli` and, for --auth api, KIRO_API_KEY; a DeepSeek/MiniMax reviewer needs "
+                "`pi` on PATH + OPENROUTER_API_KEY).")
     providers = ",".join(avail)
     print(f"reviewers: {providers}", file=sys.stderr)
 
@@ -669,6 +685,7 @@ def main():
            *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
            "--ci-build", ci_build or "", "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
+           "--kiro-model", a.kiro_model,
            "--max-rounds-per-day", str(a.max_rounds_per_day),
            "--scoreboard-file", str(work / "scoreboard.md"),
            "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),

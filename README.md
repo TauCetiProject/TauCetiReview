@@ -26,11 +26,13 @@ see [`rubrics/README.md`](rubrics/README.md) for the list and which angles can b
 ## Reviewing it yourself
 
 CI runs the review on the metered Anthropic / OpenAI APIs. A trusted contributor can run the
-same review on their **own Claude / Codex subscription** with the `tauceti-review` CLI — no API
+same review on their **own Claude / Codex / Kiro subscription** with the `tauceti-review` CLI — no API
 bill. See [REVIEWING.md](REVIEWING.md):
 
 ```bash
 uvx --from git+https://github.com/TauCetiProject/TauCetiReview tauceti-review 42
+uvx --from git+https://github.com/TauCetiProject/TauCetiReview tauceti-review 42 \
+  --reviewer kiro --kiro-model gpt-5.6-sol
 ```
 
 ## Meta-review
