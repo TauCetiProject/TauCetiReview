@@ -27,4 +27,5 @@ jobs:
       - run: python tests/test_sweep.py
       - run: python tests/test_codex_fallback.py
       - run: python tests/test_reviewer_env.py
+      - run: python tests/test_kiro.py
       - run: python tests/test_attempt_diagnostics.py

@@ -15,13 +15,13 @@ import archive
 from dataclasses import dataclass, field
 
 from ledger import Ledger
-from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, require_priced, sum_usage
+from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, require_priced, sum_usage
 # Re-exported for merge_from_scoreboard (changed_paths/decide_merge/DEFAULT_RUBRICS) and the price
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge
-from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, reviewer_env, run_claude, run_codex, run_pi, sweep_rev_homes
+from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import build_reactivation_block, normalize_finding_path, pick_anchor, update_case_file
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
 
@@ -513,9 +513,12 @@ def main():
                     help=f"codex reviewer model (default: {CODEX_MODEL}). Passing this explicitly also "
                          "opts OUT of the automatic unavailable-model fallback — the pinned model is "
                          "used as chosen.")
+    ap.add_argument("--kiro-model", default=KIRO_MODEL,
+                    help=f"exact Kiro reviewer model (default: {KIRO_MODEL}); Kiro is explicit-only")
     ap.add_argument("--providers", default="claude,codex",
                     help="comma-separated reviewers to draw from: claude, codex, and any "
-                         "OpenRouter model in OPENROUTER_MODELS (deepseek, minimax — via the `pi` "
+                         "Kiro (explicit-only), and any OpenRouter model in OPENROUTER_MODELS "
+                         "(deepseek, minimax — via the `pi` "
                          "agent, needs OPENROUTER_API_KEY). A rubric's prior provider is kept only "
                          "if still listed; otherwise it is re-drawn from this set")
     ap.add_argument("--auto-subset", action="store_true",
@@ -525,7 +528,7 @@ def main():
                          "subscription: inherit the environment so a locally logged-in `claude` / "
                          "`codex` reviews on the runner's own subscription (no API key, no spend)")
     ap.add_argument("--keys-dir", default="",
-                    help="dir with files 'anthropic', 'openai', and/or 'openrouter'; each key is "
+                    help="dir with files 'anthropic', 'openai', 'kiro', and/or 'openrouter'; each key is "
                          "passed only to the matching reviewer subprocess and never kept in this "
                          "process's env (OPENROUTER_API_KEY also falls back to the ambient env)")
     ap.add_argument("--comment-file", default="",
@@ -553,6 +556,10 @@ def main():
                     help="write the post plan (scoreboard + thread upsert/close actions) here")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
+    try:
+        a.kiro_model = exact_kiro_model(a.kiro_model)
+    except ValueError as e:
+        sys.exit(str(e))
 
     # Reclaim reviewer HOMEs orphaned by an earlier killed/crashed run before we add more. Each
     # worker has its own HOME, so this base isn't shared, and a worker runs reviews sequentially —
@@ -572,11 +579,11 @@ def main():
 
     subscription = a.auth == "subscription"
     if subscription:  # no keys: reviewers use the runner's logged-in claude/codex subscription
-        keys = {"anthropic": "", "openai": ""}
+        keys = {"anthropic": "", "openai": "", "kiro": (os.environ.get("KIRO_API_KEY", "") or "").strip()}
     elif a.keys_dir:
         kd = pathlib.Path(a.keys_dir)
         keys = {}
-        for name in ("anthropic", "openai", "openrouter"):
+        for name in ("anthropic", "openai", "kiro", "openrouter"):
             f = kd / name
             keys[name] = f.read_text().strip() if f.exists() else ""
             # Read into memory then remove from disk: no key should sit on a filesystem a
@@ -585,7 +592,8 @@ def main():
                 f.unlink()
     else:  # local/dev fallback: read from this process's env
         keys = {"anthropic": os.environ.get("ANTHROPIC_API_KEY", ""),
-                "openai": os.environ.get("OPENAI_API_KEY", "")}
+                "openai": os.environ.get("OPENAI_API_KEY", ""),
+                "kiro": (os.environ.get("KIRO_API_KEY", "") or "").strip()}
 
     # OpenRouter (the pi reviewers) has no subscription/OAuth path — its credential is always an
     # API key. Prefer a keys-dir file if CI supplied one (read + removed above); otherwise take it
@@ -795,6 +803,7 @@ def main():
     outdir = store / "reviews" / str(a.pr) / str(round_num)
     outdir.mkdir(parents=True, exist_ok=True)
     runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model or CODEX_MODEL),
+               "kiro": (run_kiro, a.kiro_model),
                # sonnet is the same claude CLI runner pinned to Sonnet — a cheaper claude-family
                # A/B arm, selected explicitly (never auto-drawn) via --reviewer sonnet.
                "sonnet": (run_claude, SONNET_MODEL)}
@@ -808,7 +817,10 @@ def main():
     # Fail before spending if any provider we'll actually dispatch has an unpriced model. Include the
     # codex fallback (the seamless Sol->Terra downgrade in run_one can route to it) so an unpriced
     # fallback is caught here, not mid-round.
-    dispatchable = {runners[p][1] for p in providers}
+    # Kiro's subscription CLI exposes neither token counts nor a per-call USD
+    # price. It is deliberately recorded at $0 rather than assigned a fictional
+    # API price, so arbitrary exact Kiro model pins do not belong in this guard.
+    dispatchable = {runners[p][1] for p in providers if p != "kiro"}
     if "codex" in providers:
         dispatchable.add(CODEX_FALLBACK_MODEL)
     require_priced(dispatchable)

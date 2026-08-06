@@ -2,8 +2,8 @@
 
 CI reviews every Tau Ceti PR by calling the Anthropic and OpenAI **APIs**, which is metered and
 adds up fast. `tauceti-review` lets a trusted person run the *same* review on their **own
-Claude / Codex subscription** instead: the inference runs through the locally logged-in `claude`
-and `codex` CLIs, so there is no per-token bill. It is the same engine, same rubrics, same
+Claude / Codex / Kiro subscription** instead: the inference runs through the locally logged-in
+provider CLI, so there is no per-token bill. It is the same engine, same rubrics, same
 scoreboard and per-rubric threads — only the inference auth and who posts change.
 
 This is for people the project already trusts (maintainers, regular contributors). The tool is
@@ -22,6 +22,8 @@ On your `PATH`, all logged in:
   Claude subscription, and/or `codex` ([Codex](https://www.npmjs.com/package/@openai/codex)) signed
   into a ChatGPT subscription. You need **at least one**; each rubric is judged by whichever you
   have. With both, the reviewer is drawn per rubric, like CI.
+- For explicit Kiro reviews, `kiro-cli` signed in with `kiro-cli login` (or a
+  headless `KIRO_API_KEY`). Kiro is never auto-drawn.
 - Python ≥ 3.10.
 
 ## Install
@@ -56,6 +58,8 @@ tauceti-review 42                       # review PR #42, PRINT the verdicts — 
 tauceti-review 42 --post                # also post the scoreboard + threads, as you
 tauceti-review 42 --rubrics scope,correctness,reuse
 tauceti-review 42 --reviewer claude     # use only Claude even if both are installed
+tauceti-review 42 --reviewer kiro --kiro-model gpt-5.6-sol
+tauceti-review 42 --reviewer kiro --kiro-model claude-opus-4.8
 tauceti-review 42 --reviewer deepseek   # use DeepSeek via OpenRouter + the `pi` agent
 tauceti-review 42 --no-mathlib          # skip the Mathlib clone (faster; weaker reuse checks)
 ```
@@ -67,11 +71,12 @@ Add `--post` to publish. Useful flags:
 |---|---|
 | `--post` | post the scoreboard comment + per-rubric review threads to the PR, under your GitHub login |
 | `--rubrics a,b,c` | review only these rubrics (default: all of them) |
-| `--reviewer claude\|codex\|sonnet\|deepseek\|minimax\|grok` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). `claude`/`codex` are drawn per rubric like CI. `sonnet` is the `claude` CLI pinned to Sonnet. `deepseek`/`minimax`/`grok` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. `sonnet`/`deepseek`/`minimax`/`grok` are explicit-only (never auto-drawn) |
+| `--reviewer claude\|codex\|kiro\|sonnet\|deepseek\|minimax\|grok` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). `kiro` is explicit-only and always uses the exact `--kiro-model`. `sonnet` is the `claude` CLI pinned to Sonnet. `deepseek`/`minimax`/`grok` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. All but `claude`/`codex` are explicit-only (never auto-drawn) |
+| `--kiro-model MODEL` | exact Kiro model ID; defaults to `gpt-5.6-sol`. Use `claude-opus-4.8` for Kiro's current Opus |
 | `--mode commit` | review only rubrics not already passing in the local store (default `manual` = all) |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |
-| `--auth api` | use `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the env instead of the subscription (billed) |
+| `--auth api` | use the matching `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `KIRO_API_KEY` instead of a browser login |
 | `--keep` | keep the temporary workspace for inspection |
 
 ## What it does
@@ -79,10 +84,10 @@ Add `--post` to publish. Useful flags:
 1. Reads the PR head SHA, diff, and description via `gh`.
 2. Builds the same read-only reviewer workspace CI uses: the PR source at its head, the roadmap
    repo, and (unless `--no-mathlib`) the pinned Mathlib source for `reuse`/`naming` to grep.
-3. Runs each rubric through `claude -p` / `codex exec` (or, for `deepseek`/`minimax`, the `pi`
-   agent against OpenRouter), **read-only** (`Read`/`Grep`/`Glob`, or pi's `read`/`grep`/`ls` —
-   no shell, no writes), in `--auth subscription` mode — claude/codex use your logged-in
-   subscription with no API key; the OpenRouter reviewers are pay-per-token and use
+3. Runs each rubric through `claude -p`, `codex exec`, exact-model `kiro-cli chat`, or the `pi`
+   agent against OpenRouter, **read-only** (`Read`/`Grep`/`Glob`, or pi's `read`/`grep`/`ls` —
+   no shell, no writes). In `--auth subscription` mode Claude, Codex, and Kiro use the logged-in
+   subscription; the OpenRouter reviewers are pay-per-token and use
    `OPENROUTER_API_KEY`. Each reviewer runs in a **clean room**: a throwaway HOME seeded with only
    its own credential, so it ignores your personal `CLAUDE.md` / `AGENTS.md`, skills, plugins, and
    settings (and those are disabled outright). The review depends on the rubrics and the PR, not
@@ -93,13 +98,13 @@ Add `--post` to publish. Useful flags:
 
 ## Notes
 
-- **Cost line.** The scoreboard's `Review spend: $X` is a *notional* API-equivalent estimate from
-  token usage. On a subscription you are **not** billed that — it is there so you can see what the
-  same review would have cost on the API.
+- **Cost line.** For Claude/Codex, the scoreboard's `Review spend: $X` is a *notional*
+  API-equivalent estimate from token usage. Kiro 2.x exposes no per-turn token telemetry, so Kiro
+  subscription runs are recorded at $0 rather than assigned a fictional API price.
 - **Who it posts as.** With `--post`, comments are created under your `gh` identity, not the review
   bot's, and as a fresh scoreboard comment (a local run keeps no state shared with CI, so it won't
   edit the bot's comment in place).
-- **Subscription terms.** Driving a *personal* Claude/ChatGPT subscription as an automated reviewer
+- **Subscription terms.** Driving a personal Claude/ChatGPT/Kiro subscription as an automated reviewer
   is fine for occasional, interactive, human-initiated runs like this. Standing it up as a 24/7
   self-hosted auto-reviewer is closer to API-tier usage and likely outside subscription terms — if
   you want always-on review, use the CI path (`--auth api`) with API keys.
