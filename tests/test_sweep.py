@@ -5,6 +5,7 @@ Covers decide_action (the pure policy) and that the merge gate it relies on (dec
 the SAME one the merge-only path uses, so the sweep can never enqueue something the normal gate refuses.
 Dependency-free — run with `python tests/test_sweep.py` or under pytest.
 """
+import datetime
 import json
 import sys
 import pathlib
@@ -180,6 +181,65 @@ def test_lakefile_never_auto_merges():
     workflow_diff = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
     assert not mfs.decide_from_comments(
         comments, head, required, workflow_diff, "SUCCESS", "SUCCESS", scope="SUCCESS")["merge"]
+
+
+# ---- merge-queue reservation ----
+
+_T0 = datetime.datetime(2026, 8, 11, 12, 0, tzinfo=datetime.timezone.utc)
+
+
+def _entry(number, minutes_ago, paths):
+    return {"number": number, "node_id": f"PR_{number}", "paths": paths,
+            "enqueued_at": (_T0 - datetime.timedelta(minutes=minutes_ago))
+            .isoformat().replace("+00:00", "Z")}
+
+
+def test_is_pin_moving_only_for_lake_pins():
+    assert sweep.is_pin_moving(["lake-manifest.json"])
+    assert sweep.is_pin_moving(["TauCeti/Foo.lean", "lean-toolchain"])
+    assert not sweep.is_pin_moving(["TauCeti/Foo.lean"])
+    assert not sweep.is_pin_moving([])
+
+
+def test_reservation_holder_none_without_a_pin_pr():
+    entries = [_entry(1, 5, ["TauCeti/A.lean"]), _entry(2, 3, ["TauCeti/B.lean"])]
+    assert sweep.reservation_holder(entries, _T0) is None
+    assert sweep.reservation_holder([], _T0) is None
+
+
+def test_reservation_holder_elects_the_earliest_pin_pr():
+    # Two bumps open at once must not dequeue each other in a loop: exactly one holds the queue,
+    # and it is the one that got there first.
+    entries = [_entry(10, 5, ["TauCeti/A.lean"]),
+               _entry(20, 30, ["lake-manifest.json"]),
+               _entry(30, 60, ["lean-toolchain"])]
+    assert sweep.reservation_holder(entries, _T0) == 30
+
+
+def test_reservation_holder_lapses_a_stale_holder():
+    # A build takes 83-95 min; an entry far older than MAX_HOLD is stuck, and holding every other
+    # merge behind it is worse than releasing it.
+    entries = [_entry(30, 60, ["lean-toolchain"])]
+    assert sweep.reservation_holder(entries, _T0, datetime.timedelta(hours=3)) == 30
+    assert sweep.reservation_holder(entries, _T0, datetime.timedelta(minutes=30)) is None
+
+
+def test_reservation_holder_respects_the_budget():
+    entries = [_entry(30, 10, ["lean-toolchain"])]
+    assert sweep.reservation_holder(entries, _T0, exhausted=()) == 30
+    assert sweep.reservation_holder(entries, _T0, exhausted=(30,)) is None
+
+
+def test_count_evictions_ignores_our_own_reservation_removals():
+    # Booting a PR to clear the way for a bump emits the same removed_from_merge_queue event as a
+    # real eviction. Counting ours would escalate an innocent PR to update_branch and needs-rebase.
+    cutoff = _T0 - datetime.timedelta(hours=1)
+    at = (_T0 - datetime.timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+    events = [{"event": "removed_from_merge_queue", "created_at": at, "actor": "tauceti-review-bot"},
+              {"event": "removed_from_merge_queue", "created_at": at, "actor": "github-merge-queue"}]
+    assert sweep.count_evictions(events, cutoff, app_login="tauceti-review-bot") == 1
+    assert sweep.is_reservation_removal("Tauceti-Review-Bot", "tauceti-review-bot")
+    assert not sweep.is_reservation_removal(None, "tauceti-review-bot")
 
 
 def run():
