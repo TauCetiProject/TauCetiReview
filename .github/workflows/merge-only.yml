@@ -115,7 +115,9 @@ jobs:
           permission-pull-requests: write
 
       - name: Enqueue if all rubrics and the path policy approve
-        env: { GH_TOKEN: "${{ steps.merge_token.outputs.token }}" }
+        env:
+          GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
+          REPO: TauCetiProject/TauCeti
         run: |
           set -euo pipefail
           if [ ! -f merge.json ] || [ "$(jq -r .merge merge.json)" != "true" ]; then
@@ -129,6 +131,32 @@ jobs:
           if [ "$CUR_HEAD" != "$HEAD_SHA" ]; then
             echo "head moved ($HEAD_SHA -> $CUR_HEAD) since the decision; skipping (a fresh build will re-trigger)."
             exit 0
+          fi
+          # ---- merge-queue reservation (runner/queue_reservation.py explains why) ----
+          # A pin-moving PR rebuilds everything (83-95 min) and is evicted by anything landing under
+          # it that the new mathlib deprecates, so it gets the queue to itself. A failure to READ the
+          # queue is fatal here on purpose: enqueuing into a queue whose state we do not know is
+          # exactly what the reservation exists to prevent.
+          if ! HOLDER=$(python3 runner/queue_reservation.py holder); then
+            echo "::error::cannot read the merge queue; refusing to enqueue"; exit 1
+          fi
+          PIN_MOVING=0
+          # REST + --paginate, not `gh pr view --json files`: a bump changes more than one page of
+          # files (143 for v4.34.0-rc1), and a truncated list would read as "not pin-moving".
+          if gh api --paginate "/repos/TauCetiProject/TauCeti/pulls/$PR/files?per_page=100" \
+               --jq '.[].filename' | grep -qxE 'lake-manifest\.json|lean-toolchain'; then
+            PIN_MOVING=1
+          fi
+          if [ -n "$HOLDER" ] && [ "$HOLDER" != "$PR" ]; then
+            echo "not enqueuing: merge queue reserved for pin-moving #$HOLDER (a later trigger retries)."
+            exit 0
+          fi
+          if [ "$PIN_MOVING" = 1 ]; then
+            # Clear BEFORE enqueuing, never after: an entry already ahead of this one can merge in
+            # the window between the two, and no later dequeue undoes a commit that has landed.
+            echo "#$PR moves the Lake pins; clearing the merge queue so it rebuilds alone."
+            python3 runner/queue_reservation.py clear --for "$PR" || {
+              echo "::error::could not clear the merge queue for #$PR"; exit 1; }
           fi
           # Hand the PR to the merge queue rather than merging directly. The queue retests it against
           # the CURRENT main (the merge_group build + bump-guard) and merges in order, so a PR that has

@@ -52,6 +52,19 @@ DRY_RUN = os.environ.get("DRY_RUN") == "1"
 # (2) gives a transient eviction one more cheap retry before paying for an update-branch + re-review.
 EVICT_ESCALATE = int(os.environ.get("EVICT_ESCALATE", "2"))
 MERGE_PREFIX = os.environ.get("MERGE_PREFIX", "TauCeti/")
+# A PR touching these gets the merge queue to itself while it is enqueued (see reservation_holder).
+PIN_PATHS = {"lake-manifest.json", "lean-toolchain"}
+# How long a holder may hold the queue. Its build takes 83-95 minutes, so an entry much older than
+# that is stuck rather than slow, and holding every other merge behind it is the expensive failure.
+MAX_HOLD = datetime.timedelta(hours=int(os.environ.get("MAX_HOLD_HOURS", "3")))
+# How many times ONE PR may take the queue, across all of its heads. EVICT_ESCALATE bounds retries
+# per head only: update_branch makes a NEW head, which resets eviction_cutoff and the count, so a
+# chronically-failing bump would otherwise reserve, fail, update, and reserve again without limit.
+MAX_RESERVATIONS = int(os.environ.get("MAX_RESERVATIONS", "3"))
+# Login of the App this runner acts as; queue removals BY it are reservation cleanup, not evictions.
+RESERVATION_ACTOR = os.environ.get("RESERVATION_ACTOR", "tauceti-review-bot")
+LAPSED_LABEL = "queue-lapsed"
+EXHAUSTED_LABEL = "queue-exhausted"
 KEEP_LABELS = {"keep", "hold", "wip", "human", "do-not-close"}
 NEEDS_REBASE_LABEL = "needs-rebase"
 EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
@@ -120,11 +133,18 @@ def eviction_cutoff(head_dt, force_push_dts):
     return max([head_dt, *force_push_dts])
 
 
-def count_evictions(events, cutoff):
-    """removed_from_merge_queue timeline events after `cutoff` — how many times the queue kicked this
-    head. The timeline event carries no SHA, so the cutoff is how we scope it to the current head."""
+def count_evictions(events, cutoff, app_login=RESERVATION_ACTOR):
+    """removed_from_merge_queue timeline events after `cutoff` — how many times the QUEUE kicked this
+    head. The timeline event carries no SHA, so the cutoff is how we scope it to the current head.
+
+    Removals made by our own App are excluded: the reservation dequeues other PRs to clear the way
+    for a pin-moving one, and GitHub records that as the same `removed_from_merge_queue` event.
+    Counting those would make an innocent booted PR look repeatedly rejected and escalate it to
+    update_branch and eventually `needs-rebase`, for something it did not do."""
     return sum(1 for e in events
-               if e.get("event") == "removed_from_merge_queue" and parse_ts(e.get("created_at")) > cutoff)
+               if e.get("event") == "removed_from_merge_queue"
+               and parse_ts(e.get("created_at")) > cutoff
+               and not is_reservation_removal(e.get("actor"), app_login))
 
 
 def classify_update(returncode, output):
@@ -143,6 +163,45 @@ def classify_update(returncode, output):
     if "422" in low or "unprocessable" in low:
         return "skip"
     return "error"
+
+
+def is_pin_moving(paths):
+    """True if a PR moves the Lake pins. Such a PR's merge-group build rebuilds everything (83-95
+    min), so anything landing under it that the new mathlib deprecates evicts it; it gets the queue
+    to itself. `merge.py:changed_paths` parses diff text, but queue entries expose files directly."""
+    return bool(PIN_PATHS & set(paths or ()))
+
+
+def reservation_holder(entries, now, max_hold=MAX_HOLD, exhausted=()):
+    """Pure policy: which PR, if any, holds the merge queue? Returns its number or None.
+
+    Exactly ONE holder: the pin-moving entry enqueued earliest, so two open bumps cannot dequeue each
+    other in a loop — the later one is blocked like any other PR. A holder that has been queued longer
+    than `max_hold` has LAPSED (the build takes 83-95 min, so a much older entry is stuck, not slow)
+    and stops reserving, as does one whose PR is in `exhausted` (already spent its reservation budget;
+    see MAX_RESERVATIONS). `entries` items are dicts with number/enqueued_at/paths.
+    """
+    pins = [e for e in entries or ()
+            if is_pin_moving(e.get("paths")) and e.get("number") not in set(exhausted)]
+    pins = [e for e in pins if now - parse_ts(e.get("enqueued_at")) <= max_hold]
+    if not pins:
+        return None
+    return min(pins, key=lambda e: (parse_ts(e.get("enqueued_at")), e.get("number")))["number"]
+
+
+def is_reservation_removal(actor_login, app_login=RESERVATION_ACTOR):
+    """True if a queue removal was made BY US (the reservation dequeuing to clear the queue) rather
+    than by the queue rejecting the PR. count_evictions must not count these: GitHub emits
+    `removed_from_merge_queue` for API removals too, so an innocent PR booted to make room for a bump
+    would otherwise look repeatedly evicted and be escalated to update_branch and `needs-rebase`.
+
+    Compared with any `[bot]` suffix stripped from both sides: an App acting through the API appears
+    as its slug in some payloads and as `slug[bot]` in others, and the two must not read as different
+    actors here — a miss would silently start counting our own removals as evictions."""
+    def bare(s):
+        s = (s or "").strip().lower()
+        return s[:-5] if s.endswith("[bot]") else s
+    return bool(actor_login) and bare(actor_login) == bare(app_login)
 
 
 # Enqueue outcomes that are NOT failures: the PR is already in the queue (a concurrent auto-merge
@@ -171,6 +230,10 @@ def decide_action(*, merge_ok, in_queue, evictions_at_head, behind, escalate=EVI
       evicted >= escalate, behind main ... update_branch (queue proved this head cannot merge; re-test
                                            + re-review against current main)
       evicted >= escalate, not behind .... flag (an eviction the sweep cannot resolve by updating)
+
+    The merge-queue reservation is NOT decided here: main() skips a reserved-out PR before fetching
+    its state, since paying several API calls per PR for a decision we already know would cost more
+    than it is worth over the ~90 minutes a bump holds the queue.
     """
     if not merge_ok:
         return "skip", "not mergeable by the gate"
@@ -188,15 +251,119 @@ def decide_action(*, merge_ok, in_queue, evictions_at_head, behind, escalate=EVI
 
 # ---- gh-backed gather + execute ----
 
-def queue_numbers():
-    """PR numbers currently in the merge queue for main (skip these — they are already progressing)."""
+def pr_paths(pr):
+    """Every path a PR changes, via the paginated REST endpoint.
+
+    NOT the GraphQL `files` connection: it caps at 100 per page, and a bump is precisely the PR that
+    exceeds that (the v4.34.0-rc1 bump changed 143 files), so reading pin-moving-ness from one page
+    would either truncate or, with a fail-closed check, abort the sweep on the one PR it exists for.
+    """
+    rows = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/pulls/{pr}/files?per_page=100",
+                     "--jq", ".[] | {filename}"])
+    return [r.get("filename") for r in rows]
+
+
+def queue_entries():
+    """Every merge-queue entry for main: number, PR node id, enqueue time and changed paths.
+
+    FAILS CLOSED. A truncated connection or a partial GraphQL response would otherwise read as "the
+    queue is empty" — which, for the reservation, means "no bump is holding it" and lets everything
+    merge under a bump. So `hasNextPage` on the entries connection, or any top-level `errors`, raises.
+    """
     q = gh_json(["api", "graphql", "-f", "query="
                  '{repository(owner:"%s",name:"%s"){mergeQueue(branch:"main"){'
-                 'entries(first:100){nodes{pullRequest{number}}}}}}'
+                 'entries(first:100){pageInfo{hasNextPage}nodes{enqueuedAt '
+                 'pullRequest{number id}}}}}}'
                  % tuple(REPO.split("/", 1))])
+    if (q or {}).get("errors"):
+        raise RuntimeError(f"merge-queue query returned errors: {(q or {}).get('errors')}")
     mq = (((q or {}).get("data") or {}).get("repository") or {}).get("mergeQueue") or {}
-    nodes = (mq.get("entries") or {}).get("nodes") or []
-    return {n["pullRequest"]["number"] for n in nodes if n.get("pullRequest")}
+    conn = mq.get("entries") or {}
+    if ((conn.get("pageInfo") or {}).get("hasNextPage")):
+        raise RuntimeError("merge queue has more than 100 entries; refusing to read it partially")
+    out = []
+    for n in conn.get("nodes") or []:
+        pr = n.get("pullRequest") or {}
+        if not pr:
+            continue
+        out.append({"number": pr["number"], "node_id": pr.get("id"),
+                    "enqueued_at": n.get("enqueuedAt"), "paths": pr_paths(pr["number"])})
+    return out
+
+
+def queue_numbers(entries=None):
+    """PR numbers currently in the merge queue for main (skip these — they are already progressing)."""
+    return {e["number"] for e in (queue_entries() if entries is None else entries)}
+
+
+def dequeue(pr, node_id):
+    """Remove a PR from the merge queue, to clear the way for a pin-moving PR's rebuild.
+
+    NOTE the mutation takes `id`, not `pullRequestId` as enqueuePullRequest does, and it is the PULL
+    REQUEST's node id, not the queue entry's. Benign outcomes differ from enqueue's too: the entry
+    being gone already is a race we lose harmlessly, whereas "not mergeable" is meaningless here, so
+    this does not reuse enqueue_is_benign. Auth, permission and server faults stay real failures."""
+    if DRY_RUN:
+        print(f"[dry-run] would dequeue #{pr}")
+        return True
+    r = gh(["api", "graphql", "-f", "query="
+            "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){mergeQueueEntry{position}}}",
+            "-f", f"id={node_id}"])
+    out = (r.stdout or "") + (r.stderr or "")
+    low = out.lower()
+    if r.returncode == 0 and "errors" not in low:
+        print(f"dequeued #{pr} (making way for the pin-moving PR)")
+        return True
+    if any(b in low for b in ("not in the queue", "not in the merge queue", "already merged",
+                              "could not resolve", "not found")):
+        print(f"#{pr}: dequeue not applied (benign — already gone): {out.strip()}")
+        return True
+    print(f"#{pr}: unexpected dequeue failure: {out.strip()}", file=sys.stderr)
+    return False
+
+
+def reservations_spent(pr):
+    """How many times this PR has been kicked out of the queue, across ALL of its heads.
+
+    This is the reservation budget, and it must be per PR rather than per head: EVICT_ESCALATE
+    bounds retries at one head only, and its escalation (update_branch) creates a NEW head, which
+    moves eviction_cutoff and resets that count to zero. Without a per-PR bound a chronically
+    failing bump would reserve, fail, update, and reserve again indefinitely, holding roughly half
+    of all queue time. Our own reservation removals are excluded, as in count_evictions."""
+    tl = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/issues/{pr}/timeline?per_page=100",
+                   "--jq", ".[] | {event, created_at, actor: .actor.login}"])
+    return sum(1 for e in tl if e.get("event") == "removed_from_merge_queue"
+               and not is_reservation_removal(e.get("actor")))
+
+
+def mark(pr, label):
+    """Add a label, creating it if the repo lacks it. Idempotent enough for a per-run notice."""
+    if DRY_RUN:
+        print(f"[dry-run] would label #{pr} {label}")
+        return True
+    r = gh(["pr", "edit", str(pr), "--repo", REPO, "--add-label", label])
+    if r.returncode != 0:
+        gh(["label", "create", label, "--repo", REPO, "--force", "--color", "D93F0B",
+            "--description", "Merge-queue reservation: released, see the sweep log"])
+        r = gh(["pr", "edit", str(pr), "--repo", REPO, "--add-label", label])
+    if r.returncode != 0:
+        print(f"#{pr}: could not label {label}: {r.stderr.strip()}", file=sys.stderr)
+        return False
+    return True
+
+
+def reconcile_reservation(entries, holder):
+    """Enforce the reservation: with a holder present, no other entry may sit in the queue.
+
+    Run on EVERY invocation, not only just after enqueuing the holder. The two enqueue paths
+    (this sweep and merge-only.yml) mutate the queue independently, so a check-then-act race can
+    leave an ordinary entry beside the holder; reconciling converges without a lock, and it also
+    recovers when a job dies between enqueuing the holder and clearing the queue."""
+    failures = 0
+    for e in entries:
+        if e["number"] != holder:
+            failures += not dequeue(e["number"], e["node_id"])
+    return failures
 
 
 def status_states(rollup):
@@ -284,7 +451,8 @@ def main():
     failures = 0
     suffix = " [dry-run]" if DRY_RUN else ""
     try:
-        in_queue = queue_numbers()
+        entries = queue_entries()
+        in_queue = queue_numbers(entries)
     except RuntimeError as e:
         print(f"merge-sweep: cannot read the merge queue ({e}); aborting", file=sys.stderr)
         return 1
@@ -292,9 +460,40 @@ def main():
                    "--json", "number,isDraft,labels"]) or []
     cand = [p for p in prs if p.get("isDraft") is False and not has_keep_label(p)]
     print(f"merge-sweep: {len(cand)} candidate PR(s); {len(in_queue)} already queued{suffix}")
+
+    # The merge-queue reservation. A pin-moving PR rebuilds everything (83-95 min), and anything
+    # landing under it that the new mathlib deprecates evicts it, so it gets the queue to itself.
+    labels_by_pr = {p["number"]: {(l.get("name") or "").lower() for l in (p.get("labels") or [])}
+                    for p in prs}
+    exhausted = {n for n, ls in labels_by_pr.items() if EXHAUSTED_LABEL in ls}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    holder = reservation_holder(entries, now, MAX_HOLD, exhausted)
+    if holder is not None and reservations_spent(holder) >= MAX_RESERVATIONS:
+        print(f"#{holder}: has taken the merge queue {MAX_RESERVATIONS}x without landing; "
+              f"labelling {EXHAUSTED_LABEL} and releasing the queue")
+        failures += not mark(holder, EXHAUSTED_LABEL)
+        exhausted.add(holder)
+        holder = reservation_holder(entries, now, MAX_HOLD, exhausted)
+    # A pin-moving entry too old to be merely slow is stuck: release the queue and say so.
+    for e in entries:
+        if (is_pin_moving(e.get("paths")) and e["number"] != holder
+                and e["number"] not in exhausted
+                and now - parse_ts(e.get("enqueued_at")) > MAX_HOLD):
+            print(f"#{e['number']}: held the merge queue longer than {MAX_HOLD}; "
+                  f"dequeuing and labelling {LAPSED_LABEL}")
+            failures += not dequeue(e["number"], e["node_id"])
+            failures += not mark(e["number"], LAPSED_LABEL)
+    if holder is not None:
+        print(f"merge-sweep: merge queue reserved for pin-moving #{holder}; "
+              "clearing other entries and holding new ones")
+        failures += reconcile_reservation(entries, holder)
+
     for p in cand:
         n = p["number"]
         if n in in_queue:
+            continue
+        if holder is not None:
+            print(f"#{n}: skip — merge queue reserved for pin-moving #{holder}")
             continue
         try:
             v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
@@ -315,7 +514,7 @@ def main():
             head_dt = parse_ts((gh_json(["api", f"/repos/{REPO}/commits/{head}"]) or {})
                                .get("commit", {}).get("committer", {}).get("date"))
             tl = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/issues/{n}/timeline?per_page=100",
-                           "--jq", ".[] | {event, created_at}"])
+                           "--jq", ".[] | {event, created_at, actor: .actor.login}"])
             force_pushes = [parse_ts(e.get("created_at")) for e in tl
                             if e.get("event") == "head_ref_force_pushed"]
             evicted = count_evictions(tl, eviction_cutoff(head_dt, force_pushes))
