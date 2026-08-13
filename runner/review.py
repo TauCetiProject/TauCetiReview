@@ -57,7 +57,13 @@ def public_record(value):
 # otherwise was raw provider text nobody may print. A named kind carries the diagnosis without the
 # payload. Ordered: the first pattern to match wins, so the specific precede `unknown`.
 _ERROR_KINDS = (
-    ("not_authenticated", re.compile(r"not logged in|/login|invalid authentication|unauthorized|401", re.I)),
+    ("not_authenticated", re.compile(r"not logged in|/login|invalid authentication|unauthorized|401"
+                                     r"|token has been revoked|failed to authenticate", re.I)),
+    # The subscription CLIs report an exhausted plan as prose, with no status code anywhere:
+    # "You've hit your session limit · resets 9:30pm (UTC)", "You've hit your weekly limit",
+    # "You've hit your monthly spend limit". Every one of those is a wait, never a review.
+    ("quota_exhausted", re.compile(r"hit your (?:session|weekly|monthly|usage)\b"
+                                   r"|usage limit reached|spend limit", re.I)),
     ("rate_limited", re.compile(r"rate limit|too many requests|429", re.I)),
     ("overloaded", re.compile(r"overloaded|service unavailable|\b(?:502|503|529)\b", re.I)),
     ("timed_out", re.compile(r"timed? ?out|deadline exceeded|\b504\b", re.I)),
@@ -65,18 +71,91 @@ _ERROR_KINDS = (
     ("transport", re.compile(r"ECONNRESET|ECONNREFUSED|socket hang up|connection (?:error|reset)", re.I)),
 )
 
+# Kinds that mean "the provider could not serve ANY rubric right now", as opposed to "this rubric's
+# call went wrong". Every one of them will hit the next rubric identically, so the round is over.
+PROVIDER_DOWN_KINDS = frozenset({"not_authenticated", "quota_exhausted", "rate_limited"})
+
+# How many consecutive provider-down rubrics end the round. Two, not one: a single 401 can be a
+# token rotating under a long round, and the retry inside run_rubric already covers the blip. Two in
+# a row is the credential or the plan, and no amount of further calling fixes either.
+PROVIDER_DOWN_LIMIT = 2
+
+# Exit status for that abort, distinct from an ordinary engine failure so the CLI can name the cause.
+PROVIDER_DOWN_EXIT = 3
+
+# How the abort names each cause on its final log line. Plain operator English rather than the token,
+# because that line is what a driving worker reads to classify the failure.
+_PROVIDER_DOWN_PHRASE = {
+    "not_authenticated": "reviewer authentication failed",
+    "quota_exhausted": "the provider's subscription window is exhausted",
+    "rate_limited": "the provider is rate limiting this account",
+    "provider_unavailable": "the review provider is unavailable",
+}
+
+# A refund-style claim ("the agent never ran") only holds when the whole output IS the failure. The
+# CLIs put a total provider failure in the result text with nothing else around it — observed
+# verbatim as "Failed to authenticate. API Error: 401 OAuth access token has been revoked." — while a
+# real review that merely quotes a status number runs to hundreds of lines. Same bound, and the same
+# reasoning, as TauCetiWorker's classify_agent_failure.
+_TEXT_AS_DIAGNOSIS_MAX_LINES = 6
+
 
 def error_kind(res):
     """Why a result that produced no verdict failed, as an allowlisted token. Callers gate on "this
     produced no verdict"; this only classifies. It reads stderr but returns none of it, so the answer
-    is safe to publish anywhere."""
+    is safe to publish anywhere.
+
+    The result TEXT is read too, but only when it is short enough to be the whole diagnosis. Claude
+    Code in -p mode reports a provider failure as the `result` field with an empty stderr, so a
+    stderr-only classifier called every one of those `unknown_error` — which is how 639 quota and
+    auth failures were filed as reviews, and nine of them posted to a PR as blocking `error` rows."""
     hay = f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}"
+    text = (res.get("text") or "").strip()
+    if text and len(text.splitlines()) <= _TEXT_AS_DIAGNOSIS_MAX_LINES:
+        hay += f"\n{text}"
     for kind, pattern in _ERROR_KINDS:
         if pattern.search(hay):
             return kind
     if res.get("returncode"):
         return "unknown_error"
     return "no_verdict"  # the CLI exited 0 but emitted nothing this runner could parse
+
+
+def abort_provider_down(ctx):
+    """End the round without publishing, because the provider cannot serve any rubric.
+
+    A provider failure says nothing about the code, so it must not become a review. Before this,
+    each failing rubric was filed as an `error` case file and the round went on to the next one at
+    machine speed; the round then rendered a scoreboard headed "changes requested" whose rows read
+    `⚠️ error` for every rubric the outage touched, and posted it. Those rows block the merge, so an
+    expired token turned into a merge blocker on somebody else's PR — observed on nine rubrics of one
+    PR in a single round, five seconds apart, after an OAuth token was revoked mid-round.
+
+    The error case files are left as written: they are the provenance of what happened, they are what
+    makes the next round re-run those rubrics (an `error` state is blocking, so needs_fresh_run picks
+    it up), and TauCetiReview#105 is the standing argument that a total auth failure must stay
+    recorded and stay loud. What changes is that nothing reaches the PR. The publication write-ahead
+    marker is cleared for the same reason: there is no publication to repair.
+
+    Exits PROVIDER_DOWN_EXIT so the caller can say which provider is down rather than reporting a
+    generic non-zero engine failure."""
+    ctx.pr_state.pop("pending_publication_head_sha", None)
+    if not ctx.a.dry_run:
+        ctx.ledger.persist()
+    kind = ctx.provider_down_kind or "provider_unavailable"
+    print(
+        f"\nAborting after {len(ctx.ran)} rubric(s): no scoreboard was rendered and nothing was "
+        f"posted to #{ctx.a.pr}. The rubrics that errored re-run on the next round.",
+        file=sys.stderr,
+    )
+    # Last line, and phrased in the operative terms, because a driving worker classifies a failed
+    # review from the last non-empty line of this log (TauCetiWorker's review_diagnostics).
+    print(
+        f"review aborted: {_PROVIDER_DOWN_PHRASE[kind]} "
+        f"({ctx.provider_down_streak} consecutive `{kind}` failures)",
+        file=sys.stderr,
+    )
+    sys.exit(PROVIDER_DOWN_EXIT)
 
 
 def stderr_summary(res, limit=200):
@@ -224,6 +303,15 @@ class RunContext:
     codex_model_explicit: bool = False   # --codex-model was passed → honor the pin, skip auto-fallback
     ran: list = field(default_factory=list)
     run_results: list = field(default_factory=list)
+    # Consecutive rubrics whose failure was the provider being unusable, reset by any rubric that
+    # produced a verdict. Read by the phase loops through provider_is_down().
+    provider_down_streak: int = 0
+    provider_down_kind: str = ""
+
+    def provider_is_down(self):
+        """True once the provider has failed PROVIDER_DOWN_LIMIT rubrics in a row for a reason that
+        will not change by calling it again."""
+        return self.provider_down_streak >= PROVIDER_DOWN_LIMIT
 
 
 def run_rubric(ctx, rubric):
@@ -411,11 +499,19 @@ def run_rubric(ctx, rubric):
     # line is not — under GITHUB_ACTIONS the workflow log is as public as the repo — so it prints only
     # for a local operator, which is precisely the case that had nothing to go on.
     if not v:
-        print(f"[{rubric}] no verdict: {error_kind(res)}", file=sys.stderr)
+        kind = error_kind(res)
+        print(f"[{rubric}] no verdict: {kind}", file=sys.stderr)
+        if kind in PROVIDER_DOWN_KINDS:
+            ctx.provider_down_streak += 1
+            ctx.provider_down_kind = kind
+        else:
+            ctx.provider_down_streak = 0
         if not os.environ.get("GITHUB_ACTIONS"):
             line = stderr_summary(res)
             if line:
                 print(f"[{rubric}]   ! {line}", file=sys.stderr)
+    else:
+        ctx.provider_down_streak = 0
 
 
 def main():
@@ -844,6 +940,8 @@ def main():
             stopped = rubric
             break
         run_rubric(ctx, rubric)
+        if ctx.provider_is_down():
+            abort_provider_down(ctx)
         if a.mode != "manual" and state_of(state_map.get(rubric), head) == "blocking_block":
             halted = rubric
             break
@@ -863,6 +961,8 @@ def main():
                     stopped = rubric
                     break
                 run_rubric(ctx, rubric)
+                if ctx.provider_is_down():
+                    abort_provider_down(ctx)
                 if state_of(state_map.get(rubric), head) == "blocking_block":
                     halted = rubric
                     break
