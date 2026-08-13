@@ -257,14 +257,23 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
     The comment to edit is our store/plan id, or — when the store does not know it (the PR was last
     scored by CI or another machine) — the newest scoreboard WE authored, discovered on GitHub. We
     only ever PATCH/DELETE our own comments (a write-scoped token could technically remove another
-    account's comment; we must not). If the only scoreboard present belongs to someone else, we post
-    our own and let the consumer's newest-wins read pick it. A failed edit of our own comment is a
-    real error, never silently re-posted. Returns (sb_id, ok). `mine` overrides the actor login."""
+    account's comment; we must not). A known scoreboard id owned by another identity is never
+    PATCHed: this identity posts a fresh `kind:scoreboard` instead (cross-identity PATCH 404s;
+    see TauCetiReview#98 / the same guard as `publish_required_upsert`). If the only scoreboard
+    present belongs to someone else, we likewise post our own and let the consumer's newest-wins
+    read pick it. A failed edit of our own comment is a real error, never silently re-posted.
+    Returns (sb_id, ok). `mine` overrides the actor login."""
+    me = mine if mine is not None else current_login()
+    existing = find_scoreboard_comments(repo, pr)
     sb_id = pr_state.get("scoreboard_comment_id") or plan_sb_id
     mine_dupes = []                      # older scoreboards WE authored, to collapse
-    if not sb_id:
-        me = mine if mine is not None else current_login()
-        ours = [c for c in find_scoreboard_comments(repo, pr) if c.get("login") == me]
+    if sb_id:
+        known = next((c for c in existing if c.get("id") == sb_id), None)
+        # A known foreign scoreboard is the identity-migration case: never PATCH it.
+        if known and known.get("login") != me:
+            sb_id = None
+    else:
+        ours = [c for c in existing if c.get("login") == me]
         if ours:
             sb_id = ours[0]["id"]
             mine_dupes = [c["id"] for c in ours[1:]]
