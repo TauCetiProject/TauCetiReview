@@ -13,13 +13,14 @@ Two things were missing and are pinned here:
 
   1. error_kind only read stderr. Claude Code in -p mode puts a total provider failure in the
      RESULT text with an empty stderr, so every one of those classified as `unknown_error`. It now
-     also reads a result short enough to be the whole diagnosis, and knows the subscription CLIs'
-     prose for an exhausted plan.
-  2. Nothing stopped the round. Two consecutive provider-down rubrics now abort it before anything
-     is rendered or posted, with a distinct exit status the CLI reports as itself.
-
-A real review that merely quotes "401" or "rate limit" must NOT be classified as an outage, and a
-rubric that produced a verdict must reset the streak: both are asserted below.
+     reads that text too — but only once the CLI itself reports the run as failed, because `text` is
+     model output over an untrusted diff and a short review saying "the `/login` handler returns
+     401" must never read as an auth outage.
+  2. Nothing stopped the round. Two consecutive provider-down ATTEMPTS on every configured provider
+     now abort it before anything is rendered or posted, with a distinct exit status the CLI reports
+     as itself. Attempts rather than rubrics, so a one-rubric reply round can stop too; every
+     provider rather than any, so one provider's quota running out is not an outage while another
+     can still review.
 
 Exit 0 = all assertions hold; 1 = a mismatch.
 """
@@ -40,8 +41,10 @@ def check(name, cond):
     print(f"[{'OK ' if cond else 'BAD'}] {name}")
 
 
-def res(text="", stderr="", rc=1):
-    return {"returncode": rc, "text": text, "raw_stderr": stderr}
+def res(text="", stderr="", rc=1, is_error=None):
+    """A run result. rc=1 is what the observed provider failures actually carried; a legitimate
+    review that simply never emitted its marker exits 0 with is_error False."""
+    return {"returncode": rc, "text": text, "raw_stderr": stderr, "is_error": is_error}
 
 
 def main():
@@ -64,40 +67,73 @@ def main():
     check("an unclassifiable failure is unknown_error", review.error_kind(res(text="???")) == "unknown_error")
     check("a clean exit with no verdict is no_verdict", review.error_kind(res(rc=0)) == "no_verdict")
 
-    # A REAL review that discusses a 401 or a rate limit is not an outage. This is what the
-    # short-text bound buys: a genuine review runs to many lines.
-    long_review = "\n".join(
-        ["The handler returns 401 when the token is invalid, which the docstring calls unauthorized."]
-        + [f"line {i}: rate limit handling looks correct" for i in range(20)]
-    )
-    check("a long review quoting 401 is not misread", review.error_kind(res(text=long_review, rc=0))
-          == "no_verdict")
+    # A REAL review that discusses a 401 or a rate limit is not an outage, however SHORT it is.
+    # Length is not a trust boundary: `text` is model output over an untrusted diff, so the gate is
+    # the CLI's own structured failure signal. These one-liners are exactly the shape that would
+    # otherwise be refunded for ever instead of eventually charging a PR that cannot be reviewed.
+    for prose in (
+        "the `/login` handler returns 401 on an expired token; the fix is wrong",
+        "rate limit handling is wrong",
+        "this diff would let a caller exceed your spend limit",
+        "unauthorized access is not checked",
+    ):
+        check(f"a clean-exit review is not an outage: {prose[:38]!r}",
+              review.error_kind(res(text=prose, rc=0, is_error=False)) == "no_verdict")
+    # ...but the same words DO classify once the CLI reports the run as failed.
+    check("is_error promotes the text to a diagnosis",
+          review.error_kind(res(text="You've hit your session limit", rc=0, is_error=True)) == "quota_exhausted")
+    check("a codex structured status promotes it too",
+          review.error_kind({"returncode": 0, "text": "429 rate limit", "error_status": 429}) == "rate_limited")
 
     # --- 2) transient kinds do NOT trip the breaker -------------------------------------------
     for kind in ("overloaded", "timed_out", "transport", "model_unavailable", "unknown_error", "no_verdict"):
         check(f"{kind} does not trip the breaker", kind not in review.PROVIDER_DOWN_KINDS)
 
-    # --- 3) the streak ------------------------------------------------------------------------
-    ctx = review.RunContext(
-        a=None, state_map={}, reply_text="", base_context="", head="deadbeef", providers=[],
-        runners={}, keys={}, subscription=True, rubrics_version="v", round_num=1, prov={},
-        diff_full="", outdir=None, day="2026-08-13", ledger=None, spent_today=0.0,
-    )
-    check("a fresh round is not down", not ctx.provider_is_down())
-    ctx.provider_down_streak = 1
-    check("one failure is not enough (a rotating token is a blip)", not ctx.provider_is_down())
-    ctx.provider_down_streak = review.PROVIDER_DOWN_LIMIT
-    check("two in a row is down", ctx.provider_is_down())
+    # --- 3) the streak: per provider, counted in attempts ---------------------------------------
+    def ctx_for(*providers):
+        return review.RunContext(
+            a=None, state_map={}, reply_text="", base_context="", head="deadbeef",
+            providers=list(providers), runners={}, keys={}, subscription=True, rubrics_version="v",
+            round_num=1, prov={}, diff_full="", outdir=None, day="2026-08-13", ledger=None,
+            spent_today=0.0,
+        )
+
     check("the limit is 2", review.PROVIDER_DOWN_LIMIT == 2)
+    ctx = ctx_for("claude")
+    check("a fresh round is not down", not ctx.provider_is_down())
+    ctx.note_provider_down("claude", "not_authenticated", 1)
+    check("one attempt is not enough (a rotating token is a blip)", not ctx.provider_is_down())
+    ctx.note_provider_down("claude", "not_authenticated", 1)
+    check("two attempts in a row is down", ctx.provider_is_down())
+    check("the abort names the agreed kind", ctx.down_kind() == "not_authenticated")
+
+    # A single-rubric round (a reply or a contest) confirms twice WITHIN its one rubric, because
+    # run_rubric retries. It must be able to stop, or it renders the error scoreboard this exists
+    # to prevent.
+    one = ctx_for("claude")
+    one.note_provider_down("claude", "quota_exhausted", 2)  # both attempts of one rubric
+    check("one rubric's two attempts trip the breaker", one.provider_is_down())
+
+    # A verdict resets that provider.
+    ctx.note_provider_down("claude", None, 0)
+    check("a verdict resets the provider", not ctx.provider_is_down())
+
+    # Two providers: one being down is not an outage while the other can still review.
+    two = ctx_for("claude", "codex")
+    two.note_provider_down("claude", "not_authenticated", 2)
+    check("one of two providers down is not an outage", not two.provider_is_down())
+    two.note_provider_down("codex", "rate_limited", 2)
+    check("both providers down is an outage", two.provider_is_down())
+    check("disagreeing kinds fall back to a generic phrase", two.down_kind() == "provider_unavailable")
 
     # --- 4) run_rubric maintains the streak ----------------------------------------------------
     # The bookkeeping lives at the tail of run_rubric; assert the shape rather than re-running a
     # whole dispatch: a verdict resets, a provider-down kind increments, anything else resets.
     src = pathlib.Path(review.__file__).read_text()
     tail = src[src.index("def run_rubric("):]
-    check("a verdict resets the streak", re.search(r"else:\s*\n\s*ctx\.provider_down_streak = 0", tail))
-    check("a provider-down kind increments", "ctx.provider_down_streak += 1" in tail)
-    check("another failure resets", tail.count("ctx.provider_down_streak = 0") >= 2)
+    check("a verdict resets the provider", "ctx.note_provider_down(provider, None, 0)" in tail)
+    check("a failure is recorded per provider", "ctx.note_provider_down(provider, kind if kind" in tail)
+    check("attempts are counted, not rubrics", 'a.get("error_kind") in PROVIDER_DOWN_KINDS' in tail)
 
     # --- 5) the abort publishes nothing --------------------------------------------------------
     abort = src[src.index("def abort_provider_down("):src.index("def stderr_summary(")]

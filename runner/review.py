@@ -92,12 +92,17 @@ _PROVIDER_DOWN_PHRASE = {
     "provider_unavailable": "the review provider is unavailable",
 }
 
-# A refund-style claim ("the agent never ran") only holds when the whole output IS the failure. The
-# CLIs put a total provider failure in the result text with nothing else around it — observed
-# verbatim as "Failed to authenticate. API Error: 401 OAuth access token has been revoked." — while a
-# real review that merely quotes a status number runs to hundreds of lines. Same bound, and the same
-# reasoning, as TauCetiWorker's classify_agent_failure.
-_TEXT_AS_DIAGNOSIS_MAX_LINES = 6
+# The result text is the CLI's own diagnosis only when the CLI SAYS the run failed. Length is not a
+# trust boundary: `text` is model output, the diff being reviewed is untrusted, and a short review
+# that never emitted its marker ("the `/login` handler returns 401 on an expired token") would
+# otherwise read as an auth outage — which, downstream, refunds the round instead of ever charging a
+# PR whose review genuinely cannot complete. So require a structured failure signal first: claude's
+# own `is_error`, codex's parsed `error_status`/`error_message`, or a non-zero exit. The observed
+# failures all carry one ("Failed to authenticate. API Error: 401 OAuth access token has been
+# revoked." arrives with returncode 1), and a model that merely talks about a 401 while its CLI
+# reports success no longer can.
+def _cli_reports_failure(res):
+    return bool(res.get("is_error")) or bool(res.get("returncode")) or res.get("error_status") is not None
 
 
 def error_kind(res):
@@ -105,14 +110,13 @@ def error_kind(res):
     produced no verdict"; this only classifies. It reads stderr but returns none of it, so the answer
     is safe to publish anywhere.
 
-    The result TEXT is read too, but only when it is short enough to be the whole diagnosis. Claude
-    Code in -p mode reports a provider failure as the `result` field with an empty stderr, so a
-    stderr-only classifier called every one of those `unknown_error` — which is how 639 quota and
-    auth failures were filed as reviews, and nine of them posted to a PR as blocking `error` rows."""
-    hay = f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}"
-    text = (res.get("text") or "").strip()
-    if text and len(text.splitlines()) <= _TEXT_AS_DIAGNOSIS_MAX_LINES:
-        hay += f"\n{text}"
+    The result TEXT is read too, but only once the CLI has reported the run as failed. Claude Code in
+    -p mode puts a total provider failure in `result` with an empty stderr, so a stderr-only
+    classifier called every one of those `unknown_error` — which is how 639 quota and auth failures
+    were filed as reviews, and nine of them posted to a PR as blocking `error` rows."""
+    hay = f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}\n{res.get('error_message') or ''}"
+    if _cli_reports_failure(res):
+        hay += f"\n{(res.get('text') or '').strip()}"
     for kind, pattern in _ERROR_KINDS:
         if pattern.search(hay):
             return kind
@@ -142,7 +146,7 @@ def abort_provider_down(ctx):
     ctx.pr_state.pop("pending_publication_head_sha", None)
     if not ctx.a.dry_run:
         ctx.ledger.persist()
-    kind = ctx.provider_down_kind or "provider_unavailable"
+    kind = ctx.down_kind()
     print(
         f"\nAborting after {len(ctx.ran)} rubric(s): no scoreboard was rendered and nothing was "
         f"posted to #{ctx.a.pr}. The rubrics that errored re-run on the next round.",
@@ -152,7 +156,8 @@ def abort_provider_down(ctx):
     # review from the last non-empty line of this log (TauCetiWorker's review_diagnostics).
     print(
         f"review aborted: {_PROVIDER_DOWN_PHRASE[kind]} "
-        f"({ctx.provider_down_streak} consecutive `{kind}` failures)",
+        f"(every configured provider — {', '.join(sorted(ctx.providers))} — failed "
+        f"{PROVIDER_DOWN_LIMIT} consecutive attempts)",
         file=sys.stderr,
     )
     sys.exit(PROVIDER_DOWN_EXIT)
@@ -303,15 +308,39 @@ class RunContext:
     codex_model_explicit: bool = False   # --codex-model was passed → honor the pin, skip auto-fallback
     ran: list = field(default_factory=list)
     run_results: list = field(default_factory=list)
-    # Consecutive rubrics whose failure was the provider being unusable, reset by any rubric that
-    # produced a verdict. Read by the phase loops through provider_is_down().
-    provider_down_streak: int = 0
-    provider_down_kind: str = ""
+    # Consecutive provider-down ATTEMPTS per provider, and the kind each was last down for. Keyed by
+    # provider because a rubric picks one: a claude auth failure and a codex rate limit are two
+    # different outages, and neither says the other provider cannot serve. Read through
+    # provider_is_down().
+    provider_down_streak: dict = field(default_factory=dict)
+    provider_down_kind: dict = field(default_factory=dict)
+
+    def note_provider_down(self, provider, kind, attempts):
+        """Record `attempts` consecutive provider-down attempts for `provider`, or reset it."""
+        if kind is None:
+            self.provider_down_streak[provider] = 0
+            self.provider_down_kind.pop(provider, None)
+        else:
+            self.provider_down_streak[provider] = self.provider_down_streak.get(provider, 0) + attempts
+            self.provider_down_kind[provider] = kind
 
     def provider_is_down(self):
-        """True once the provider has failed PROVIDER_DOWN_LIMIT rubrics in a row for a reason that
-        will not change by calling it again."""
-        return self.provider_down_streak >= PROVIDER_DOWN_LIMIT
+        """True once EVERY dispatchable provider has failed PROVIDER_DOWN_LIMIT attempts in a row for
+        a reason that will not change by calling it again.
+
+        Attempts, not rubrics: run_rubric already retries, so a reply or contest round that dispatches
+        a single rubric confirms the diagnosis twice within that one rubric and must be able to stop
+        just as a ten-rubric round does. Every provider, not any: with two configured, one being out
+        of quota is not an outage while the other can still review — the round should be poorer, not
+        abandoned, and the abort's promise to the caller is that nothing else could have been done."""
+        return bool(self.providers) and all(
+            self.provider_down_streak.get(p, 0) >= PROVIDER_DOWN_LIMIT for p in self.providers
+        )
+
+    def down_kind(self):
+        """The kind to name in the abort, when they agree; else a generic provider outage."""
+        kinds = {self.provider_down_kind.get(p) for p in self.providers}
+        return kinds.pop() if len(kinds) == 1 else "provider_unavailable"
 
 
 def run_rubric(ctx, rubric):
@@ -501,17 +530,17 @@ def run_rubric(ctx, rubric):
     if not v:
         kind = error_kind(res)
         print(f"[{rubric}] no verdict: {kind}", file=sys.stderr)
-        if kind in PROVIDER_DOWN_KINDS:
-            ctx.provider_down_streak += 1
-            ctx.provider_down_kind = kind
-        else:
-            ctx.provider_down_streak = 0
+        # Count the ATTEMPTS this rubric spent confirming the diagnosis, not the rubric. Each of them
+        # was a separate dispatch to the same provider seconds apart, so two of them are the two
+        # confirmations PROVIDER_DOWN_LIMIT asks for even when the round holds one rubric.
+        down = sum(1 for a in attempts if a.get("error_kind") in PROVIDER_DOWN_KINDS)
+        ctx.note_provider_down(provider, kind if kind in PROVIDER_DOWN_KINDS else None, down)
         if not os.environ.get("GITHUB_ACTIONS"):
             line = stderr_summary(res)
             if line:
                 print(f"[{rubric}]   ! {line}", file=sys.stderr)
     else:
-        ctx.provider_down_streak = 0
+        ctx.note_provider_down(provider, None, 0)
 
 
 def main():
