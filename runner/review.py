@@ -38,7 +38,10 @@ DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
 # which the review workflow commits and pushes. Raw stderr is arbitrary provider output and can carry
 # a key fragment, an authorization header, or a quoted request; a session id names a transcript. They
 # are stripped recursively, so a field added to an attempt cannot start publishing either by accident.
-PRIVATE_KEYS = ("session_id", "raw_stderr")
+# raw_stdout joined these when the reviewer moved to stream-json: its tail is the last events of
+# the stream, and a tool_result block carries the file the reviewer just read. Kept in-process
+# for a local operator's diagnosis, never persisted.
+PRIVATE_KEYS = ("session_id", "raw_stderr", "raw_stdout")
 
 
 def public_record(value):
@@ -401,7 +404,11 @@ def run_rubric(ctx, rubric):
         return r
 
     def has_verdict(r):
-        return r["returncode"] == 0 and extract_verdict(r.get("text", ""), marker) is not None
+        # A run the CLI itself reports as failed is not a review, however well-formed its text looks:
+        # a partial or injected result could carry a syntactically valid marker and object, and
+        # accepting it would publish an outage or an injection as a verdict.
+        return (r["returncode"] == 0 and not _cli_reports_failure(r)
+                and extract_verdict(r.get("text", ""), marker) is not None)
 
     res = attempt()
     cost = res.get("cost_usd") or 0.0
@@ -482,6 +489,7 @@ def run_rubric(ctx, rubric):
             # would republish the PR under review. This is what makes "verify before you assert"
             # checkable after the fact instead of taken on trust.
             "tool_trace": res.get("tool_trace") or None,
+            "tool_trace_meta": res.get("tool_trace_meta") or None,
             "attempts": public_record(attempts),
             "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
             "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,
