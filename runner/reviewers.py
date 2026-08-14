@@ -284,8 +284,13 @@ def run_claude(prompt, cwd, model, env):
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     try:
         d = json.loads(r.stdout)
+        # `is_error` is the CLI's own structured verdict on its run: True when `result` carries a
+        # failure message instead of a review. Keep it, so a classifier never has to decide whether
+        # model PROSE that mentions a status code is a provider failure — the diff being reviewed is
+        # untrusted and can put those words in a reviewer's mouth. `subtype` names the failure.
         out.update(text=d.get("result", ""), cost_usd=d.get("total_cost_usd"),
-                   usage=d.get("usage"), session_id=d.get("session_id"))
+                   usage=d.get("usage"), session_id=d.get("session_id"),
+                   is_error=d.get("is_error"), error_subtype=d.get("subtype"))
     except Exception as e:
         out.update(text="", parse_error=str(e), raw_stdout=r.stdout[-3000:])
     return out
