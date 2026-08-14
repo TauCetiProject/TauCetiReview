@@ -274,16 +274,67 @@ def build_prompt(rubrics_dir, rubric, context, marker):
 
 
 
+# How many tool calls a run's trace records before it is truncated. A rubric that greps twenty times
+# is as diagnosable from its first forty calls as from all of them, and the field is persisted.
+_MAX_TOOL_TRACE = 40
+# Per-tool argument kept in the trace: the thing the call was ABOUT, never what it returned. A path
+# and a pattern say whether a reviewer looked before it asserted; file contents would republish the
+# PR under review into a public record, which is the one thing this must not do.
+_TOOL_TRACE_ARG = {"Read": "file_path", "Glob": "pattern", "Grep": "pattern", "Bash": "command"}
+
+
+def _tool_trace(events):
+    """A compact record of which tools a reviewer actually used, from a stream-json event list.
+
+    The engine kept only the final answer, so nothing said whether a finding came from reading the
+    code or from the model's recollection of it — and "verify before you assert: name the
+    declaration and show the grep hit" is the shared protocol's central instruction. There was no way
+    to check it was being followed."""
+    trace = []
+    for ev in events:
+        if ev.get("type") != "assistant":
+            continue
+        for block in (ev.get("message") or {}).get("content") or []:
+            if block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name") or "?")
+            arg = (block.get("input") or {}).get(_TOOL_TRACE_ARG.get(name, ""), "")
+            trace.append(f"{name} {str(arg)[:120]}".strip())
+            if len(trace) >= _MAX_TOOL_TRACE:
+                return trace
+    return trace
+
+
 def run_claude(prompt, cwd, model, env):
     # --disable-slash-commands drops skills entirely; read-only tools only. With the clean HOME in
     # reviewer_env this keeps the review independent of the runner's personal claude config. Stream
     # the prompt over stdin: large PR diffs can make a rendered rubric exceed the OS argv limit.
-    r = sh(["claude", "-p", "--output-format", "json", "--model", model,
+    #
+    # stream-json rather than json: the terminal `result` event carries every field the json format
+    # did, and the events before it are the only record of what the reviewer looked at. Parsing is
+    # tolerant — a malformed line is skipped, and a stream with no result event falls through to the
+    # same parse_error path a malformed json document took.
+    r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
             "--disable-slash-commands", "--allowedTools", "Read", "Grep", "Glob"],
            cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
+    events = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            continue
     try:
-        d = json.loads(r.stdout)
+        # A stream that ends without its terminal event is as unusable as a malformed json document
+        # was, and takes the same path — but say so, because an empty diagnosis is what made
+        # TauCetiReview#105 unreadable.
+        d = next((e for e in reversed(events) if e.get("type") == "result"), None)
+        if d is None:
+            raise ValueError(f"no result event in {len(events)} stream-json event(s)")
+        out["tool_trace"] = _tool_trace(events)
         # `is_error` is the CLI's own structured verdict on its run: True when `result` carries a
         # failure message instead of a review. Keep it, so a classifier never has to decide whether
         # model PROSE that mentions a status code is a provider failure — the diff being reviewed is

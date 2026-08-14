@@ -477,6 +477,11 @@ def run_rubric(ctx, rubric):
             "diff_prompt_sha256": prov.get("diff_prompt_sha256"),
             "diff_prompt_truncated": prov.get("diff_prompt_truncated"),
             "started_at": started_at, "duration_s": res["duration_s"],
+            # Which tools the reviewer used, when the runner can see them. Paths and patterns only,
+            # never what they returned: the archive is public, and republishing file contents there
+            # would republish the PR under review. This is what makes "verify before you assert"
+            # checkable after the fact instead of taken on trust.
+            "tool_trace": res.get("tool_trace") or None,
             "attempts": public_record(attempts),
             "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
             "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,

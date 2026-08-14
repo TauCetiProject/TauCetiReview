@@ -30,3 +30,4 @@ jobs:
       - run: python tests/test_kiro.py
       - run: python tests/test_attempt_diagnostics.py
       - run: python tests/test_provider_down.py
+      - run: python tests/test_tool_trace.py
