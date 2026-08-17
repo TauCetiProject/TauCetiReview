@@ -8,8 +8,10 @@ honesty. Uses `request_changes`.
   needs in order to use it. Roadmap targets, layer numbers, PR-process narrative, and coordination
   status with in-flight upstream work do not belong in a module docstring; they date badly, and
   nothing updates them when the roadmap is reorganized. Roadmap attribution belongs in the PR
-  description, where the mandatory `Roadmap:` line records it. Mathematical references (a
-  textbook, a paper, or a source formalization) stay in the file.
+  description, where the required PR metadata records it. A temporary shim's replacement target
+  belongs in the repository's mechanical shim tracker, where it can trigger a migration when the
+  replacement lands. Mathematical references (a textbook, a paper, or a source formalization)
+  stay in the file; they are what `attribution.md` asks for.
 - Document public definitions, main theorems, non-obvious abbreviations, and exported
   instances whose purpose is not clear from the name. Docstrings describe the object or
   result, not the proof.
@@ -20,6 +22,6 @@ honesty. Uses `request_changes`.
 ## Verdict
 
 - `request_changes` for a missing module docstring on a substantive file, an undocumented
-  public definition or main theorem, a docstring about the proof or about the project's process,
-  or one that overclaims or is inaccurate.
+  public definition or main theorem, a docstring about the proof, a module docstring about the
+  project's process, or one that overclaims or is inaccurate.
 - `approve` when each substantive file and public declaration is documented accurately.
