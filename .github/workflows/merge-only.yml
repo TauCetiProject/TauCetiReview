@@ -1,10 +1,10 @@
 name: merge-only
 
-# A cheap, no-dispatch auto-merge: read the EXISTING review ledger (reviews branch) and, if a PR is
-# all-green and the path policy permits it, add it to the merge queue. Generates NO
-# reviews, stages NO provider keys, and runs NO reviewer — reviews are produced by people running tauceti-review
-# locally; CI just reads what is already on the ledger and enqueues. This keeps auto-merge automatic
-# with the expensive review API spend turned off (see runner/review.py --mode merge).
+# A cheap, no-dispatch auto-merge: read the newest scoreboard comment, require it to name the current
+# head, and, if it is all-green and the path policy permits it, add the PR to the merge queue.
+# Generates NO reviews, stages NO provider keys, and runs NO reviewer — reviews are produced by the
+# operator-run worker or by people running tauceti-review locally. This keeps auto-merge automatic
+# with expensive CI review generation off.
 #
 # Enqueue, not direct merge: the queue retests each entry against the CURRENT main and merges in
 # order, so an approved PR that has fallen behind main is retested and merged without any re-review,

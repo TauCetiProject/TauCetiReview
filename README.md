@@ -25,15 +25,22 @@ see [`rubrics/README.md`](rubrics/README.md) for the list and which angles can b
 
 ## Reviewing it yourself
 
-CI runs the review on the metered Anthropic / OpenAI APIs. A trusted contributor can run the
-same review on their **own Claude / Codex / Kiro subscription** with the `tauceti-review` CLI — no API
-bill. See [REVIEWING.md](REVIEWING.md):
+Tau Ceti has a metered-API CI review workflow, but production review generation is currently
+disabled there to conserve that budget. Reviews instead come from the trusted operator-run worker
+and from ad hoc command-line runs. A trusted contributor can run the same engine on their **own
+Claude / Codex / Kiro subscription** with the `tauceti-review` CLI — no API bill. See
+[REVIEWING.md](REVIEWING.md):
 
 ```bash
 uvx --from git+https://github.com/TauCetiProject/TauCetiReview tauceti-review 42
 uvx --from git+https://github.com/TauCetiProject/TauCetiReview tauceti-review 42 \
   --reviewer kiro --kiro-model gpt-5.6-sol
 ```
+
+With `--post`, the scoreboard comment is the live review verdict: Tau Ceti's auto-merge workflows
+read the newest marked comment and require it to name the current head. Uploading the detailed run
+records to TauCetiData is separate archival for analytics and provenance; it does not determine
+whether a posted review counts.
 
 ## Meta-review
 
@@ -65,4 +72,5 @@ counts at the rate in effect on each run's date. See [runner/COSTS.md](runner/CO
 - `runner/` — the review engine (`review.py` + `post.py`) and the `tauceti-review` CLI (live).
 - `runner/costs.py` — the `tauceti-review-costs` analytics CLI (live).
 - `runner/prices.json` — model rates; every dispatchable model must be priced (CI-enforced in `tests/`, and the engine fails fast on an unpriced model). Each archived run is stamped with a `prices_sha` so its cost is auditable.
-- The GitHub Actions workflows — review + `tests` (price coverage) — live.
+- The GitHub Actions workflows — reusable review and merge helpers plus `tests` (price coverage) —
+  live. Tau Ceti's caller currently disables metered review generation, as described above.

@@ -54,8 +54,8 @@ CACHE_DIR = pathlib.Path(
 # to claim a commit reviews it, and any other run — whatever model it would use — yields, so a commit
 # is reviewed exactly once regardless of model (a new push is a fresh head, hence a fresh unit). The
 # marker still records which providers are running, but only for display; it is not part of the
-# de-contention key. Trust is NOT gated on author association (unlike the scoreboard, which drives
-# merges): a forged marker can at worst delay a review by its TTL — no inference runs, no data lands —
+# de-contention key. Trust is NOT gated on author association, matching the scoreboard merge gate:
+# a forged marker can at worst delay a review by its TTL — no inference runs, no data lands —
 # so honoring anyone's marker is what lets a fleet of non-collaborators coordinate at all.
 COORD_MARKER = "tauceti-review-in-progress"
 COORD_RE = re.compile(r"<!--tauceti-review-in-progress (.*?)-->", re.S)
