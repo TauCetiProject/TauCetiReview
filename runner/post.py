@@ -220,13 +220,17 @@ def current_login():
 
 
 def find_scoreboard_comments(repo, pr):
-    """Trusted scoreboard comments on the PR as {id, login, ...}, newest first.
+    """Scoreboard comments eligible for cross-machine reuse as {id, login, ...}, newest first.
 
     So a review run whose local store does not know the scoreboard's comment id (the PR was last
     scored by CI or another machine) can edit the existing comment in place instead of posting a
-    duplicate. Trust mirrors the consumer side: the scoreboard marker AND a repo-associated author
-    (or the review bot) — a forged scoreboard from an untrusted commenter is ignored. `@json` forces
-    one compact object per line so parsing is robust. Best-effort: returns [] on any API error."""
+    duplicate. Reuse is deliberately narrower than the merge consumer: discovery returns only
+    scoreboards from a repo-associated author or the review bot, and `upsert_scoreboard` then selects
+    only comments authored by the current login before editing or deleting. Consequently an outside
+    contributor's own scoreboard is not discoverable on another machine and a later run may post a
+    duplicate. The merge gate separately reads the newest marked scoreboard from any author. `@json`
+    forces one compact object per line so parsing is robust. Best-effort: returns [] on any API
+    error."""
     r = subprocess.run(
         ["gh", "api", "--paginate", f"/repos/{repo}/issues/{pr}/comments", "--jq",
          '.[] | select((.body // "") | contains("' + SCOREBOARD_MARKER + '")) '

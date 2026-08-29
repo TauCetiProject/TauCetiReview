@@ -107,9 +107,14 @@ def test_enqueue_already_in_queue_is_benign():
     assert not sweep.enqueue_is_benign("")
 
 
-def _scoreboard(head, states):
+def _scoreboard(head, states, updated="2026-06-26T00:00:00Z"):
     meta = "<!--tauceti-meta:v1 " + json.dumps({"head_sha": head, "states": states}) + "-->"
-    return [{"body": "<!--tauceti-scoreboard-->\n" + meta, "updated_at": "2026-06-26T00:00:00Z"}]
+    return [{"body": "<!--tauceti-scoreboard-->\n" + meta, "updated_at": updated}]
+
+
+def _marker(head, expires_at):
+    meta = json.dumps({"head": head, "expires_at": expires_at, "providers": ["codex"]})
+    return {"body": "<!--tauceti-review-in-progress " + meta + "-->"}
 
 
 def test_gate_is_shared_with_merge_only():
@@ -133,6 +138,58 @@ def test_gate_is_shared_with_merge_only():
         _scoreboard(head, green), head, required, diff2, "SUCCESS", "", scope="SUCCESS")["merge"]
 
 
+def test_every_current_head_scoreboard_must_be_green():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    blocking = {"correctness": "green", "reuse": "blocking_request"}
+    diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
+
+    comments = (_scoreboard(head, blocking, "2026-06-26T00:00:00Z")
+                + _scoreboard(head, green, "2026-06-26T01:00:00Z"))
+    decision = mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+    assert not decision["review_safe"] and not decision["merge"]
+
+    # A blocking scoreboard for an old head says nothing about the current commit.
+    comments = _scoreboard("oldbeef", blocking) + _scoreboard(head, green)
+    decision = mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+    assert decision["review_safe"] and decision["merge"]
+
+
+def test_live_review_marker_pauses_the_queue_until_it_expires():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
+    comments = _scoreboard(head, green) + [_marker(head, 2000)]
+
+    decision = mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", now=1000)
+    assert not decision["review_safe"] and not decision["merge"]
+
+    decision = mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", now=2000)
+    assert decision["review_safe"] and decision["merge"]
+
+    # Malformed marker payloads fail harmlessly rather than crashing the gate.
+    comments.append({"body": "<!--tauceti-review-in-progress []-->"})
+    decision = mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", now=2000)
+    assert decision["review_safe"] and decision["merge"]
+
+
+def test_review_safe_is_separate_from_automatic_path_policy():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    human_owned = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
+    decision = mfs.decide_from_comments(
+        _scoreboard(head, green), head, required, human_owned, "SUCCESS", "", scope="SUCCESS")
+    assert decision["review_safe"] and not decision["merge"]
+
+
 def test_workflows_pass_status_contexts():
     root = pathlib.Path(__file__).resolve().parent.parent
     merge_only = (root / ".github/workflows/merge-only.yml").read_text()
@@ -146,6 +203,9 @@ def test_workflows_pass_status_contexts():
         assert query in merge_only
         assert query in review
     assert 'ref: ${{ inputs.review_ref }}' in merge_only
+    assert 'dequeuePullRequest' in merge_only
+    assert 'jq -r .review_safe merge.json' in merge_only
+    assert 'already in the queue' in merge_only
     merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
     assert 'ref: ${{ inputs.review_ref }}' in merge_sweep
     assert '"headRefOid,baseRefName,id,labels,statusCheckRollup"' in sweep_source

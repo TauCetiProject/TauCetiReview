@@ -1,10 +1,11 @@
 name: merge-only
 
-# A cheap, no-dispatch auto-merge: read the EXISTING review ledger (reviews branch) and, if a PR is
-# all-green and the path policy permits it, add it to the merge queue. Generates NO
-# reviews, stages NO provider keys, and runs NO reviewer — reviews are produced by people running tauceti-review
-# locally; CI just reads what is already on the ledger and enqueues. This keeps auto-merge automatic
-# with the expensive review API spend turned off (see runner/review.py --mode merge).
+# A cheap, no-dispatch queue reconciler: require every scoreboard at the current head to be green and
+# no review to be in progress. Enqueue when that review state and the path policy permit it; dequeue
+# when the review state becomes unsafe.
+# Generates NO reviews, stages NO provider keys, and runs NO reviewer — reviews are produced by the
+# operator-run worker or by people running tauceti-review locally. This keeps auto-merge automatic
+# with expensive CI review generation off.
 #
 # Enqueue, not direct merge: the queue retests each entry against the CURRENT main and merges in
 # order, so an approved PR that has fallen behind main is retested and merged without any re-review,
@@ -71,29 +72,31 @@ jobs:
           gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
 
-      - name: Fetch this PR's scoreboard comment(s)
+      - name: Fetch this PR's review comments
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
-          # The merge gate's verdict source is the PR's scoreboard COMMENT: every reviewer (the worker,
+          # The merge gate's verdict source is the PR's review COMMENTS: every reviewer (the worker,
           # or anyone running tauceti-review with no repo write) posts one carrying a tauceti-meta:v1
           # block with head_sha + a full per-rubric `states` map. No access bar: a contributor's review
           # counts via their posted comment. The hard boundary a forged scoreboard cannot bypass remains
           # the build + scope + bump-guard checks below.
           # Fetch ALL comments: an external reviewer can't edit the worker's scoreboard comment, so
-          # they post their OWN — which on a busy PR could be past page 1, and the gate picks the
-          # NEWEST scoreboard, so a single page could hide it. `--paginate` with a non-array --jq
+          # they post their OWN — which on a busy PR could be past page 1. Every current-head
+          # scoreboard must be considered, so a single page could hide one.
+          # `--paginate` with a non-array --jq
           # emits one JSON object per line (JSONL), concatenated across pages (a bare --paginate would
           # concatenate per-page arrays into invalid JSON; --slurp can't combine with --jq).
           gh api --paginate "repos/TauCetiProject/TauCeti/issues/$PR/comments" \
             --jq '.[] | {body, updated_at, created_at}' > comments.json
           echo "fetched $(wc -l < comments.json) comment(s) for #$PR"
 
-      - name: Compute merge decision from the scoreboard comment (no dispatch, no spend)
+      - name: Compute queue decision from the review comments (no dispatch, no spend)
         run: |
           set -euo pipefail
-          # Mergeable iff the newest scoreboard comment is AT THE CURRENT HEAD with every required rubric
-          # green (head-pinned), and the shared decide_merge rule holds (build + scope green,
+          # Review-safe iff at least one scoreboard is at the current head, every scoreboard there has
+          # every required rubric green, and no live review marker claims that head. Mergeable also
+          # requires the shared decide_merge rule (build + scope green,
           # TauCeti/-only + allowed root/pins, bump-guard for a pin). Reads the full `states` from the meta, falling back
           # to the rendered table for comments posted before that field existed.
           python3 runner/merge_from_scoreboard.py \
@@ -114,22 +117,46 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Enqueue if all rubrics and the path policy approve
+      - name: Reconcile the merge queue
         env:
           GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
           REPO: TauCetiProject/TauCeti
         run: |
           set -euo pipefail
-          if [ ! -f merge.json ] || [ "$(jq -r .merge merge.json)" != "true" ]; then
-            echo "not enqueuing: $(jq -r '.reason // "no decision file"' merge.json 2>/dev/null || echo 'no decision file')"
-            exit 0
-          fi
-          # Re-read state right before enqueuing: the decision was computed for HEAD_SHA, so only
-          # enqueue if that is still the head (a later push re-triggers with a fresh decision).
+          # Re-read state immediately before either mutation and bind enqueue to the reviewed head.
           read -r CUR_HEAD PRID < <(gh pr view "$PR" --repo TauCetiProject/TauCeti \
             --json headRefOid,id -q '.headRefOid + " " + .id')
+
+          dequeue() {
+            echo "dequeueing #$PR: $1"
+            if out=$(gh api graphql -f query='mutation($id: ID!) {
+              dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { position } }
+            }' -f id="$PRID" 2>&1); then
+              echo "$out"; echo "dequeued #$PR."
+            else
+              echo "$out"
+              if printf '%s' "$out" | grep -qiE 'not in the (merge )?queue|already merged|could not resolve|not found'; then
+                echo "dequeue not applied (already absent from the queue)."
+              else
+                echo "::error::unexpected dequeue failure for #$PR"; exit 1
+              fi
+            fi
+          }
+
+          if [ ! -f merge.json ]; then
+            echo "::error::no queue decision file"; exit 1
+          fi
+          REASON=$(jq -r '.reason // "no reason"' merge.json)
+          if [ "$(jq -r .review_safe merge.json)" != "true" ]; then
+            dequeue "$REASON"
+            exit 0
+          fi
+          if [ "$(jq -r .merge merge.json)" != "true" ]; then
+            echo "review state is safe, but not automatically enqueuing: $REASON"
+            exit 0
+          fi
           if [ "$CUR_HEAD" != "$HEAD_SHA" ]; then
-            echo "head moved ($HEAD_SHA -> $CUR_HEAD) since the decision; skipping (a fresh build will re-trigger)."
+            dequeue "head moved ($HEAD_SHA -> $CUR_HEAD) since the decision"
             exit 0
           fi
           # ---- merge-queue reservation (runner/queue_reservation.py explains why) ----
@@ -181,7 +208,7 @@ jobs:
             # moved (expectedHeadOid mismatch), or GitHub does not currently consider it mergeable.
             # Anything else (auth, permissions, queue disabled, malformed query) is a real fault: fail
             # loudly so a broken merge path is visible rather than silently never merging.
-            if printf '%s' "$out" | grep -qiE 'already queued|already in the merge queue|expected head|head .*(moved|changed|match)|not mergeable|mergeable state'; then
+            if printf '%s' "$out" | grep -qiE 'already queued|already in the merge queue|already in the queue|expected head|head .*(moved|changed|match)|not mergeable|mergeable state'; then
               echo "enqueue not applied (already queued / head moved / not yet mergeable) — a later trigger retries."
             else
               echo "::error::unexpected enqueue failure for #$PR"; exit 1

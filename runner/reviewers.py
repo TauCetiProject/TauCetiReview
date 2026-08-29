@@ -274,20 +274,168 @@ def build_prompt(rubrics_dir, rubric, context, marker):
 
 
 
+# How many tool calls a run's trace records before it is truncated. A rubric that greps twenty times
+# is as diagnosable from its first forty calls as from all of them, and the field is persisted.
+# How many tool calls a run records before the trace is truncated; `total_calls` says how many there
+# really were, so a truncated trace never reads as a complete one.
+_MAX_TOOL_TRACE = 40
+
+# The reviewer's whole tool set: read the code, search it, list it. Nothing that writes, and nothing
+# that reaches the network. Named once because run_claude passes it to two flags that mean different
+# things (see there), and because a test asserts the set has no shell in it.
+_REVIEW_TOOLS = ("Read", "Grep", "Glob")
+
+# What the trace records for each tool. A path only, and only after it is proved to name a file that
+# already exists inside the reviewer's workspace.
+#
+# NOT the model's own words. Grep patterns and Bash commands are chosen by a model reading an
+# untrusted diff, and both persisted sinks are public: `--store` is a checkout of this repo's
+# `reviews` branch that CI pushes, and the archive record goes to TauCetiData. reviewer_env's
+# docstring already concedes that a prompt-injected reviewer can read its own credential from
+# /proc/self/environ; recording its next Grep pattern verbatim would hand it a way to publish that
+# credential. `--allowedTools` governs permission, not visibility, so a DENIED Bash request still
+# arrives as a tool_use block and would have been recorded with its command.
+#
+# An existing workspace path is safe in a way arbitrary text is not: the reviewer's tools are
+# read-only, so it cannot create the file whose name would carry a secret, and everything already in
+# the workspace (the PR head, the roadmap, Mathlib) is public. A path that does not resolve there is
+# recorded as a bucket rather than dropped, because "it tried to read outside the workspace" is
+# exactly the thing an audit wants to see.
+_TOOL_TRACE_PATH_ARG = {"Read": "file_path", "Grep": "path", "Glob": "path"}
+_OUTSIDE = "<outside-workspace>"
+_MISSING = "<not-found>"
+
+
+def _trace_target(name, tool_input, root):
+    """The safe, publishable target of one tool call, or "" when the tool takes no path."""
+    key = _TOOL_TRACE_PATH_ARG.get(name)
+    if key is None:
+        return ""
+    raw = (tool_input or {}).get(key)
+    if not isinstance(raw, str) or not raw:
+        return ""
+    try:
+        resolved = os.path.realpath(os.path.join(root, raw))
+        base = os.path.realpath(root)
+        if os.path.commonpath([resolved, base]) != base:
+            return _OUTSIDE
+        if not os.path.exists(resolved):
+            return _MISSING
+        return os.path.relpath(resolved, base)
+    except (OSError, ValueError):
+        return _OUTSIDE
+
+
+def _tool_trace(stream_lines, root):
+    """Which tools a reviewer used, on what, and whether the call worked.
+
+    The engine kept only the final answer, so nothing said whether a finding came from reading the
+    code or from the model's recollection of it — and "verify before you assert: name the
+    declaration and show the grep hit" is the shared protocol's central instruction, previously
+    unfalsifiable. A request is not an inspection, so each entry carries the paired tool_result's
+    outcome: a denied or failed Read must not read as a successful one.
+
+    Returns `(trace, meta, result_event)`. Events are consumed as they are parsed and only the
+    terminal result is retained, so a long review does not sit in memory twice."""
+    trace, pending, result = [], {}, None
+    total = malformed = 0
+    for line in stream_lines:
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            malformed += 1
+            continue
+        kind = ev.get("type")
+        if kind == "result":
+            result = ev  # last one wins; multi-result streams are not expected
+            continue
+        content = (ev.get("message") or {}).get("content") or []
+        if kind == "assistant":
+            for block in content:
+                if block.get("type") != "tool_use":
+                    continue
+                total += 1
+                if len(trace) >= _MAX_TOOL_TRACE:
+                    continue
+                name = str(block.get("name") or "?")[:40]
+                target = _trace_target(name, block.get("input"), root)
+                trace.append({"tool": name, "target": target} if target else {"tool": name})
+                pending[block.get("id")] = trace[-1]
+        elif kind == "user":
+            # The paired outcome, and nothing else from this event: a tool_result's `content` is the
+            # file the reviewer just read.
+            for block in content:
+                if block.get("type") != "tool_result":
+                    continue
+                entry = pending.pop(block.get("tool_use_id"), None)
+                if entry is not None:
+                    entry["ok"] = not block.get("is_error")
+    meta = {"total_calls": total, "trace_truncated": total > len(trace)}
+    if malformed:
+        meta["malformed_events"] = malformed
+    return trace, meta, result
+
+
 def run_claude(prompt, cwd, model, env):
     # --disable-slash-commands drops skills entirely; read-only tools only. With the clean HOME in
     # reviewer_env this keeps the review independent of the runner's personal claude config. Stream
     # the prompt over stdin: large PR diffs can make a rendered rubric exceed the OS argv limit.
-    r = sh(["claude", "-p", "--output-format", "json", "--model", model,
-            "--disable-slash-commands", "--allowedTools", "Read", "Grep", "Glob"],
+    #
+    # stream-json rather than json: the terminal `result` event carries every field the json format
+    # did, and the events before it are the only record of what the reviewer looked at. Parsing is
+    # tolerant — a malformed line is counted and skipped, and a stream with no result event falls
+    # through to the same parse_error path a malformed json document took.
+    r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
+            "--disable-slash-commands",
+            # --tools RESTRICTS the built-in set; --allowedTools only grants permission within
+            # whatever set exists. With --allowedTools alone the reviewer still had Bash, and used
+            # it: of 427 traced tool calls, 295 were Bash and 278 of those SUCCEEDED. Reproduced
+            # directly in this environment's shape — `claude -p --allowedTools Read Grep Glob`
+            # answering "SHELL_IS_AVAILABLE" — so this was never a permission that was being
+            # declined, it was a shell nobody knew the reviewer had.
+            #
+            # That contradicts what the rest of this module is built on. reviewer_env calls the
+            # isolation load-bearing "with public transcripts and no redaction gate", and names its
+            # residual as a reviewer reading its OWN key from /proc/self/environ. A shell plus the
+            # egress a reviewer needs to reach its provider turns that residual into a direct
+            # exfiltration path. run_pi states the intended property outright: "a read-only tool set
+            # (PI_TOOLS, no bash) means it has no shell to leak it with." Now true here too.
+            #
+            # Both flags: --tools removes the tool, --allowedTools keeps the remaining three from
+            # prompting. --disallowedTools was the other candidate and is worse — it blocks Bash but
+            # leaves Write and Edit in the set.
+            "--tools", *_REVIEW_TOOLS,
+            "--allowedTools", *_REVIEW_TOOLS],
            cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
+    trace, meta, d = _tool_trace(r.stdout.splitlines(), cwd or ".")
     try:
-        d = json.loads(r.stdout)
+        # A stream that ends without its terminal event is as unusable as a malformed json document
+        # was, and takes the same path — but say so, because an empty diagnosis is what made
+        # TauCetiReview#105 unreadable.
+        if d is None:
+            raise ValueError(f"no result event in a {len(r.stdout)}-byte stream-json stream")
+        out.update(tool_trace=trace, tool_trace_meta=meta)
+        # `is_error` is the CLI's own structured verdict on its run: True when `result` carries a
+        # failure message instead of a review. Keep it, so a classifier never has to decide whether
+        # model PROSE that mentions a status code is a provider failure — the diff being reviewed is
+        # untrusted and can put those words in a reviewer's mouth.
+        #
+        # `subtype` is NOT that signal: an API failure arrives as is_error=true WITH
+        # subtype="success" (observed). `api_error_status` is the field that names it.
         out.update(text=d.get("result", ""), cost_usd=d.get("total_cost_usd"),
-                   usage=d.get("usage"), session_id=d.get("session_id"))
+                   usage=d.get("usage"), session_id=d.get("session_id"),
+                   is_error=d.get("is_error"), error_subtype=d.get("subtype"),
+                   error_status=d.get("api_error_status"))
     except Exception as e:
-        out.update(text="", parse_error=str(e), raw_stdout=r.stdout[-3000:])
+        # NOT the raw stream. Under stream-json its tail is whatever events came last, which
+        # includes tool_result blocks — the files the reviewer read. raw_stdout is stripped from
+        # every persisted sink (PRIVATE_KEYS), and this says only what shape the stream had.
+        out.update(text="", parse_error=str(e), tool_trace=trace, tool_trace_meta=meta,
+                   raw_stdout=r.stdout[-3000:])
     return out
 
 

@@ -165,7 +165,7 @@ def test_known_foreign_id_posts_fresh_even_if_we_have_another():
     assert not failures
 
 
-# --- find_scoreboard_comments (parsing + trust + ordering) ---------------------------------------
+# --- find_scoreboard_comments (parsing + reuse eligibility + ordering) ---------------------------
 
 def _fake_run(stdout, code=0):
     def run_(args, text=True, capture_output=True):
@@ -177,7 +177,7 @@ def test_find_parses_filters_and_orders(monkeypatch=None):
     lines = "\n".join([
         '{"id":200,"login":"tauceti-review-bot[bot]","assoc":"NONE","updated_at":"2026-06-18T02:00:00Z"}',
         '{"id":150,"login":"alice","assoc":"COLLABORATOR","updated_at":"2026-06-18T01:00:00Z"}',
-        '{"id":120,"login":"mallory","assoc":"NONE","updated_at":"2026-06-18T03:00:00Z"}',  # untrusted
+        '{"id":120,"login":"mallory","assoc":"NONE","updated_at":"2026-06-18T03:00:00Z"}',  # ineligible for reuse
     ])
     orig = post.subprocess.run
     post.subprocess.run = _fake_run(lines)

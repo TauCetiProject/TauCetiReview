@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Compute the auto-merge decision from the PR's scoreboard COMMENT (the live verdict source).
+"""Compute the auto-merge decision from the PR's scoreboard COMMENTS (the live verdict source).
 
 Any reviewer — the worker, or anyone running tauceti-review — posts a scoreboard comment on the PR
 carrying a `<!--tauceti-meta:v1 {...}-->` block with `head_sha` and a full per-rubric `states` map. A
-PR is mergeable when the newest scoreboard comment is AT THE PR'S CURRENT HEAD and every required
-rubric is green there, and the shared `decide_merge` rule holds (build green, TauCeti/-only + allowed
-root/pins, bump-guard for a pin). This is the "no bar" model: trust is the posted comment itself, so a
-contributor with no repo write can still have their review count. The HARD boundary that a forged
-scoreboard cannot bypass remains the CI build + scope + axiom audit + bump-guard checks.
+PR's review state is safe for the queue when at least one scoreboard is at the current head, every
+scoreboard at that head has every required rubric green, and no unexpired review-in-progress marker
+claims that head. It is mergeable when that review state is safe and the shared `decide_merge` rule
+also holds (build green, TauCeti/-only + allowed root/pins, bump-guard for a pin). This is the "no bar"
+model: trust is the posted comment itself, so a contributor with no repo write can still have their
+review count. The HARD boundary that a forged scoreboard cannot bypass remains the CI build + scope +
+axiom audit + bump-guard checks.
 
 For comments whose meta predates the `states` field, fall back to reading the rendered scoreboard
 table (one row per rubric; the 3rd cell is the state word). Writes `merge.json` like before.
@@ -21,26 +23,18 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 
 from review import DEFAULT_RUBRICS, changed_paths, decide_merge
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
+COORD_RE = re.compile(r"<!--tauceti-review-in-progress (.*?)-->", re.S)
 # A rendered scoreboard row: | <icon> | [rubric](url) | <state word> | `judge` | summary |
 TABLE_ROW_RE = re.compile(r"^\|[^|]*\|\s*\[?([a-z0-9-]+)\]?[^|]*\|\s*([^|]+?)\s*\|", re.M)
 WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
-
-
-def newest_scoreboard(comments):
-    """The newest comment carrying the scoreboard marker. No access bar: any author; an updated or
-    newer scoreboard supersedes an older one (the engine edits the canonical one in place)."""
-    boards = [c for c in comments if SCOREBOARD_MARKER in (c.get("body") or "")]
-    if not boards:
-        return None
-    boards.sort(key=lambda c: c.get("updated_at") or c.get("created_at") or "")
-    return boards[-1]
 
 
 def parse_meta(body):
@@ -62,6 +56,44 @@ def states_from_table(body):
         if rubric in DEFAULT_RUBRICS and w in WORD_STATE:
             out[rubric] = WORD_STATE[w]
     return out
+
+
+def current_scoreboards(comments, head_sha):
+    """Valid scoreboard comments for this exact head. There is deliberately no author access bar:
+    ordinary contributors' posted reviews count, just as they did in the original merge gate."""
+    out = []
+    for comment in comments:
+        body = comment.get("body") or ""
+        if SCOREBOARD_MARKER not in body:
+            continue
+        meta = parse_meta(body)
+        if meta and meta.get("head_sha") == head_sha:
+            out.append((comment, meta))
+    return out
+
+
+def has_live_review(comments, head_sha, now=None):
+    """Whether an unexpired review-in-progress marker claims this exact head.
+
+    Markers need only normal issue-comment access, so independent contributors can pause the queue
+    while reviewing without gaining repository permissions. Invalid, expired, and other-head markers
+    are ignored. A crashed reviewer self-clears when its marker's existing TTL expires.
+    """
+    now = int(time.time()) if now is None else now
+    for comment in comments:
+        match = COORD_RE.search(comment.get("body") or "")
+        if not match:
+            continue
+        try:
+            marker = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(marker, dict):
+            continue
+        expires = marker.get("expires_at")
+        if marker.get("head") == head_sha and isinstance(expires, int) and expires > now:
+            return True
+    return False
 
 
 DEFAULT_ALLOW = ["TauCeti.lean", "lake-manifest.json", "lean-toolchain"]
@@ -90,33 +122,42 @@ def load_comments(text):
 
 
 def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump_guard,
-                         merge_path_prefix="TauCeti/", merge_allow_file=None, scope=""):
-    """The merge gate, shared by the merge-only CLI and the merge sweep: a PR is mergeable iff the
-    newest scoreboard comment is AT `head_sha` with every `required` rubric green there, and the
-    `decide_merge` rule holds (build green, allowed paths, bump-guard for a pin).
-    Returns {"merge", "reason", "head_sha"}."""
+                         merge_path_prefix="TauCeti/", merge_allow_file=None, scope="", now=None):
+    """The gate shared by merge-only and the sweep.
+
+    `review_safe` is intentionally separate from `merge`: the reconciler should dequeue a PR when
+    its review state becomes unsafe, but should leave a human-queued PR alone when only the automatic
+    path/build policy refuses it. Returns {"review_safe", "merge", "reason", "head_sha"}.
+    """
     allow = DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file
-    board = newest_scoreboard(comments)
-    meta = parse_meta(board.get("body")) if board else None
     if not required:
-        return {"merge": False, "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
-    if not meta:
-        return {"merge": False, "reason": "no scoreboard comment at the PR; refusing to merge",
+        return {"review_safe": False, "merge": False,
+                "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
+    boards = current_scoreboards(comments, head_sha)
+    if not boards:
+        return {"review_safe": False, "merge": False,
+                "reason": "no scoreboard comment for the current head; refusing",
                 "head_sha": head_sha}
-    if (meta.get("head_sha") or "") != head_sha:
-        return {"merge": False, "head_sha": head_sha,
-                "reason": (f"scoreboard is for a different head "
-                           f"({(meta.get('head_sha') or '')[:7]} != {head_sha[:7]}); refusing")}
-    raw = meta.get("states")
-    if not isinstance(raw, dict) or not raw:
-        raw = states_from_table(board.get("body"))   # old comment: derive from the rendered table
-    states = {r: (raw.get(r) or "absent") for r in required}
+    for board, meta in boards:
+        raw = meta.get("states")
+        if not isinstance(raw, dict) or not raw:
+            raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
+        states = {r: (raw.get(r) or "absent") for r in required}
+        if not all(states[r] == "green" for r in required):
+            return {"review_safe": False, "merge": False,
+                    "reason": "a scoreboard for the current head is not all-green; refusing",
+                    "head_sha": head_sha}
+    if has_live_review(comments, head_sha, now):
+        return {"review_safe": False, "merge": False,
+                "reason": "a review is in progress for the current head; refusing",
+                "head_sha": head_sha}
+
+    states = {r: "green" for r in required}
     candidates = sorted(required)
-    all_green = all(states[r] == "green" for r in required)
     paths = changed_paths(diff_text)
-    merge_ok, reason = decide_merge(states, candidates, all_green, paths, head_sha,
+    merge_ok, reason = decide_merge(states, candidates, True, paths, head_sha,
                                     merge_path_prefix, allow, bump_guard, ci_build, scope)
-    return {"merge": merge_ok, "reason": reason, "head_sha": head_sha}
+    return {"review_safe": True, "merge": merge_ok, "reason": reason, "head_sha": head_sha}
 
 
 def resolve_commit_status(repo, head_sha, context):

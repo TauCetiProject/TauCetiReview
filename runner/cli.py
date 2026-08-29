@@ -35,6 +35,12 @@ import tempfile
 import time
 import uuid
 
+# review.py's abort status when the provider itself is unusable. Duplicated rather than imported:
+# this CLI drives the engine as a subprocess and never imports it (the engine's modules use flat
+# sibling imports and only resolve with runner/ on sys.path, which an installed `runner.cli` has no
+# reason to arrange). tests/test_provider_down.py pins the two definitions together.
+PROVIDER_DOWN_EXIT = 3
+
 REVIEW_REPO = "TauCetiProject/TauCetiReview"
 DEFAULT_CODE_REPO = "TauCetiProject/TauCeti"
 DEFAULT_ROADMAP_REPO = "TauCetiProject/TauCetiRoadmap"
@@ -48,8 +54,8 @@ CACHE_DIR = pathlib.Path(
 # to claim a commit reviews it, and any other run — whatever model it would use — yields, so a commit
 # is reviewed exactly once regardless of model (a new push is a fresh head, hence a fresh unit). The
 # marker still records which providers are running, but only for display; it is not part of the
-# de-contention key. Trust is NOT gated on author association (unlike the scoreboard, which drives
-# merges): a forged marker can at worst delay a review by its TTL — no inference runs, no data lands —
+# de-contention key. Trust is NOT gated on author association, matching the scoreboard merge gate:
+# a forged marker can at worst delay a review by its TTL — no inference runs, no data lands —
 # so honoring anyone's marker is what lets a fleet of non-collaborators coordinate at all.
 COORD_MARKER = "tauceti-review-in-progress"
 COORD_RE = re.compile(r"<!--tauceti-review-in-progress (.*?)-->", re.S)
@@ -694,7 +700,16 @@ def main():
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
           file=sys.stderr)
-    run(cmd)
+    r = run(cmd, allow_fail=True)
+    # The engine aborts with PROVIDER_DOWN_EXIT when consecutive rubrics failed because the provider
+    # itself is unusable (expired credential, exhausted subscription window). It has already said
+    # which, and it deliberately wrote no scoreboard: an outage is not a review verdict and must not
+    # reach the PR. Exit on the engine's own diagnosis rather than the generic "command failed", and
+    # keep the status distinct so a driving worker can tell "wait and retry" from "this round failed".
+    if r.returncode == PROVIDER_DOWN_EXIT:
+        sys.exit(PROVIDER_DOWN_EXIT)
+    if r.returncode != 0:
+        die(f"command failed ({r.returncode}): {' '.join(cmd)}")
 
     # The review step exits 0 having written a scoreboard on every path this CLI drives (commit /
     # manual / shadow). A clean exit with no scoreboard means the engine did not actually run: a
