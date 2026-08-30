@@ -109,7 +109,9 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   subscription runs are recorded at $0 rather than assigned a fictional API price.
 - **Who it posts as.** With `--post`, comments are created under your `gh` identity, not the review
   bot's, and as a fresh scoreboard comment (a local run keeps no state shared with CI, so it won't
-  edit the bot's comment in place).
+  edit the bot's comment in place). The authenticated login is also recorded as `submitted_by` in
+  the scoreboard's hidden provenance so cooperating workers can give that reviewer first refusal on
+  the next head.
 - **Subscription terms.** Driving a personal Claude/ChatGPT/Kiro subscription as an automated reviewer
   is fine for occasional, interactive, human-initiated runs like this. Standing it up as a 24/7
   self-hosted auto-reviewer is closer to API-tier usage and likely outside subscription terms — for
@@ -127,7 +129,9 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   for one already there. If another reviewer already holds the commit, this run skips it entirely —
   so a commit is reviewed once regardless of model, and a fleet never pays twice. A *different* model
   is not a distinct unit (the first claimer wins); only a new push, being a fresh head, is a fresh
-  unit. The marker self-expires (a crashed reviewer never blocks anyone) and is deleted when done.
+  unit. Simultaneous claimers wait five seconds for GitHub's comment replicas to settle, then the
+  lowest comment id wins. The marker self-expires (a crashed reviewer never blocks anyone) and is
+  deleted when done.
   It needs only the ability to comment, so an independent reviewer with no repo write still
   coordinates. Pass `--no-coordinate` for a private read-only pass that touches the PR not at all
   (at the cost of possible duplicate spend); a `--shadow` arm opts out automatically.

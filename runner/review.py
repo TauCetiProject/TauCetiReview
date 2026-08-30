@@ -760,6 +760,7 @@ def main():
     # what is being reviewed and with which rubric version. Keys with empty values are dropped
     # by meta_block, so partial provenance (e.g. no base sha) degrades gracefully.
     prov = {"repo": a.repo, "pr": int(a.pr), "round": round_num, "mode": a.mode,
+            "submitted_by": a.submitted_by or None,
             "head_sha": head, "base_sha": a.base_sha, "merge_base_sha": a.merge_base_sha,
             "rubrics_repo": a.rubrics_repo, "rubrics_sha": a.rubrics_sha,
             "rubrics_sha_approx": a.rubrics_sha_approx or None,
