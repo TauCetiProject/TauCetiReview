@@ -1,8 +1,8 @@
 name: merge-only
 
-# A cheap, no-dispatch queue reconciler: require every scoreboard at the current head to be green and
-# no review to be in progress. Enqueue when that review state and the path policy permit it; dequeue
-# when the review state becomes unsafe.
+# A cheap, no-dispatch queue reconciler: use the newest completed scoreboard at the current head and
+# wait for any live review to finish before enqueueing. Dequeue only when the completed review state
+# becomes unsafe; starting another review does not eject an already-green queued PR.
 # Generates NO reviews, stages NO provider keys, and runs NO reviewer — reviews are produced by the
 # operator-run worker or by people running tauceti-review locally. This keeps auto-merge automatic
 # with expensive CI review generation off.
@@ -82,8 +82,8 @@ jobs:
           # counts via their posted comment. The hard boundary a forged scoreboard cannot bypass remains
           # the build + scope + bump-guard checks below.
           # Fetch ALL comments: an external reviewer can't edit the worker's scoreboard comment, so
-          # they post their OWN — which on a busy PR could be past page 1. Every current-head
-          # scoreboard must be considered, so a single page could hide one.
+          # they post their OWN — which on a busy PR could be past page 1. The newest completed
+          # current-head scoreboard could therefore be past page 1.
           # `--paginate` with a non-array --jq
           # emits one JSON object per line (JSONL), concatenated across pages (a bare --paginate would
           # concatenate per-page arrays into invalid JSON; --slurp can't combine with --jq).
@@ -94,9 +94,9 @@ jobs:
       - name: Compute queue decision from the review comments (no dispatch, no spend)
         run: |
           set -euo pipefail
-          # Review-safe iff at least one scoreboard is at the current head, every scoreboard there has
-          # every required rubric green, and no live review marker claims that head. Mergeable also
-          # requires the shared decide_merge rule (build + scope green,
+          # Review-safe iff the newest completed current-head scoreboard has every required rubric
+          # green. A live review marker delays enqueue without revoking that completed verdict.
+          # Mergeable also requires no live marker and the shared decide_merge rule (build + scope green,
           # TauCeti/-only + allowed root/pins, bump-guard for a pin). Reads the full `states` from the meta, falling back
           # to the rendered table for comments posted before that field existed.
           python3 runner/merge_from_scoreboard.py \
@@ -129,14 +129,26 @@ jobs:
 
           dequeue() {
             echo "dequeueing #$PR: $1"
+            if ! in_queue=$(gh api graphql -f query='query($id: ID!) {
+              node(id: $id) { ... on PullRequest { isInMergeQueue } }
+            }' -f id="$PRID" --jq '.data.node.isInMergeQueue // false'); then
+              echo "::error::could not read merge-queue membership for #$PR"; exit 1
+            fi
+            if [ "$in_queue" != "true" ]; then
+              echo "dequeue not needed (#$PR is already absent from the queue)."
+              return
+            fi
             if out=$(gh api graphql -f query='mutation($id: ID!) {
               dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { position } }
             }' -f id="$PRID" 2>&1); then
               echo "$out"; echo "dequeued #$PR."
             else
               echo "$out"
-              if printf '%s' "$out" | grep -qiE 'not in the (merge )?queue|already merged|could not resolve|not found'; then
-                echo "dequeue not applied (already absent from the queue)."
+              if after=$(gh api graphql -f query='query($id: ID!) {
+                node(id: $id) { ... on PullRequest { isInMergeQueue } }
+              }' -f id="$PRID" --jq '.data.node.isInMergeQueue // false') \
+                  && [ "$after" != "true" ]; then
+                echo "dequeue raced with another removal; #$PR is already absent."
               else
                 echo "::error::unexpected dequeue failure for #$PR"; exit 1
               fi
