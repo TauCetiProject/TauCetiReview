@@ -2,14 +2,16 @@
 """Compute the auto-merge decision from the PR's scoreboard COMMENTS (the live verdict source).
 
 Any reviewer — the worker, or anyone running tauceti-review — posts a scoreboard comment on the PR
-carrying a `<!--tauceti-meta:v1 {...}-->` block with `head_sha` and a full per-rubric `states` map. A
-PR's review state is safe for the queue when at least one scoreboard is at the current head, every
-scoreboard at that head has every required rubric green, and no unexpired review-in-progress marker
-claims that head. It is mergeable when that review state is safe and the shared `decide_merge` rule
-also holds (build green, TauCeti/-only + allowed root/pins, bump-guard for a pin). This is the "no bar"
-model: trust is the posted comment itself, so a contributor with no repo write can still have their
-review count. The HARD boundary that a forged scoreboard cannot bypass remains the CI build + scope +
-axiom audit + bump-guard checks.
+carrying a `<!--tauceti-meta:v1 {...}-->` block with `head_sha` and a full per-rubric `states` map. The
+newest completed scoreboard at the current head is the verdict: a later completed review supersedes
+an earlier one instead of making every disagreement a permanent veto. An unexpired
+review-in-progress marker delays initial enqueue, but does not revoke an already-completed green
+verdict; if that review later posts a blocking scoreboard, the completed verdict makes the review
+state unsafe and the reconciler dequeues the PR. It is mergeable when that review state is safe, no
+review is live, and the shared `decide_merge` rule also holds (build green, TauCeti/-only + allowed
+root/pins, bump-guard for a pin). This is the "no bar" model: trust is the posted comment itself, so a
+contributor with no repo write can still have their review count. The HARD boundary that a forged
+scoreboard cannot bypass remains the CI build + scope + axiom audit + bump-guard checks.
 
 For comments whose meta predates the `states` field, fall back to reading the rendered scoreboard
 table (one row per rubric; the 3rd cell is the state word). Writes `merge.json` like before.
@@ -70,6 +72,30 @@ def current_scoreboards(comments, head_sha):
         if meta and meta.get("head_sha") == head_sha:
             out.append((comment, meta))
     return out
+
+
+def latest_current_scoreboard(comments, head_sha):
+    """The newest completed scoreboard for this exact head.
+
+    Review init posts an in-progress scoreboard before running models. Ignore those while any
+    completed scoreboard exists: starting a second review must not temporarily replace a green
+    completed verdict with an empty in-progress one. If init is the only current-head scoreboard,
+    retain it and fail closed from its states. Comments normally arrive in creation order; use their
+    update timestamp first and their input position as a deterministic fallback/tie-break.
+    """
+    boards = current_scoreboards(comments, head_sha)
+    if not boards:
+        return None
+    completed = [b for b in boards if b[1].get("mode") != "init"]
+    candidates = completed or boards
+
+    def order(item):
+        index, (comment, meta) = item
+        timestamp = (comment.get("updated_at") or comment.get("created_at")
+                     or meta.get("ts") or "")
+        return timestamp, index
+
+    return max(enumerate(candidates), key=order)[1]
 
 
 def has_live_review(comments, head_sha, now=None):
@@ -133,23 +159,28 @@ def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump
     if not required:
         return {"review_safe": False, "merge": False,
                 "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
-    boards = current_scoreboards(comments, head_sha)
-    if not boards:
+    latest = latest_current_scoreboard(comments, head_sha)
+    if latest is None:
         return {"review_safe": False, "merge": False,
                 "reason": "no scoreboard comment for the current head; refusing",
                 "head_sha": head_sha}
-    for board, meta in boards:
-        raw = meta.get("states")
-        if not isinstance(raw, dict) or not raw:
-            raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
-        states = {r: (raw.get(r) or "absent") for r in required}
-        if not all(states[r] == "green" for r in required):
-            return {"review_safe": False, "merge": False,
-                    "reason": "a scoreboard for the current head is not all-green; refusing",
-                    "head_sha": head_sha}
-    if has_live_review(comments, head_sha, now):
+    board, meta = latest
+    raw = meta.get("states")
+    if not isinstance(raw, dict) or not raw:
+        raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
+    states = {r: (raw.get(r) or "absent") for r in required}
+    if not all(states[r] == "green" for r in required):
+        reason = ("no completed scoreboard for the current head yet; waiting"
+                  if meta.get("mode") == "init"
+                  else "the newest completed scoreboard for the current head is not all-green; "
+                       "refusing")
         return {"review_safe": False, "merge": False,
-                "reason": "a review is in progress for the current head; refusing",
+                "reason": reason,
+                "head_sha": head_sha}
+    if has_live_review(comments, head_sha, now):
+        return {"review_safe": True, "merge": False,
+                "reason": "the newest completed scoreboard is green, but a review is in progress; "
+                          "waiting before enqueue",
                 "head_sha": head_sha}
 
     states = {r: "green" for r in required}
