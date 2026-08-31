@@ -280,6 +280,11 @@ def build_prompt(rubrics_dir, rubric, context, marker):
 # really were, so a truncated trace never reads as a complete one.
 _MAX_TOOL_TRACE = 40
 
+# The reviewer's whole tool set: read the code, search it, list it. Nothing that writes, and nothing
+# that reaches the network. Named once because run_claude passes it to two flags that mean different
+# things (see there), and because a test asserts the set has no shell in it.
+_REVIEW_TOOLS = ("Read", "Grep", "Glob")
+
 # What the trace records for each tool. A path only, and only after it is proved to name a file that
 # already exists inside the reviewer's workspace.
 #
@@ -391,7 +396,26 @@ def run_claude(prompt, cwd, model, env):
     # tolerant — a malformed line is counted and skipped, and a stream with no result event falls
     # through to the same parse_error path a malformed json document took.
     r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
-            "--disable-slash-commands", "--allowedTools", "Read", "Grep", "Glob"],
+            "--disable-slash-commands",
+            # --tools RESTRICTS the built-in set; --allowedTools only grants permission within
+            # whatever set exists. With --allowedTools alone the reviewer still had Bash, and used
+            # it: of 427 traced tool calls, 295 were Bash and 278 of those SUCCEEDED. Reproduced
+            # directly in this environment's shape — `claude -p --allowedTools Read Grep Glob`
+            # answering "SHELL_IS_AVAILABLE" — so this was never a permission that was being
+            # declined, it was a shell nobody knew the reviewer had.
+            #
+            # That contradicts what the rest of this module is built on. reviewer_env calls the
+            # isolation load-bearing "with public transcripts and no redaction gate", and names its
+            # residual as a reviewer reading its OWN key from /proc/self/environ. A shell plus the
+            # egress a reviewer needs to reach its provider turns that residual into a direct
+            # exfiltration path. run_pi states the intended property outright: "a read-only tool set
+            # (PI_TOOLS, no bash) means it has no shell to leak it with." Now true here too.
+            #
+            # Both flags: --tools removes the tool, --allowedTools keeps the remaining three from
+            # prompting. --disallowedTools was the other candidate and is worse — it blocks Bash but
+            # leaves Write and Edit in the set.
+            "--tools", *_REVIEW_TOOLS,
+            "--allowedTools", *_REVIEW_TOOLS],
            cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     trace, meta = [], {}

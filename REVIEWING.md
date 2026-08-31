@@ -1,10 +1,11 @@
 # Reviewing a PR yourself
 
-CI reviews every Tau Ceti PR by calling the Anthropic and OpenAI **APIs**, which is metered and
-adds up fast. `tauceti-review` lets a trusted person run the *same* review on their **own
-Claude / Codex / Kiro subscription** instead: the inference runs through the locally logged-in
-provider CLI, so there is no per-token bill. It is the same engine, same rubrics, same
-scoreboard and per-rubric threads — only the inference auth and who posts change.
+Tau Ceti has a CI path that reviews with the metered Anthropic and OpenAI **APIs**, but production
+review generation is currently disabled there to conserve that budget. Reviews instead come from
+the trusted operator-run worker and from ad hoc command-line runs. `tauceti-review` lets a trusted
+person run the same review on their **own Claude / Codex / Kiro subscription**: the inference runs
+through the locally logged-in provider CLI, so there is no per-token bill. It is the same engine,
+same rubrics, same scoreboard and per-rubric threads — only the inference auth and who posts change.
 
 This is for people the project already trusts (maintainers, regular contributors). The tool is
 read-only and posts under *your* GitHub identity, but nothing stops a reviewer from rubber-stamping
@@ -96,6 +97,11 @@ Add `--post` to publish. Useful flags:
    `approve` (this anti-forgery channel is kept even though you are trusted).
 5. Prints the scoreboard + threads, and with `--post`, publishes them via `gh` as you.
 
+The posted scoreboard is the live verdict consumed by auto-merge: both merge paths read the newest
+marked scoreboard and require it to name the current head. The engine also writes detailed records
+for the TauCetiData analytics/provenance archive, but archive publication is not part of the merge
+gate and a contributor needs no TauCetiData write access for a posted review to count.
+
 ## Notes
 
 - **Cost line.** For Claude/Codex, the scoreboard's `Review spend: $X` is a *notional*
@@ -103,11 +109,13 @@ Add `--post` to publish. Useful flags:
   subscription runs are recorded at $0 rather than assigned a fictional API price.
 - **Who it posts as.** With `--post`, comments are created under your `gh` identity, not the review
   bot's, and as a fresh scoreboard comment (a local run keeps no state shared with CI, so it won't
-  edit the bot's comment in place).
+  edit the bot's comment in place). The authenticated login is also recorded as `submitted_by` in
+  the scoreboard's hidden provenance so cooperating workers can give that reviewer first refusal on
+  the next head.
 - **Subscription terms.** Driving a personal Claude/ChatGPT/Kiro subscription as an automated reviewer
   is fine for occasional, interactive, human-initiated runs like this. Standing it up as a 24/7
-  self-hosted auto-reviewer is closer to API-tier usage and likely outside subscription terms — if
-  you want always-on review, use the CI path (`--auth api`) with API keys.
+  self-hosted auto-reviewer is closer to API-tier usage and likely outside subscription terms — for
+  always-on review, enable Tau Ceti's CI path and use `--auth api` with API keys.
 - **Reproducibility.** The clean room means your personal `~/.claude/CLAUDE.md`, `~/.codex/`
   config/`AGENTS.md`, skills, and MCP servers do **not** influence the review — two people running
   the same rubrics on the same PR get reviews that differ only by the model, not by their local
@@ -121,7 +129,9 @@ Add `--post` to publish. Useful flags:
   for one already there. If another reviewer already holds the commit, this run skips it entirely —
   so a commit is reviewed once regardless of model, and a fleet never pays twice. A *different* model
   is not a distinct unit (the first claimer wins); only a new push, being a fresh head, is a fresh
-  unit. The marker self-expires (a crashed reviewer never blocks anyone) and is deleted when done.
+  unit. Simultaneous claimers wait five seconds for GitHub's comment replicas to settle, then the
+  lowest comment id wins. The marker self-expires (a crashed reviewer never blocks anyone) and is
+  deleted when done.
   It needs only the ability to comment, so an independent reviewer with no repo write still
   coordinates. Pass `--no-coordinate` for a private read-only pass that touches the PR not at all
   (at the cost of possible duplicate spend); a `--shadow` arm opts out automatically.

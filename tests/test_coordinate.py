@@ -6,8 +6,10 @@ regardless of model (one review per (pr, head)); only a new push — a fresh hea
 Posting needs only comment access, so an independent reviewer with no repo write still coordinates.
 Dependency-free — run with `python tests/test_coordinate.py` or under pytest.
 """
-import sys
+import contextlib
+import io
 import pathlib
+import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import cli  # noqa: E402
@@ -43,11 +45,12 @@ def test_covered_providers():
 class FakeGH:
     """Replaces cli.issue_comments / post_marker / delete_marker. `before` is the foreign markers on the
     first (pre-post) read; `after` on every later read; a post id makes our own comment visible on later
-    reads so the recheck-until-visible loop returns at once. Reads listed in `fail_reads` return None."""
-    def __init__(self, before=None, after=None, post_ids=(999,), post_fails=False,
+    reads. `after_sequence` models delayed replication. Reads listed in `fail_reads` return None."""
+    def __init__(self, before=None, after=None, after_sequence=None, post_ids=(999,), post_fails=False,
                  own_visible=True, fail_reads=()):
         self.before = before or []
         self.after = after if after is not None else (before or [])
+        self.after_sequence = list(after_sequence or [])
         self.post_ids = list(post_ids)
         self.post_fails = post_fails
         self.own_visible = own_visible
@@ -61,7 +64,12 @@ class FakeGH:
         self.reads += 1
         if self.reads in self.fail_reads:
             return None
-        base = list(self.before if self.reads == 1 else self.after)
+        if self.reads == 1:
+            base = list(self.before)
+        elif self.after_sequence:
+            base = list(self.after_sequence.pop(0))
+        else:
+            base = list(self.after)
         if self.last_post_id is not None and self.own_visible:
             base.append({"id": self.last_post_id, "body": "our own marker (visible)"})
         return base
@@ -81,12 +89,14 @@ _ORIG = {}
 
 
 def _wire(g):
-    for name in ("issue_comments", "post_marker", "delete_marker", "_install_marker_cleanup"):
+    for name in ("issue_comments", "post_marker", "delete_marker", "_install_marker_cleanup",
+                 "COORD_SETTLE_S"):
         _ORIG.setdefault(name, getattr(cli, name))
     cli.issue_comments = g.issue_comments
     cli.post_marker = g.post_marker
     cli.delete_marker = g.delete_marker
     cli._install_marker_cleanup = lambda: None   # never touch real signal/atexit state in a test
+    cli.COORD_SETTLE_S = 0.0                     # ordinary unit cases need only one reconciliation read
     cli._ACTIVE_MARKERS = []
     cli._CLEANUP_INSTALLED = False
 
@@ -161,6 +171,26 @@ def test_lost_race_to_other_model_yields():
         _unwire()
 
 
+def test_delayed_lower_id_marker_still_wins_after_own_is_visible():
+    """Regression: seeing our own write is not proof an earlier peer's write reached this replica."""
+    lower = marker(1, "racer", ["codex"])
+    g = FakeGH(before=[], after_sequence=[[], [], [lower]], post_ids=(999,))
+    g.last_post_id = 999  # our marker is visible immediately; the lower-id peer is replication-delayed
+    _wire(g)
+    try:
+        ticks = iter((0.0, 0.0, 0.5, 1.0, 1.5))
+        lost = cli._recheck_lost(
+            "r", 1, H, "ours", 999,
+            settle_s=2.0,
+            poll_s=0.5,
+            monotonic=lambda: next(ticks),
+            sleeper=lambda _delay: None,
+        )
+        assert lost == {"codex"}
+    finally:
+        _unwire()
+
+
 def test_post_failure_proceeds_unclaimed():
     g = FakeGH(post_fails=True)
     _wire(g)
@@ -180,6 +210,20 @@ def test_list_failure_proceeds_and_posts():
         out = cli.coordinate("r", 1, H, ["claude"], "me")
         assert out == ["claude"]
         assert g.posted == [["claude"]]               # distinguishing None from [] still posts
+        assert cli._ACTIVE_MARKERS == [("r", 999)]
+    finally:
+        _unwire()
+
+
+def test_settlement_read_failure_warns_and_proceeds():
+    g = FakeGH(fail_reads={2})
+    _wire(g)
+    try:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            out = cli.coordinate("r", 1, H, ["claude"], "me")
+        assert out == ["claude"]
+        assert "concurrent duplicate review is possible" in stderr.getvalue()
         assert cli._ACTIVE_MARKERS == [("r", 999)]
     finally:
         _unwire()

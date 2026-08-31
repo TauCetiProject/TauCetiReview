@@ -296,6 +296,17 @@ def queue_numbers(entries=None):
     return {e["number"] for e in (queue_entries() if entries is None else entries)}
 
 
+def pull_is_queued(node_id):
+    """Read current queue membership for one PR node, failing closed on GraphQL errors."""
+    q = gh_json(["api", "graphql", "-f", "query="
+                 "query($id:ID!){node(id:$id){... on PullRequest{isInMergeQueue}}}",
+                 "-f", f"id={node_id}"])
+    if (q or {}).get("errors"):
+        raise RuntimeError(f"merge-queue membership query returned errors: {(q or {}).get('errors')}")
+    node = (((q or {}).get("data") or {}).get("node") or {})
+    return node.get("isInMergeQueue") is True
+
+
 def dequeue(pr, node_id):
     """Remove a PR from the merge queue, to clear the way for a pin-moving PR's rebuild.
 
@@ -306,6 +317,13 @@ def dequeue(pr, node_id):
     if DRY_RUN:
         print(f"[dry-run] would dequeue #{pr}")
         return True
+    try:
+        if not pull_is_queued(node_id):
+            print(f"#{pr}: dequeue not needed (already absent from the queue)")
+            return True
+    except RuntimeError as e:
+        print(f"#{pr}: cannot read queue membership before dequeue: {e}", file=sys.stderr)
+        return False
     r = gh(["api", "graphql", "-f", "query="
             "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){mergeQueueEntry{position}}}",
             "-f", f"id={node_id}"])
@@ -318,6 +336,13 @@ def dequeue(pr, node_id):
                               "could not resolve", "not found")):
         print(f"#{pr}: dequeue not applied (benign — already gone): {out.strip()}")
         return True
+    try:
+        if not pull_is_queued(node_id):
+            print(f"#{pr}: dequeue raced with another removal; already absent")
+            return True
+    except RuntimeError as e:
+        print(f"#{pr}: cannot re-read queue membership after dequeue failure: {e}", file=sys.stderr)
+        return False
     print(f"#{pr}: unexpected dequeue failure: {out.strip()}", file=sys.stderr)
     return False
 

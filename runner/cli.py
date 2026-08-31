@@ -54,12 +54,14 @@ CACHE_DIR = pathlib.Path(
 # to claim a commit reviews it, and any other run — whatever model it would use — yields, so a commit
 # is reviewed exactly once regardless of model (a new push is a fresh head, hence a fresh unit). The
 # marker still records which providers are running, but only for display; it is not part of the
-# de-contention key. Trust is NOT gated on author association (unlike the scoreboard, which drives
-# merges): a forged marker can at worst delay a review by its TTL — no inference runs, no data lands —
+# de-contention key. Trust is NOT gated on author association, matching the scoreboard merge gate:
+# a forged marker can at worst delay a review by its TTL — no inference runs, no data lands —
 # so honoring anyone's marker is what lets a fleet of non-collaborators coordinate at all.
 COORD_MARKER = "tauceti-review-in-progress"
 COORD_RE = re.compile(r"<!--tauceti-review-in-progress (.*?)-->", re.S)
 COORD_TTL = int(os.environ.get("TAUCETI_REVIEW_INPROGRESS_TTL", "1800"))  # 30 min; > a slow review
+COORD_SETTLE_S = 5.0  # let simultaneously-posted markers propagate before inference starts
+COORD_SETTLE_POLL_S = 0.5
 
 
 def die(msg):
@@ -328,23 +330,34 @@ def _install_marker_cleanup():
             pass  # not the main thread / unsupported — atexit + TTL still apply
 
 
-def _recheck_lost(repo, pr, head, nonce, cid):
+def _recheck_lost(repo, pr, head, nonce, cid, *, settle_s=None, poll_s=None,
+                  monotonic=time.monotonic, sleeper=time.sleep):
     """After posting, return the providers any LOWER-id foreign marker advertises on this head — a
-    non-empty result means a peer claimed the head first and we must yield the whole run. Poll until
-    our OWN comment is visible — so the list is current enough for the lowest-id rule to be real, not
-    fooled by replication lag where neither poster yet sees the other — or a short deadline passes.
-    Time is re-read each scan so an expiring lower-id marker isn't honored past its TTL."""
-    lost = set()
-    for delay in (0.0, 0.4, 0.8, 1.5):
-        if delay:
-            time.sleep(delay)
+    non-empty result means a peer claimed the head first and we must yield the whole run. Keep polling
+    for a fixed settlement window EVEN AFTER our own comment becomes visible: GitHub can make a
+    writer's own comment visible before an earlier peer's comment reaches that replica, and stopping
+    at first self-visibility lets both reviewers believe they won. Time is re-read each scan so an
+    expiring lower-id marker isn't honored past its TTL."""
+    settle_s = COORD_SETTLE_S if settle_s is None else max(0.0, settle_s)
+    poll_s = COORD_SETTLE_POLL_S if poll_s is None else max(0.001, poll_s)
+    deadline = monotonic() + settle_s
+    read_failed = False
+    while True:
         comments = issue_comments(repo, pr)
         if comments is None:
-            continue
-        lost = covered_providers(comments, head, int(time.time()), exclude_nonce=nonce, max_id=cid)
-        if lost or any(c.get("id") == cid for c in comments):
+            read_failed = True
+        else:
+            lost = covered_providers(comments, head, int(time.time()), exclude_nonce=nonce, max_id=cid)
+            if lost:
+                return lost
+        remaining = deadline - monotonic()
+        if remaining <= 0:
             break
-    return lost
+        sleeper(min(poll_s, remaining))
+    if read_failed:
+        print("note: couldn't consistently list PR comments while settling the review claim; "
+              "proceeding with our marker (a concurrent duplicate review is possible).", file=sys.stderr)
+    return set()
 
 
 def coordinate(repo, pr, head, avail, submitted_by):
@@ -354,9 +367,9 @@ def coordinate(repo, pr, head, avail, submitted_by):
     and spend nothing because another run already holds the head. A different model is NOT a distinct
     unit — the first claimer wins — but a new push is a new head, hence a new claim.
 
-    Not an atomic CAS, so after posting we re-read (waiting until our own comment is visible) and yield
-    if any LOWER-id foreign marker is on the head — the lowest-id marker wins, which collapses the
-    simultaneous-post window. A read/post failure (e.g. no comment access) proceeds unclaimed: a
+    Not an atomic CAS, so after posting we re-read for a fixed settlement window and yield if any
+    LOWER-id foreign marker is on the head — the lowest-id marker wins, which collapses the
+    simultaneous-post window. A read/post failure (e.g. no comment access) warns and proceeds: a
     possible duplicate review, never corruption.
     """
     nonce = uuid.uuid4().hex
