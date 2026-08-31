@@ -107,8 +107,29 @@ def test_enqueue_already_in_queue_is_benign():
     assert not sweep.enqueue_is_benign("")
 
 
-def _scoreboard(head, states, updated="2026-06-26T00:00:00Z"):
-    meta = "<!--tauceti-meta:v1 " + json.dumps({"head_sha": head, "states": states}) + "-->"
+def test_pull_is_queued_reads_membership_and_fails_closed():
+    original = sweep.gh_json
+    try:
+        sweep.gh_json = lambda _args: {"data": {"node": {"isInMergeQueue": True}}}
+        assert sweep.pull_is_queued("PR_1")
+        sweep.gh_json = lambda _args: {"data": {"node": {"isInMergeQueue": False}}}
+        assert not sweep.pull_is_queued("PR_1")
+        sweep.gh_json = lambda _args: {"errors": [{"message": "permission denied"}]}
+        try:
+            sweep.pull_is_queued("PR_1")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("GraphQL errors must fail closed")
+    finally:
+        sweep.gh_json = original
+
+
+def _scoreboard(head, states, updated="2026-06-26T00:00:00Z", mode="commit"):
+    payload = {"head_sha": head, "states": states}
+    if mode is not None:
+        payload["mode"] = mode
+    meta = "<!--tauceti-meta:v1 " + json.dumps(payload) + "-->"
     return [{"body": "<!--tauceti-scoreboard-->\n" + meta, "updated_at": updated}]
 
 
@@ -138,7 +159,7 @@ def test_gate_is_shared_with_merge_only():
         _scoreboard(head, green), head, required, diff2, "SUCCESS", "", scope="SUCCESS")["merge"]
 
 
-def test_every_current_head_scoreboard_must_be_green():
+def test_newest_completed_current_head_scoreboard_wins():
     head = "deadbee"
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
@@ -146,6 +167,14 @@ def test_every_current_head_scoreboard_must_be_green():
     diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
 
     comments = (_scoreboard(head, blocking, "2026-06-26T00:00:00Z")
+                + _scoreboard(head, green, "2026-06-26T01:00:00Z"))
+    decision = mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+    assert decision["review_safe"] and decision["merge"]
+
+    # Conversely, a later completed blocker supersedes an earlier approval. Shuffle the API input to
+    # ensure the GitHub timestamps, not incidental list order, choose the verdict.
+    comments = (_scoreboard(head, blocking, "2026-06-26T02:00:00Z")
                 + _scoreboard(head, green, "2026-06-26T01:00:00Z"))
     decision = mfs.decide_from_comments(
         comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
@@ -158,7 +187,34 @@ def test_every_current_head_scoreboard_must_be_green():
     assert decision["review_safe"] and decision["merge"]
 
 
-def test_live_review_marker_pauses_the_queue_until_it_expires():
+def test_in_progress_scoreboard_does_not_supersede_a_completed_verdict():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    pending = {"correctness": "absent", "reuse": "absent"}
+    blocking = {"correctness": "green", "reuse": "blocking_request"}
+    diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
+    comments = (_scoreboard(head, green, "2026-06-26T00:00:00Z")
+                + _scoreboard(head, pending, "2026-06-26T01:00:00Z", mode="init"))
+
+    decision = mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+    assert decision["review_safe"] and decision["merge"]
+
+    # Once that review publishes a completed blocking verdict, it becomes authoritative.
+    comments += _scoreboard(head, blocking, "2026-06-26T02:00:00Z")
+    decision = mfs.decide_from_comments(
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+    assert not decision["review_safe"] and not decision["merge"]
+
+    # With no completed scoreboard to preserve, an init-only review still fails closed.
+    decision = mfs.decide_from_comments(
+        _scoreboard(head, pending, mode="init"), head, required, diff,
+        "SUCCESS", "", scope="SUCCESS")
+    assert not decision["review_safe"] and not decision["merge"]
+
+
+def test_live_review_marker_holds_enqueue_without_revoking_green_review():
     head = "deadbee"
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
@@ -167,7 +223,7 @@ def test_live_review_marker_pauses_the_queue_until_it_expires():
 
     decision = mfs.decide_from_comments(
         comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", now=1000)
-    assert not decision["review_safe"] and not decision["merge"]
+    assert decision["review_safe"] and not decision["merge"]
 
     decision = mfs.decide_from_comments(
         comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", now=2000)
@@ -204,6 +260,7 @@ def test_workflows_pass_status_contexts():
         assert query in review
     assert 'ref: ${{ inputs.review_ref }}' in merge_only
     assert 'dequeuePullRequest' in merge_only
+    assert 'isInMergeQueue' in merge_only
     assert 'jq -r .review_safe merge.json' in merge_only
     assert 'already in the queue' in merge_only
     merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
