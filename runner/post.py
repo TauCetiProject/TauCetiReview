@@ -206,7 +206,6 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
 
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
-TRUSTED_ASSOC = {"OWNER", "MEMBER", "COLLABORATOR"}
 REVIEW_BOT = "tauceti-review-bot[bot]"
 
 
@@ -220,36 +219,35 @@ def current_login():
 
 
 def find_scoreboard_comments(repo, pr):
-    """Scoreboard comments eligible for cross-machine reuse as {id, login, ...}, newest first.
+    """Return every marked scoreboard as {id, login, updated_at}, newest first.
 
-    So a review run whose local store does not know the scoreboard's comment id (the PR was last
-    scored by CI or another machine) can edit the existing comment in place instead of posting a
-    duplicate. Reuse is deliberately narrower than the merge consumer: discovery returns only
-    scoreboards from a repo-associated author or the review bot, and `upsert_scoreboard` then selects
-    only comments authored by the current login before editing or deleting. Consequently an outside
-    contributor's own scoreboard is not discoverable on another machine and a later run may post a
-    duplicate. The merge gate separately reads the newest marked scoreboard from any author. `@json`
-    forces one compact object per line so parsing is robust. Best-effort: returns [] on any API
-    error."""
+    This is the ownership proof before `upsert_scoreboard` mutates a known comment, so it deliberately
+    includes outside contributors: author association does not change whether a comment is ours.
+    Return None, rather than an incomplete list, on an API or parse failure so the caller can fail
+    closed instead of PATCHing an id whose owner it could not verify. `@json` forces one compact object
+    per line across pages."""
     r = subprocess.run(
-        ["gh", "api", "--paginate", f"/repos/{repo}/issues/{pr}/comments", "--jq",
+        ["gh", "api", "--paginate", f"/repos/{repo}/issues/{pr}/comments?per_page=100", "--jq",
          '.[] | select((.body // "") | contains("' + SCOREBOARD_MARKER + '")) '
-         '| {id, login: (.user.login // ""), assoc: (.author_association // ""), '
-         'updated_at: (.updated_at // "")} | @json'],
+         '| {id, login: (.user.login // ""), updated_at: (.updated_at // "")} | @json'],
         text=True, capture_output=True)
     if r.returncode != 0:
         print(f"scoreboard lookup failed: {r.stderr[-300:]}", file=sys.stderr)
-        return []
+        return None
     out = []
     for line in r.stdout.splitlines():
         if not line.strip():
             continue
         try:
             c = json.loads(line)
+            if isinstance(c, str):
+                c = json.loads(c)
+            if not isinstance(c, dict) or c.get("id") is None:
+                raise ValueError("scoreboard row is not an object with an id")
         except Exception:
-            continue
-        if c.get("assoc") in TRUSTED_ASSOC or c.get("login") == REVIEW_BOT:
-            out.append(c)
+            print("scoreboard lookup returned malformed JSON", file=sys.stderr)
+            return None
+        out.append(c)
     out.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
     return out
 
@@ -258,29 +256,30 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
     """Publish the PR's single scoreboard comment, editing OUR existing one in place rather than
     duplicating, and collapsing OUR older duplicates.
 
-    The comment to edit is our store/plan id, or — when the store does not know it (the PR was last
-    scored by CI or another machine) — the newest scoreboard WE authored, discovered on GitHub. We
-    only ever PATCH/DELETE our own comments (a write-scoped token could technically remove another
-    account's comment; we must not). A known scoreboard id owned by another identity is never
-    PATCHed: this identity posts a fresh `kind:scoreboard` instead (cross-identity PATCH 404s;
-    see TauCetiReview#98 / the same guard as `publish_required_upsert`). If the only scoreboard
-    present belongs to someone else, we likewise post our own and let the consumer's newest-wins
-    read pick it. A failed edit of our own comment is a real error, never silently re-posted.
-    Returns (sb_id, ok). `mine` overrides the actor login."""
+    Prefer the store/plan id when discovery proves it is ours; otherwise reuse our newest discovered
+    scoreboard. A foreign or missing known id is never PATCHed, and a new scoreboard is posted only
+    when this identity has none to reuse. Discovery is required: on failure, mutate nothing and let
+    the publication retry. A failed edit of our own comment is likewise a real error, never silently
+    re-posted. Returns (sb_id, ok). `mine` overrides the actor login."""
     me = mine if mine is not None else current_login()
     existing = find_scoreboard_comments(repo, pr)
-    sb_id = pr_state.get("scoreboard_comment_id") or plan_sb_id
-    mine_dupes = []                      # older scoreboards WE authored, to collapse
-    if sb_id:
-        known = next((c for c in existing if c.get("id") == sb_id), None)
-        # A known foreign scoreboard is the identity-migration case: never PATCH it.
-        if known and known.get("login") != me:
-            sb_id = None
+    if existing is None:
+        if failures is not None:
+            failures.append({"action": "scoreboard discovery",
+                             "error": "could not verify scoreboard ownership"})
+        return None, False
+
+    known_id = pr_state.get("scoreboard_comment_id") or plan_sb_id
+    known = next((c for c in existing if c.get("id") == known_id), None) if known_id else None
+    ours = [c for c in existing if c.get("login") == me]
+    if known and known.get("login") == me:
+        sb_id = known_id
     else:
-        ours = [c for c in existing if c.get("login") == me]
-        if ours:
-            sb_id = ours[0]["id"]
-            mine_dupes = [c["id"] for c in ours[1:]]
+        # The stored comment is foreign or gone. Reuse our newest scoreboard if one exists; unlike
+        # review-thread roots, scoreboards have no rubric/thread identity that requires a fresh root.
+        sb_id = ours[0]["id"] if ours else None
+    mine_dupes = [c["id"] for c in ours if c.get("id") != sb_id]
+
     ok = False
     if sb_id:
         if gh_api("PATCH", f"/repos/{repo}/issues/comments/{sb_id}", body_file=body_file,
@@ -296,10 +295,11 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
         else:
             print("post.py: scoreboard create failed", file=sys.stderr)
             sb_id = None
-    for dup in mine_dupes:               # collapse our own older duplicates (best-effort)
-        if dup and dup != sb_id:
-            gh_api("DELETE", f"/repos/{repo}/issues/comments/{dup}",
-                   action=f"scoreboard collapse {dup}")
+    if ok:                                # collapse our own older duplicates (best-effort)
+        for dup in mine_dupes:
+            if dup:
+                gh_api("DELETE", f"/repos/{repo}/issues/comments/{dup}",
+                       action=f"scoreboard collapse {dup}")
     return sb_id, ok
 
 
