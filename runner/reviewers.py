@@ -353,10 +353,9 @@ def _tool_trace(stream_lines, root):
             result = ev  # last one wins; multi-result streams are not expected
             continue
         msg = ev.get("message")
-        # Only assistant/user carry a message OBJECT. `system`/`permission_denied` — emitted
-        # whenever the CLI refuses a tool before it asks, which a reviewer restricted to
-        # Read/Grep/Glob can provoke — puts a bare STRING there, and reading that as a dict
-        # took down a whole round mid-review.
+        # Only assistant/user events carry the message objects this trace reads. Other stream
+        # events may use `message` for diagnostics instead: Claude 2.1.233, for example, emitted a
+        # bare string on `system`/`permission_denied`. Ignore event kinds the trace does not consume.
         if kind not in ("assistant", "user") or not isinstance(msg, dict):
             continue
         content = msg.get("content") or []
@@ -420,9 +419,8 @@ def run_claude(prompt, cwd, model, env):
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     trace, meta = [], {}
     try:
-        # Inside the try: the point of this handler is that an unforeseen stream SHAPE degrades to
-        # a parse_error rather than killing the run, and a trace parse that sat above it could not
-        # be caught by the very net written for it.
+        # Keep the external stream parse inside this boundary so an unforeseen event shape becomes
+        # a diagnosable failed attempt rather than unwinding the whole review round.
         trace, meta, d = _tool_trace(r.stdout.splitlines(), cwd or ".")
         # A stream that ends without its terminal event is as unusable as a malformed json document
         # was, and takes the same path — but say so, because an empty diagnosis is what made

@@ -24,10 +24,10 @@ Pinned here:
   4. A CLI-reported failure is not accepted as a verdict, however well-formed its text.
   5. The trace is bounded, and says so when it truncated.
   6. Parsing is tolerant, and every field the json format supplied still arrives.
-  7. An event shape nobody anticipated cannot end the round. `system`/`permission_denied` carries a
-     bare STRING where assistant/user carry a message object, and reading it as one killed a review
-     several rubrics in. The trace parse now sits inside the handler written for exactly this, so a
-     surprise degrades to a parse_error the round can survive.
+  7. A non-message event cannot end the round. Claude 2.1.233 emitted a historical
+     `system`/`permission_denied` event whose `message` was a bare string, and reading it as an object
+     killed a review several rubrics in. The current reviewer no longer exposes Bash (#123), but the
+     stream parser still accepts external CLI output and must ignore event kinds it does not consume.
 
 Exit 0 = all assertions hold; 1 = a mismatch.
 """
@@ -137,9 +137,9 @@ def main():
         check("a Glob with no path records the tool alone", out["tool_trace"][0] == {"tool": "Glob"})
 
         # --- 7) an event whose `message` is not an object ---
-        # Verbatim shape from claude 2.1.233: every OTHER system event omits `message` entirely,
-        # so this one is the whole hazard. `--allowedTools` decides permission, and a refusal the
-        # CLI settles before it asks is announced here as well as in the tool_result.
+        # Verbatim historical shape from claude 2.1.233. Bash is no longer in the reviewer's tool set
+        # after #123; retaining the captured event checks that unrelated system events stay outside
+        # the assistant/user message parser.
         denied = {"type": "system", "subtype": "permission_denied", "tool_name": "Bash",
                   "tool_use_id": "b", "decision_reason_type": "rule",
                   "message": "Permission to use Bash with command echo hi has been denied."}
