@@ -45,7 +45,7 @@ class FakeGH:
 def run(fake, existing, pr_state, plan_sb_id=None, mine="bot"):
     saved_gh, saved_find = post.gh_api, post.find_scoreboard_comments
     post.gh_api = fake
-    post.find_scoreboard_comments = lambda repo, pr: list(existing)
+    post.find_scoreboard_comments = lambda repo, pr: None if existing is None else list(existing)
     failures = []
     try:
         sb_id, ok = post.upsert_scoreboard("o/r", 1, "body.md", plan_sb_id, pr_state, failures,
@@ -59,7 +59,7 @@ def run(fake, existing, pr_state, plan_sb_id=None, mine="bot"):
 
 def test_known_id_edits_in_place():
     fake = FakeGH(patch_ok=True)
-    sb_id, ok, failures = run(fake, existing=[{"id": 999, "login": "bot"}],
+    sb_id, ok, failures = run(fake, existing=[{"id": 100, "login": "bot"}],
                               pr_state={"scoreboard_comment_id": 100})
     assert ok and sb_id == 100, (sb_id, ok)
     assert fake.to("PATCH") == ["/repos/o/r/issues/comments/100"], fake.calls
@@ -109,13 +109,72 @@ def test_no_existing_posts_new():
 
 def test_our_failed_edit_is_recorded_not_duplicated():
     fake = FakeGH(patch_ok=False, post_id=777)
-    sb_id, ok, failures = run(fake, existing=[], pr_state={"scoreboard_comment_id": 100}, mine="bot")
+    sb_id, ok, failures = run(
+        fake, existing=[{"id": 100, "login": "bot"}, {"id": 90, "login": "bot"}],
+        pr_state={"scoreboard_comment_id": 100}, mine="bot")
     assert not ok
     assert "POST" not in fake.methods(), "a failed edit of our own comment must not post a duplicate"
+    assert "DELETE" not in fake.methods(), "a failed edit must not collapse other scoreboards"
     assert failures, "a failed edit of our own scoreboard must be recorded"
 
 
-# --- find_scoreboard_comments (parsing + reuse eligibility + ordering) ---------------------------
+def test_discovery_failure_mutates_nothing():
+    fake = FakeGH(patch_ok=True, post_id=777)
+    sb_id, ok, failures = run(
+        fake, existing=None, pr_state={"scoreboard_comment_id": 100}, mine="bot")
+    assert not ok and sb_id is None
+    assert not fake.calls, "unknown ownership must fail closed"
+    assert failures == [{"action": "scoreboard discovery",
+                         "error": "could not verify scoreboard ownership"}]
+
+
+def test_missing_known_id_posts_fresh():
+    fake = FakeGH(patch_ok=True, post_id=777)
+    sb_id, ok, failures = run(
+        fake, existing=[], pr_state={"scoreboard_comment_id": 100}, mine="bot")
+    assert ok and sb_id == 777
+    assert fake.to("POST") == ["/repos/o/r/issues/1/comments"]
+    assert "PATCH" not in fake.methods()
+    assert not failures
+
+
+def test_known_id_owned_by_someone_else_posts_fresh():
+    """The ledger names another identity's scoreboard; post ours instead of cross-editing."""
+    fake = FakeGH(patch_ok=True, post_id=777)
+    sb_id, ok, failures = run(
+        fake, existing=[{"id": 100, "login": "alice"}],
+        pr_state={"scoreboard_comment_id": 100}, mine="bot")
+    assert ok and sb_id == 777, (sb_id, ok)
+    assert "PATCH" not in fake.methods(), "must not PATCH a scoreboard we do not own"
+    assert "DELETE" not in fake.methods(), "must not delete a comment we did not author"
+    assert fake.to("POST") == ["/repos/o/r/issues/1/comments"]
+    assert not failures
+
+
+def test_plan_id_owned_by_someone_else_posts_fresh():
+    fake = FakeGH(patch_ok=True, post_id=666)
+    sb_id, ok, failures = run(
+        fake, existing=[{"id": 50, "login": "other-bot"}],
+        pr_state={}, plan_sb_id=50, mine="bot")
+    assert ok and sb_id == 666, (sb_id, ok)
+    assert "PATCH" not in fake.methods(), "must not PATCH a scoreboard we do not own"
+    assert fake.to("POST") == ["/repos/o/r/issues/1/comments"]
+    assert not failures
+
+
+def test_known_foreign_id_reuses_our_existing_scoreboard():
+    """Identity migration does not need a third scoreboard when this actor already has one."""
+    fake = FakeGH(patch_ok=True, post_id=888)
+    existing = [{"id": 200, "login": "bot"}, {"id": 100, "login": "alice"}]
+    sb_id, ok, failures = run(
+        fake, existing, pr_state={"scoreboard_comment_id": 100}, mine="bot")
+    assert ok and sb_id == 200, (sb_id, ok)
+    assert fake.to("PATCH") == ["/repos/o/r/issues/comments/200"], fake.calls
+    assert "POST" not in fake.methods()
+    assert not failures
+
+
+# --- find_scoreboard_comments (complete ownership discovery + ordering) --------------------------
 
 def _fake_run(stdout, code=0):
     def run_(args, text=True, capture_output=True):
@@ -123,11 +182,11 @@ def _fake_run(stdout, code=0):
     return run_
 
 
-def test_find_parses_filters_and_orders(monkeypatch=None):
+def test_find_parses_all_authors_and_orders(monkeypatch=None):
     lines = "\n".join([
-        '{"id":200,"login":"tauceti-review-bot[bot]","assoc":"NONE","updated_at":"2026-06-18T02:00:00Z"}',
-        '{"id":150,"login":"alice","assoc":"COLLABORATOR","updated_at":"2026-06-18T01:00:00Z"}',
-        '{"id":120,"login":"mallory","assoc":"NONE","updated_at":"2026-06-18T03:00:00Z"}',  # ineligible for reuse
+        '{"id":200,"login":"tauceti-review-bot[bot]","updated_at":"2026-06-18T02:00:00Z"}',
+        '{"id":150,"login":"alice","updated_at":"2026-06-18T01:00:00Z"}',
+        '{"id":120,"login":"mallory","updated_at":"2026-06-18T03:00:00Z"}',
     ])
     orig = post.subprocess.run
     post.subprocess.run = _fake_run(lines)
@@ -136,15 +195,23 @@ def test_find_parses_filters_and_orders(monkeypatch=None):
     finally:
         post.subprocess.run = orig
     ids = [c["id"] for c in got]
-    # mallory is dropped (assoc NONE, not the bot); bot(02:00) is newer than alice(01:00).
-    assert ids == [200, 150], got
+    assert ids == [120, 200, 150], got
 
 
-def test_find_returns_empty_on_api_error():
+def test_find_returns_none_on_api_error():
     orig = post.subprocess.run
     post.subprocess.run = _fake_run("", code=1)
     try:
-        assert post.find_scoreboard_comments("o/r", 1) == []
+        assert post.find_scoreboard_comments("o/r", 1) is None
+    finally:
+        post.subprocess.run = orig
+
+
+def test_find_returns_none_on_malformed_response():
+    orig = post.subprocess.run
+    post.subprocess.run = _fake_run('{"id": 100}\nnot-json')
+    try:
+        assert post.find_scoreboard_comments("o/r", 1) is None
     finally:
         post.subprocess.run = orig
 
@@ -189,16 +256,20 @@ def _post_fixture(*, thread_id=None, pending="r-new"):
     return ledger_path, plan
 
 
-def _execute(fake_gh, roots, *, thread_id=None):
+def _execute(fake_gh, roots, *, thread_id=None, scoreboards=...):
     ledger_path, plan = _post_fixture(thread_id=thread_id)
-    saved = post.gh_api, post.find_review_roots, post.current_login
+    saved = (post.gh_api, post.find_review_roots, post.current_login,
+             post.find_scoreboard_comments)
     post.gh_api = fake_gh
     post.find_review_roots = lambda repo, pr: roots
     post.current_login = lambda: "bot"
+    found = ([{"id": 500, "login": "bot"}] if scoreboards is ... else scoreboards)
+    post.find_scoreboard_comments = lambda repo, pr: None if found is None else list(found)
     try:
         status = post.execute_post("o/r", 1, plan, ledger_path)
     finally:
-        post.gh_api, post.find_review_roots, post.current_login = saved
+        (post.gh_api, post.find_review_roots, post.current_login,
+         post.find_scoreboard_comments) = saved
     return status, json.loads(ledger_path.read_text())
 
 
@@ -279,6 +350,27 @@ def test_foreign_known_root_is_not_edited():
     assert ledger["prs"]["1"]["state"]["api-design"]["thread"]["comment_id"] == 700
 
 
+def test_foreign_known_scoreboard_is_not_edited():
+    """At execute_post level, a stored foreign scoreboard is never cross-edited."""
+    fake = TransactionGH()
+    status, ledger = _execute(
+        fake, [], scoreboards=[{"id": 500, "login": "other-bot"}])
+    assert status == 0
+    assert ("PATCH", "/repos/o/r/issues/comments/500") not in fake.calls
+    assert ("POST", "/repos/o/r/issues/1/comments") in fake.calls, fake.calls
+    assert ledger["prs"]["1"]["scoreboard_comment_id"] == 700
+
+
+def test_scoreboard_discovery_failure_keeps_publication_pending():
+    fake = TransactionGH()
+    status, ledger = _execute(fake, [], scoreboards=None)
+    assert status == 1
+    assert fake.calls == [("POST", "/repos/o/r/pulls/1/comments")], fake.calls
+    pr = ledger["prs"]["1"]
+    assert pr["pending_publication_head_sha"] == "h" * 40
+    assert pr["state"]["api-design"]["pending_thread_run_id"] == "r-new"
+
+
 def test_optional_close_failure_does_not_roll_back_publication():
     ledger_path, plan = _post_fixture()
     close_body = ledger_path.parent / "close.md"; close_body.write_text("close")
@@ -300,14 +392,17 @@ def test_optional_close_failure_does_not_roll_back_publication():
             return super().__call__(method, endpoint, fields, body_file, failures, action)
 
     fake = OptionalFailureGH()
-    saved = post.gh_api, post.find_review_roots, post.current_login
+    saved = (post.gh_api, post.find_review_roots, post.current_login,
+             post.find_scoreboard_comments)
     post.gh_api = fake
     post.find_review_roots = lambda repo, pr: roots
     post.current_login = lambda: "bot"
+    post.find_scoreboard_comments = lambda repo, pr: []
     try:
         status = post.execute_post("o/r", 1, plan, ledger_path)
     finally:
-        post.gh_api, post.find_review_roots, post.current_login = saved
+        (post.gh_api, post.find_review_roots, post.current_login,
+         post.find_scoreboard_comments) = saved
     assert status == 0
     assert fake.calls[-1] == ("PATCH", "/repos/o/r/pulls/comments/80"), fake.calls
 
