@@ -352,7 +352,13 @@ def _tool_trace(stream_lines, root):
         if kind == "result":
             result = ev  # last one wins; multi-result streams are not expected
             continue
-        content = (ev.get("message") or {}).get("content") or []
+        msg = ev.get("message")
+        # Only assistant/user events carry the message objects this trace reads. Other stream
+        # events may use `message` for diagnostics instead: Claude 2.1.233, for example, emitted a
+        # bare string on `system`/`permission_denied`. Ignore event kinds the trace does not consume.
+        if kind not in ("assistant", "user") or not isinstance(msg, dict):
+            continue
+        content = msg.get("content") or []
         if kind == "assistant":
             for block in content:
                 if block.get("type") != "tool_use":
@@ -411,8 +417,11 @@ def run_claude(prompt, cwd, model, env):
             "--allowedTools", *_REVIEW_TOOLS],
            cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
-    trace, meta, d = _tool_trace(r.stdout.splitlines(), cwd or ".")
+    trace, meta = [], {}
     try:
+        # Keep the external stream parse inside this boundary so an unforeseen event shape becomes
+        # a diagnosable failed attempt rather than unwinding the whole review round.
+        trace, meta, d = _tool_trace(r.stdout.splitlines(), cwd or ".")
         # A stream that ends without its terminal event is as unusable as a malformed json document
         # was, and takes the same path — but say so, because an empty diagnosis is what made
         # TauCetiReview#105 unreadable.

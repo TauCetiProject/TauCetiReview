@@ -24,6 +24,10 @@ Pinned here:
   4. A CLI-reported failure is not accepted as a verdict, however well-formed its text.
   5. The trace is bounded, and says so when it truncated.
   6. Parsing is tolerant, and every field the json format supplied still arrives.
+  7. A non-message event cannot end the round. Claude 2.1.233 emitted a historical
+     `system`/`permission_denied` event whose `message` was a bare string, and reading it as an object
+     killed a review several rubrics in. The current reviewer no longer exposes Bash (#123), but the
+     stream parser still accepts external CLI output and must ignore event kinds it does not consume.
 
 Exit 0 = all assertions hold; 1 = a mismatch.
 """
@@ -131,6 +135,40 @@ def main():
         check("the verdict text still arrives", out["text"].startswith("TAUCETI-VERDICT-"))
         check("a malformed line is counted", out["tool_trace_meta"].get("malformed_events") == 1)
         check("a Glob with no path records the tool alone", out["tool_trace"][0] == {"tool": "Glob"})
+
+        # --- 7) an event whose `message` is not an object ---
+        # Verbatim historical shape from claude 2.1.233. Bash is no longer in the reviewer's tool set
+        # after #123; retaining the captured event checks that unrelated system events stay outside
+        # the assistant/user message parser.
+        denied = {"type": "system", "subtype": "permission_denied", "tool_name": "Bash",
+                  "tool_use_id": "b", "decision_reason_type": "rule",
+                  "message": "Permission to use Bash with command echo hi has been denied."}
+        out = run([use("a", "Read", file_path="code/TauCeti/Index.lean"), result_for("a"),
+                   use("b", "Bash", command="echo hi"), denied,
+                   result_for("b", is_error=True, content="denied"), RESULT], ws)
+        check("a denial announcement does not end the round", not out.get("parse_error"))
+        check("the verdict still arrives past it", out["text"].startswith("TAUCETI-VERDICT-"))
+        check("the announcement is not itself a tool call",
+              [e["tool"] for e in out["tool_trace"]] == ["Read", "Bash"])
+        check("the denied request still reads as denied", out["tool_trace"][1]["ok"] is False)
+        check("no message string is mistaken for content",
+              "has been denied" not in json.dumps(out["tool_trace"]))
+
+        # A trace parse that raises is contained by the same net a malformed document takes, so
+        # `run_claude` returns a diagnosable failure instead of unwinding through main().
+        orig_trace = reviewers._tool_trace
+
+        def boom(*a, **k):
+            raise AttributeError("'str' object has no attribute 'get'")
+
+        reviewers._tool_trace = boom
+        try:
+            out = run([use("a", "Read", file_path="code/TauCeti/Index.lean"), RESULT], ws)
+        finally:
+            reviewers._tool_trace = orig_trace
+        check("a raising trace parse is a parse_error, not a crash",
+              "no attribute" in (out.get("parse_error") or ""))
+        check("...and the round still gets a result object back", out.get("text") == "")
 
     # --- 4) a CLI-reported failure is not a verdict ---
     marker = "TAUCETI-VERDICT-abc"
