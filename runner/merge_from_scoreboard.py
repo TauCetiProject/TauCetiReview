@@ -122,7 +122,13 @@ def has_live_review(comments, head_sha, now=None):
     return False
 
 
-DEFAULT_ALLOW = ["TauCeti.lean", "lake-manifest.json", "lean-toolchain"]
+# docbuild/docs/references.bib is the bibliography doc-gen4 resolves docstring citations
+# against, so a docstring citing a work no one has entered renders as a bare bracketed key.
+# Filling it in is the same work as writing the docstring. It is BibTeX read only by the pages
+# build — never by Lake or the review harness — so nothing here executes it. TauCeti's own scope
+# guard allows the same single path; both gates must agree for such a PR to merge.
+DEFAULT_ALLOW = ["TauCeti.lean", "lake-manifest.json", "lean-toolchain",
+                 "docbuild/docs/references.bib"]
 
 
 def load_comments(text):
