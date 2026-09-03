@@ -22,6 +22,8 @@ imports whose wrongness is evident from the diff or the dependency topic.
   PR instead leaves those siblings flat. When the shared component does not name their
   common subject (a mathematician's name across unrelated subjects, or a generic
   adjective), raise no finding from the shared prefix.
+- `private` is not a substitute for correct placement. If a declaration is in the wrong home, ask
+  for the move; do not accept hiding it as the fix.
 - A relocation updates every in-repository import and deletes the old module path in the same PR.
   Require deletion of forwarding import modules and `deprecated_module` shims; preserving an old
   path for external users is not part of placement.
