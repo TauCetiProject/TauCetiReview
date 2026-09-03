@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Compute the auto-merge decision from the PR's scoreboard COMMENT (the live verdict source).
+"""Compute the auto-merge decision from the PR's scoreboard COMMENTS (the live verdict source).
 
 Any reviewer — the worker, or anyone running tauceti-review — posts a scoreboard comment on the PR
-carrying a `<!--tauceti-meta:v1 {...}-->` block with `head_sha` and a full per-rubric `states` map. A
-PR is mergeable when the newest scoreboard comment is AT THE PR'S CURRENT HEAD and every required
-rubric is green there, and the shared `decide_merge` rule holds (build green, TauCeti/-only + allowed
+carrying a `<!--tauceti-meta:v1 {...}-->` block with `head_sha` and a full per-rubric `states` map. The
+newest completed scoreboard at the current head is the verdict: a later completed review supersedes
+an earlier one instead of making every disagreement a permanent veto. An unexpired
+review-in-progress marker delays initial enqueue, but does not revoke an already-completed green
+verdict; if that review later posts a blocking scoreboard, the completed verdict makes the review
+state unsafe and the reconciler dequeues the PR. It is mergeable when that review state is safe, no
+review is live, and the shared `decide_merge` rule also holds (build green, TauCeti/-only + allowed
 root/pins, bump-guard for a pin). This is the "no bar" model: trust is the posted comment itself, so a
 contributor with no repo write can still have their review count. The HARD boundary that a forged
 scoreboard cannot bypass remains the CI build + scope + axiom audit + bump-guard checks.
@@ -21,26 +25,18 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 
 from review import DEFAULT_RUBRICS, changed_paths, decide_merge
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
+COORD_RE = re.compile(r"<!--tauceti-review-in-progress (.*?)-->", re.S)
 # A rendered scoreboard row: | <icon> | [rubric](url) | <state word> | `judge` | summary |
 TABLE_ROW_RE = re.compile(r"^\|[^|]*\|\s*\[?([a-z0-9-]+)\]?[^|]*\|\s*([^|]+?)\s*\|", re.M)
 WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
-
-
-def newest_scoreboard(comments):
-    """The newest comment carrying the scoreboard marker. No access bar: any author; an updated or
-    newer scoreboard supersedes an older one (the engine edits the canonical one in place)."""
-    boards = [c for c in comments if SCOREBOARD_MARKER in (c.get("body") or "")]
-    if not boards:
-        return None
-    boards.sort(key=lambda c: c.get("updated_at") or c.get("created_at") or "")
-    return boards[-1]
 
 
 def parse_meta(body):
@@ -64,7 +60,75 @@ def states_from_table(body):
     return out
 
 
-DEFAULT_ALLOW = ["TauCeti.lean", "lake-manifest.json", "lean-toolchain"]
+def current_scoreboards(comments, head_sha):
+    """Valid scoreboard comments for this exact head. There is deliberately no author access bar:
+    ordinary contributors' posted reviews count, just as they did in the original merge gate."""
+    out = []
+    for comment in comments:
+        body = comment.get("body") or ""
+        if SCOREBOARD_MARKER not in body:
+            continue
+        meta = parse_meta(body)
+        if meta and meta.get("head_sha") == head_sha:
+            out.append((comment, meta))
+    return out
+
+
+def latest_current_scoreboard(comments, head_sha):
+    """The newest completed scoreboard for this exact head.
+
+    Review init posts an in-progress scoreboard before running models. Ignore those while any
+    completed scoreboard exists: starting a second review must not temporarily replace a green
+    completed verdict with an empty in-progress one. If init is the only current-head scoreboard,
+    retain it and fail closed from its states. Comments normally arrive in creation order; use their
+    update timestamp first and their input position as a deterministic fallback/tie-break.
+    """
+    boards = current_scoreboards(comments, head_sha)
+    if not boards:
+        return None
+    completed = [b for b in boards if b[1].get("mode") != "init"]
+    candidates = completed or boards
+
+    def order(item):
+        index, (comment, meta) = item
+        timestamp = (comment.get("updated_at") or comment.get("created_at")
+                     or meta.get("ts") or "")
+        return timestamp, index
+
+    return max(enumerate(candidates), key=order)[1]
+
+
+def has_live_review(comments, head_sha, now=None):
+    """Whether an unexpired review-in-progress marker claims this exact head.
+
+    Markers need only normal issue-comment access, so independent contributors can pause the queue
+    while reviewing without gaining repository permissions. Invalid, expired, and other-head markers
+    are ignored. A crashed reviewer self-clears when its marker's existing TTL expires.
+    """
+    now = int(time.time()) if now is None else now
+    for comment in comments:
+        match = COORD_RE.search(comment.get("body") or "")
+        if not match:
+            continue
+        try:
+            marker = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(marker, dict):
+            continue
+        expires = marker.get("expires_at")
+        if marker.get("head") == head_sha and isinstance(expires, int) and expires > now:
+            return True
+    return False
+
+
+# docbuild/docs/references.bib is the bibliography doc-gen4 resolves docstring citations
+# against, so a docstring citing a work no one has entered renders as a bare bracketed key.
+# Filling it in is the same work as writing the docstring. It is BibTeX read only by the pages
+# build — never by Lake or the review harness — so nothing here executes it. TauCeti's own scope
+# guard allows the same single path; both gates must agree for such a PR to merge.
+DEFAULT_ALLOW = ["TauCeti.lean", "lake-manifest.json", "lean-toolchain",
+                 "docbuild/docs/references.bib"]
 
 
 def load_comments(text):
@@ -90,33 +154,47 @@ def load_comments(text):
 
 
 def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump_guard,
-                         merge_path_prefix="TauCeti/", merge_allow_file=None, scope=""):
-    """The merge gate, shared by the merge-only CLI and the merge sweep: a PR is mergeable iff the
-    newest scoreboard comment is AT `head_sha` with every `required` rubric green there, and the
-    `decide_merge` rule holds (build green, allowed paths, bump-guard for a pin).
-    Returns {"merge", "reason", "head_sha"}."""
+                         merge_path_prefix="TauCeti/", merge_allow_file=None, scope="", now=None):
+    """The gate shared by merge-only and the sweep.
+
+    `review_safe` is intentionally separate from `merge`: the reconciler should dequeue a PR when
+    its review state becomes unsafe, but should leave a human-queued PR alone when only the automatic
+    path/build policy refuses it. Returns {"review_safe", "merge", "reason", "head_sha"}.
+    """
     allow = DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file
-    board = newest_scoreboard(comments)
-    meta = parse_meta(board.get("body")) if board else None
     if not required:
-        return {"merge": False, "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
-    if not meta:
-        return {"merge": False, "reason": "no scoreboard comment at the PR; refusing to merge",
+        return {"review_safe": False, "merge": False,
+                "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
+    latest = latest_current_scoreboard(comments, head_sha)
+    if latest is None:
+        return {"review_safe": False, "merge": False,
+                "reason": "no scoreboard comment for the current head; refusing",
                 "head_sha": head_sha}
-    if (meta.get("head_sha") or "") != head_sha:
-        return {"merge": False, "head_sha": head_sha,
-                "reason": (f"scoreboard is for a different head "
-                           f"({(meta.get('head_sha') or '')[:7]} != {head_sha[:7]}); refusing")}
+    board, meta = latest
     raw = meta.get("states")
     if not isinstance(raw, dict) or not raw:
-        raw = states_from_table(board.get("body"))   # old comment: derive from the rendered table
+        raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
     states = {r: (raw.get(r) or "absent") for r in required}
+    if not all(states[r] == "green" for r in required):
+        reason = ("no completed scoreboard for the current head yet; waiting"
+                  if meta.get("mode") == "init"
+                  else "the newest completed scoreboard for the current head is not all-green; "
+                       "refusing")
+        return {"review_safe": False, "merge": False,
+                "reason": reason,
+                "head_sha": head_sha}
+    if has_live_review(comments, head_sha, now):
+        return {"review_safe": True, "merge": False,
+                "reason": "the newest completed scoreboard is green, but a review is in progress; "
+                          "waiting before enqueue",
+                "head_sha": head_sha}
+
+    states = {r: "green" for r in required}
     candidates = sorted(required)
-    all_green = all(states[r] == "green" for r in required)
     paths = changed_paths(diff_text)
-    merge_ok, reason = decide_merge(states, candidates, all_green, paths, head_sha,
+    merge_ok, reason = decide_merge(states, candidates, True, paths, head_sha,
                                     merge_path_prefix, allow, bump_guard, ci_build, scope)
-    return {"merge": merge_ok, "reason": reason, "head_sha": head_sha}
+    return {"review_safe": True, "merge": merge_ok, "reason": reason, "head_sha": head_sha}
 
 
 def resolve_commit_status(repo, head_sha, context):

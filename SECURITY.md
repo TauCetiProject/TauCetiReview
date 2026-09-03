@@ -6,10 +6,12 @@ hardening that followed (issues #7–#15, #22).
 
 ## What runs
 
-A PR on `TauCetiProject/TauCeti` triggers review after CI succeeds, or on a `/review` comment
-from a trusted user. The reusable workflow (`.github/workflows/review.yml`) checks out the PR
-code, runs each rubric through a reviewer CLI (`claude` or `codex`, chosen at random per rubric,
-read-only tools), posts an aggregated verdict, and — when the gate passes — auto-merges.
+Production review generation currently runs from a trusted operator-run worker plus ad hoc trusted
+contributors' command lines. The reusable CI workflow (`.github/workflows/review.yml`) can perform
+the same metered-API review after a green build or an authorized `/review`, but Tau Ceti currently
+disables that generation path to conserve budget. Either path runs each rubric through a read-only
+reviewer CLI and posts a scoreboard plus per-rubric findings. The independent auto-merge workflows
+consume the posted scoreboard.
 
 ## Trust boundary
 
@@ -63,15 +65,18 @@ Merging is performed by the `tauceti-review-bot` GitHub App, which is a **review
 on `main` (no machine user account is used; a GitHub App cannot be a CODEOWNER). A PR is merged
 only when **all** of:
 
-- every rubric **approves on the current commit** (latest verdict per rubric across that
-  commit's rounds; I7 guarantees freshness);
+- the newest marked scoreboard comment names the current commit and says every rubric approves;
 - TauCeti CI's trusted `scope` status is green on the current commit, and every changed path is
   under `TauCeti/` or an explicitly allowed root pin; lakefiles are never allowed;
 - any PR touching a Lake pin has a green trusted `bump-guard`;
 - CI's `build` check is green (status checks are **not** bypassed, only the review requirement).
 
-Toggle: `enable_automerge` on the trigger workflow. `gh workflow disable "Review"` pauses the
-whole pipeline.
+In Tau Ceti production, review generation and auto-merge are independent. The `Review` workflow's
+enabled state plus the `CI_REVIEW_ENABLED` repository variable on `TauCetiProject/TauCeti` control
+metered review generation; disabling it does not pause scoreboard-driven merging. The reusable
+review workflow's `enable_automerge` input is not the production merge path. To pause automated
+merging, disable both the `Auto-merge` and `Merge sweep` workflows in `TauCetiProject/TauCeti`; both
+must be re-enabled to resume normal operation.
 
 ## Residual risks (knowingly accepted)
 
@@ -83,6 +88,13 @@ whole pipeline.
 - **R3 — fork auto-review depends on the sandbox staying airtight.** GitHub-hosted runners are
   not a hard boundary against a determined attacker with network egress; we mitigate to "no
   secret is reachable to exfiltrate," which is the achievable bar.
+- **R7 — scoreboard trust is social.** The merge workflows deliberately apply no
+  author-association gate to scoreboard comments. A PR author without repository write access can
+  post their own all-green board; because the newest board by `updated_at` wins, posting a new board
+  or editing an old one also supersedes a genuine changes-requested board. This can satisfy the
+  review signal, although it cannot bypass the trusted `build` (which carries the axiom audit),
+  `scope`, path-policy, or `bump-guard` checks. Restricting who may supply the review signal would be
+  a separate policy change.
 - **R6 — a reviewer can read its *own* provider key** via `/proc/self/environ` (the CLI needs
   it to function). Blast radius is one key, only on model compliance with injection. Tracked in
   issue #22; the real fix is uid-separation or a local auth proxy.
