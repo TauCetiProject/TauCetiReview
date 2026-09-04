@@ -300,7 +300,7 @@ def post_marker(repo, pr, head, providers, nonce, submitted_by):
 def delete_marker(repo, comment_id):
     """Remove a marker by id. Best-effort (a 404 — already gone or expired-and-gc'd — is fine)."""
     run(["gh", "api", "-X", "DELETE", f"/repos/{repo}/issues/comments/{comment_id}"],
-        quiet=True, allow_fail=True)
+        quiet=True, capture=True, allow_fail=True)
 
 
 # Markers this process owns and must remove on exit. atexit alone misses signals, so SIGTERM/SIGINT are
