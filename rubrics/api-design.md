@@ -15,8 +15,12 @@ You judge the public interface the PR exposes. Uses `request_changes`.
   lemmas: keep bodies unexposed (no `@[expose]`) where possible unless a consumer must unfold or compute,
   and ask for the missing lemma instead. Recall that we can avoid making lemmas rely on defeq downstream by using `:= (rfl)` instead of `:= rfl`.
 - A definition needs the API that characterizes it: introduction and elimination, the
-  `*_def` and `mem_*_iff` restatements, interaction with the operations in scope, and the
-  universal property where there is one. Try to use the new API without unfolding and demand any missing characteristic lemmas.
+  `*_def`, `*_apply`, and `mem_*_iff` restatements, interaction with the operations in scope,
+  and the universal property where there is one. Try to use the new API without unfolding
+  and demand missing characteristic access, not automatically another theorem. If an existing
+  public theorem already provides that access, do not require a new restatement. A trivial
+  proof or the absence of current consumers does not by itself make a missing characteristic
+  lemma unnecessary.
 - A bundled definition must be **extensional on the object it denotes**: it exposes no data its
   laws leave unconstrained. If a structure field or indexed family is left free on inputs no
   operation or law actually uses, two terms that agree everywhere meaningful can still differ,

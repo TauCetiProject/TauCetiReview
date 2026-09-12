@@ -40,6 +40,14 @@ on your grep searches; don't ask the author to search themselves.
 Not every hit is a defect: Mathlib itself keeps per-type restatements of generic lemmas, and
 a specialization with genuine consumers can earn its place.
 
+A definition's characteristic API (`*_def`, `*_apply`, `mem_*_iff`) is not duplication
+merely because its proof is `rfl`, it unfolds the definition, or it has no current consumers.
+To request deletion of such a lemma, identify an existing public theorem that already
+provides the same access; the definition being characterized is not that replacement.
+Without such a replacement, do not request deletion on duplication grounds. This protects
+missing characteristic access, not optional convenience wrappers or redundant copies of
+access already provided by an existing public theorem.
+
 ## Verdict
 
 - `block` on a declaration an existing one directly replaces.
