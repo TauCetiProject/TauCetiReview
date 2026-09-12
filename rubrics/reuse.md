@@ -40,8 +40,8 @@ on your grep searches; don't ask the author to search themselves.
 Not every hit is a defect: Mathlib itself keeps per-type restatements of generic lemmas, and
 a specialization with genuine consumers can earn its place.
 
-Characteristic lemmas (`*_def`, `*_apply`, `mem_*_iff`) are duplication only if an existing
-public theorem provides the same access; unfolding the definition is not a replacement.
+For characteristic lemmas (`*_def`, `*_apply`, `mem_*_iff`), claim duplication only by showing
+how consumers can use an existing public theorem without unfolding the characterized definition.
 
 ## Verdict
 
