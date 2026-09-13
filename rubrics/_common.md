@@ -13,6 +13,7 @@ follows.
 For helper APIs, `api-design` owns retention and visibility; `placement` judges the home of
 retained public infrastructure, `generality` the signature, and `proof-quality` proof structure.
 These boundaries take precedence over angle-specific factoring, inlining, or relocation advice.
+Make helper relocation requests conditional on `api-design` retaining a public interface.
 Neither a generic signature nor one consumer settles retention or visibility.
 `reuse` may still require deletion of a genuine duplicate: show the existing replacement and
 explain why no useful interface is lost, including uses in theorem statements.
