@@ -1,10 +1,62 @@
 """tauceti-review casefile — split from review.py (behaviour-preserving).
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
+import hashlib
+
+# Bumped whenever patch_digest's normalisation changes, so digests recorded by an older engine can
+# never match a digest computed by a newer one.
+PATCH_DIGEST_VERSION = "v1"
 
 
 
-def update_case_file(state_map, rubric, res, head_sha):
+def patch_digest(diff_text):
+    """Identity of the change a diff presents to a reviewer, independent of the commit it sits on.
+
+    sha256 over the unified diff with the two kinds of line that move under a rebase or a
+    merge-from-base removed: `index <blob>..<blob>` headers (blob ids depend on the whole file) and
+    `@@ -a,b +c,d @@ <context>` hunk headers (line offsets, and a context label taken from the
+    surrounding file). Everything else counts — file names, every added, removed and context line,
+    whitespace included — so this is stricter than `git patch-id`: two diffs share a digest only
+    when the reviewer would see the same change. Context lines make it conservative: if the base
+    moved next to a hunk, the digest changes and the verdict is re-earned. None for an empty diff."""
+    if not diff_text or not diff_text.strip():
+        return None
+    h = hashlib.sha256()
+    for line in diff_text.splitlines():
+        if line.startswith("index ") or line.startswith("@@ "):
+            continue
+        h.update(line.encode("utf-8", "surrogateescape"))
+        h.update(b"\n")
+    return f"{PATCH_DIGEST_VERSION}:{h.hexdigest()}"
+
+
+
+def carry_forward(state_map, head_sha, digest):
+    """Re-pin to HEAD every case file judged on an earlier commit whose reviewed patch has the same
+    digest as the current one. A verdict made on this exact change has had this exact input, so
+    re-running it would reproduce it — the same reason a verdict already made at HEAD is not
+    re-run. This is what lets a stacked PR keep its approvals when its parent lands and it takes
+    the new base by merge or rebase without touching its own change. Returns the rubrics carried,
+    sorted, for the log and the round record. No digest (no diff on this invocation) carries
+    nothing."""
+    carried = []
+    if not digest:
+        return carried
+    for rubric, cf in state_map.items():
+        if not cf or not cf.get("verdict") or cf.get("reviewed_sha") == head_sha:
+            continue
+        if cf.get("reviewed_digest") != digest:
+            continue
+        cf["carried_from_sha"] = cf.get("reviewed_sha")
+        cf["reviewed_sha"] = head_sha
+        if cf["verdict"] == "approve" and cf.get("approved_digest") == digest:
+            cf["approved_sha"] = head_sha
+        carried.append(rubric)
+    return sorted(carried)
+
+
+
+def update_case_file(state_map, rubric, res, head_sha, digest=None):
     """Fold a finished rubric run into its persistent case file (= the scoreboard/staleness
     state and the compact context a later re-run audits instead of re-deriving)."""
     v = res.get("verdict_obj") or {}
@@ -13,14 +65,17 @@ def update_case_file(state_map, rubric, res, head_sha):
     cf.update(rubric=rubric, provider=res.get("provider"), model=res.get("model"),
               verdict=verdict,
               summary=v.get("summary", ""), findings=v.get("findings") or [],
-              reviewed_sha=head_sha,
+              reviewed_sha=head_sha, reviewed_digest=digest,
               # Execution provenance, so a later renderer or analysis can surface runtime/tokens
               # for this rubric even on a round that did not re-run it.
               run_id=res.get("run_id"), started_at=res.get("started_at"),
               duration_s=res.get("duration_s"), usage=res.get("usage"),
               cost_usd=res.get("cost_usd"), cost_estimated=res.get("cost_estimated"))
+    # A fresh run supersedes any verdict carried here from an earlier commit.
+    cf.pop("carried_from_sha", None)
     if verdict == "approve":
         cf["approved_sha"] = head_sha
+        cf["approved_digest"] = digest
         # A green result has no adverse finding that must be published before the scoreboard.
         # Drop a pending marker left by an earlier blocking result; closing an existing thread is
         # useful UI cleanup, but it is deliberately not part of the review-publication commit.

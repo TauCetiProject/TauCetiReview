@@ -22,7 +22,7 @@ from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge
 from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
-from casefile import build_reactivation_block, normalize_finding_path, pick_anchor, update_case_file
+from casefile import build_reactivation_block, carry_forward, normalize_finding_path, patch_digest, pick_anchor, update_case_file
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
 
 
@@ -502,7 +502,7 @@ def run_rubric(ctx, rubric):
                                 transcript_text=res.get("text"), diff_text=diff_full)
         except Exception as e:
             print(f"WARNING: archive write failed for {rubric}: {e}", file=sys.stderr)
-    cf = update_case_file(state_map, rubric, res, head)
+    cf = update_case_file(state_map, rubric, res, head, ctx.prov.get("patch_digest"))
     # PR-level write-ahead marker for the final scoreboard. The case-file marker protects adverse
     # thread publication; this also covers an all-green run whose scoreboard POST/PATCH is
     # interrupted. The trusted poster clears it only after the current-head scoreboard lands.
@@ -770,6 +770,22 @@ def main():
     pr_state.setdefault("state", {})            # per-rubric case files (= scoreboard/staleness)
     pr_state.setdefault("scoreboard_comment_id", None)
     state_map = pr_state["state"]
+
+    # Identity of the PR's own change, independent of the commit it sits on. A merge-from-base or a
+    # rebase that leaves the patch byte-identical (the normal life of a stacked PR once its parent
+    # lands) carries every verdict already made on that patch to this head instead of re-earning
+    # it — the same rule as "already judged at this head", keyed on the change rather than the
+    # commit. Runs before any state is read so init, merge and commit modes all see the same states.
+    digest = None
+    if a.diff_file and pathlib.Path(a.diff_file).exists():
+        digest = patch_digest(pathlib.Path(a.diff_file).read_text())
+    prov["patch_digest"] = digest
+    carried = carry_forward(state_map, head, digest)
+    if carried:
+        prov["carried_rubrics"] = ",".join(carried)
+        origin = state_map[carried[0]].get("carried_from_sha") or ""
+        print(f"[carry] {', '.join(carried)}: verdicts carried to {head[:9]} — patch unchanged "
+              f"since {origin[:9]}, nothing to re-review.")
 
     # Fold author replies gathered from the PR's rubric threads into each rubric's case file, so a
     # re-run sees the author's contest (untrusted argument) and re-adjudicates against it. Replaces

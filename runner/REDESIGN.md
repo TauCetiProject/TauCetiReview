@@ -44,6 +44,12 @@ delta instead of re-reading the whole diff.
 
 - **green**  — `verdict == approve` and `approved_sha == HEAD`.
 - **stale**  — `verdict == approve` and `approved_sha != HEAD` (approved on an older commit).
+  Before any state is read, `casefile.carry_forward` re-pins to HEAD every case file whose
+  `reviewed_digest` (a `casefile.patch_digest` of the PR diff: sha256 with `index` and `@@` lines
+  dropped, so it survives a rebase or merge-from-base but not a change to any diff line) equals
+  the current diff's digest. A stacked PR that takes its parent's squash-merged base therefore
+  keeps its approvals; the row shows "carried from `<sha>`" and the case file keeps
+  `carried_from_sha` until a fresh run replaces it.
 - **blocking** — `verdict in {request_changes, block}`, or never run.
 - **error**  — last run produced no parseable verdict.
 

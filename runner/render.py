@@ -169,7 +169,10 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
         judge = f"{cf.get('provider')}/{cf.get('model')}" if cf.get("provider") else "—"
         summ = sanitize(cf.get("summary") or "").replace("\n", " ").replace("|", "\\|")
         name = f"[{r}]({rubric_url(prov, r)})" if (prov or {}).get("rubrics_sha") else r
-        lines.append(f"| {icon[s]} | {name} | {word[s]} | `{judge}` | {summ} |")
+        state = word[s]
+        if s == "green" and cf.get("carried_from_sha"):
+            state += f" (carried from `{cf['carried_from_sha'][:7]}`, patch unchanged)"
+        lines.append(f"| {icon[s]} | {name} | {state} | `{judge}` | {summ} |")
     note = "♻️ = approved on an earlier commit, re-run before merge."
     lines += ["", f"{note}{(' ' + budget_note) if budget_note else ''}"]
     sub = []
