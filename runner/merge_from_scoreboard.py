@@ -171,17 +171,20 @@ def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump
                 "reason": "no scoreboard comment for the current head; refusing",
                 "head_sha": head_sha}
     board, meta = latest
+    if meta.get("mode") == "init":
+        # Posted before any model ran this round; whatever states it renders, no verdict for this
+        # head has been completed. Fail closed regardless of the states.
+        return {"review_safe": False, "merge": False,
+                "reason": "no completed scoreboard for the current head yet; waiting",
+                "head_sha": head_sha}
     raw = meta.get("states")
     if not isinstance(raw, dict) or not raw:
         raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
     states = {r: (raw.get(r) or "absent") for r in required}
     if not all(states[r] == "green" for r in required):
-        reason = ("no completed scoreboard for the current head yet; waiting"
-                  if meta.get("mode") == "init"
-                  else "the newest completed scoreboard for the current head is not all-green; "
-                       "refusing")
         return {"review_safe": False, "merge": False,
-                "reason": reason,
+                "reason": "the newest completed scoreboard for the current head is not all-green; "
+                          "refusing",
                 "head_sha": head_sha}
     if has_live_review(comments, head_sha, now):
         return {"review_safe": True, "merge": False,

@@ -157,6 +157,11 @@ def test_gate_is_shared_with_merge_only():
     diff2 = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
     assert not mfs.decide_from_comments(
         _scoreboard(head, green), head, required, diff2, "SUCCESS", "", scope="SUCCESS")["merge"]
+    # an init (in-progress) board is refused even when it renders every rubric green: no verdict
+    # for this head has completed, and a carried-forward approval must not enqueue before the run
+    init_green = mfs.decide_from_comments(
+        _scoreboard(head, green, mode="init"), head, required, diff, "SUCCESS", "", scope="SUCCESS")
+    assert not init_green["merge"] and not init_green["review_safe"]
 
 
 def test_newest_completed_current_head_scoreboard_wins():

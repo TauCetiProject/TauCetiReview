@@ -12,51 +12,65 @@ PATCH_DIGEST_VERSION = "v1"
 def patch_digest(diff_text):
     """Identity of the change a diff presents to a reviewer, independent of the commit it sits on.
 
-    sha256 over the unified diff with the two kinds of line that move under a rebase or a
-    merge-from-base removed: `index <blob>..<blob>` headers (blob ids depend on the whole file) and
-    `@@ -a,b +c,d @@ <context>` hunk headers (line offsets, and a context label taken from the
-    surrounding file). Everything else counts — file names, every added, removed and context line,
-    whitespace included — so this is stricter than `git patch-id`: two diffs share a digest only
-    when the reviewer would see the same change. Context lines make it conservative: if the base
-    moved next to a hunk, the digest changes and the verdict is re-earned. None for an empty diff."""
+    sha256 over the unified diff's raw bytes, with only the parts that move under a rebase or a
+    merge-from-base normalised away: the blob ids of an `index <old>..<new> [mode]` header (the
+    mode is kept) and the line offsets of an `@@ -a,b +c,d @@ <section>` hunk header (the section
+    label is kept). Everything else counts — file names, renames, mode lines, every added, removed
+    and context line, whitespace and line endings included — so this is stricter than
+    `git patch-id`: two diffs share a digest only when the reviewer would read the same change.
+    Context lines make it conservative: if the base moved next to a hunk, the digest changes and
+    the verdict is re-earned. None for an empty diff, and None for any diff carrying a binary
+    change, whose content lives only in the blob ids this normalisation drops."""
+    if isinstance(diff_text, str):
+        diff_text = diff_text.encode("utf-8", "surrogateescape")
     if not diff_text or not diff_text.strip():
         return None
     h = hashlib.sha256()
-    for line in diff_text.splitlines():
-        if line.startswith("index ") or line.startswith("@@ "):
-            continue
-        h.update(line.encode("utf-8", "surrogateescape"))
+    for line in diff_text.split(b"\n"):
+        if line.startswith(b"Binary files ") or line.startswith(b"GIT binary patch"):
+            return None
+        if line.startswith(b"index "):
+            parts = line.split(b" ")  # index <old>..<new> [<mode>]
+            line = b"index" + (b" " + parts[2] if len(parts) > 2 else b"")
+        elif line.startswith(b"@@ "):
+            close = line.find(b"@@", 3)
+            line = b"@@" + (line[close + 2:] if close >= 0 else b"")
+        h.update(line)
         h.update(b"\n")
     return f"{PATCH_DIGEST_VERSION}:{h.hexdigest()}"
 
 
 
-def carry_forward(state_map, head_sha, digest):
-    """Re-pin to HEAD every case file judged on an earlier commit whose reviewed patch has the same
-    digest as the current one. A verdict made on this exact change has had this exact input, so
-    re-running it would reproduce it — the same reason a verdict already made at HEAD is not
-    re-run. This is what lets a stacked PR keep its approvals when its parent lands and it takes
-    the new base by merge or rebase without touching its own change. Returns the rubrics carried,
-    sorted, for the log and the round record. No digest (no diff on this invocation) carries
-    nothing."""
+def carry_forward(state_map, head_sha, digest, rubrics_version=None):
+    """Re-pin to HEAD every approval made on an earlier commit for the same patch (same
+    `patch_digest`) under the same rubric text (same `rubrics_version`). A verdict made on this
+    exact change against this exact rubric has had this exact input as far as the diff goes; a
+    stacked PR that takes its parent's squash-merged base by merge or rebase therefore keeps its
+    approvals instead of re-earning every one of them. The base itself may have moved, so this is a
+    deliberate trade of a full re-review for the CI build against the new base; the reviewer's
+    inspection of the surrounding tree is not repeated. Only approvals carry: a blocking verdict is
+    re-judged on the new head as before, so a base change that fixes a finding is seen, and its
+    thread never claims a head it was not made on. `reviewed_sha`/`approved_*` keep meaning where
+    the model actually ran; `carried_from_sha` names that origin. Returns the rubrics carried,
+    sorted. No digest (no diff on this invocation) carries nothing."""
     carried = []
     if not digest:
         return carried
     for rubric, cf in state_map.items():
-        if not cf or not cf.get("verdict") or cf.get("reviewed_sha") == head_sha:
+        if not cf or cf.get("verdict") != "approve" or cf.get("approved_sha") == head_sha:
             continue
-        if cf.get("reviewed_digest") != digest:
+        if cf.get("approved_digest") != digest:
+            continue
+        if rubrics_version is not None and cf.get("approved_rubrics_version") != rubrics_version:
             continue
         cf["carried_from_sha"] = cf.get("reviewed_sha")
-        cf["reviewed_sha"] = head_sha
-        if cf["verdict"] == "approve" and cf.get("approved_digest") == digest:
-            cf["approved_sha"] = head_sha
+        cf["approved_sha"] = head_sha
         carried.append(rubric)
     return sorted(carried)
 
 
 
-def update_case_file(state_map, rubric, res, head_sha, digest=None):
+def update_case_file(state_map, rubric, res, head_sha, digest=None, rubrics_version=None):
     """Fold a finished rubric run into its persistent case file (= the scoreboard/staleness
     state and the compact context a later re-run audits instead of re-deriving)."""
     v = res.get("verdict_obj") or {}
@@ -66,6 +80,7 @@ def update_case_file(state_map, rubric, res, head_sha, digest=None):
               verdict=verdict,
               summary=v.get("summary", ""), findings=v.get("findings") or [],
               reviewed_sha=head_sha, reviewed_digest=digest,
+              reviewed_rubrics_version=rubrics_version,
               # Execution provenance, so a later renderer or analysis can surface runtime/tokens
               # for this rubric even on a round that did not re-run it.
               run_id=res.get("run_id"), started_at=res.get("started_at"),
@@ -76,6 +91,7 @@ def update_case_file(state_map, rubric, res, head_sha, digest=None):
     if verdict == "approve":
         cf["approved_sha"] = head_sha
         cf["approved_digest"] = digest
+        cf["approved_rubrics_version"] = rubrics_version
         # A green result has no adverse finding that must be published before the scoreboard.
         # Drop a pending marker left by an earlier blocking result; closing an existing thread is
         # useful UI cleanup, but it is deliberately not part of the review-publication commit.

@@ -502,7 +502,8 @@ def run_rubric(ctx, rubric):
                                 transcript_text=res.get("text"), diff_text=diff_full)
         except Exception as e:
             print(f"WARNING: archive write failed for {rubric}: {e}", file=sys.stderr)
-    cf = update_case_file(state_map, rubric, res, head, ctx.prov.get("patch_digest"))
+    cf = update_case_file(state_map, rubric, res, head, ctx.prov.get("patch_digest"),
+                          ctx.rubrics_version)
     # PR-level write-ahead marker for the final scoreboard. The case-file marker protects adverse
     # thread publication; this also covers an all-green run whose scoreboard POST/PATCH is
     # interrupted. The trusted poster clears it only after the current-head scoreboard lands.
@@ -773,18 +774,19 @@ def main():
 
     # Identity of the PR's own change, independent of the commit it sits on. A merge-from-base or a
     # rebase that leaves the patch byte-identical (the normal life of a stacked PR once its parent
-    # lands) carries every verdict already made on that patch to this head instead of re-earning
-    # it — the same rule as "already judged at this head", keyed on the change rather than the
-    # commit. Runs before any state is read so init, merge and commit modes all see the same states.
+    # lands) carries every approval already made on that patch to this head instead of re-earning
+    # it (casefile.carry_forward). Recomputed from the diff on every invocation, so an early return
+    # that does not persist the ledger loses nothing. Not applied in init mode: the in-progress
+    # board it posts must never read as a completed all-green verdict.
     digest = None
     if a.diff_file and pathlib.Path(a.diff_file).exists():
-        digest = patch_digest(pathlib.Path(a.diff_file).read_text())
+        digest = patch_digest(pathlib.Path(a.diff_file).read_bytes())
     prov["patch_digest"] = digest
-    carried = carry_forward(state_map, head, digest)
+    carried = [] if a.mode == "init" else carry_forward(state_map, head, digest, rubrics_version)
     if carried:
         prov["carried_rubrics"] = ",".join(carried)
         origin = state_map[carried[0]].get("carried_from_sha") or ""
-        print(f"[carry] {', '.join(carried)}: verdicts carried to {head[:9]} — patch unchanged "
+        print(f"[carry] {', '.join(carried)}: approvals carried to {head[:9]} — patch unchanged "
               f"since {origin[:9]}, nothing to re-review.")
 
     # Fold author replies gathered from the PR's rubric threads into each rubric's case file, so a
@@ -843,7 +845,7 @@ def main():
         # here, so this reflects the ledger's existing full-round count).
         if a.budget_file:
             prior_full = sum(1 for r in pr_state.get("rounds", [])
-                             if r.get("mode") not in ("reply", "repair"))
+                             if r.get("mode") not in ("reply", "repair", "carry"))
             full_rounds = prior_full
             budget_spent = full_rounds >= a.review_budget and not all_green
             pathlib.Path(a.budget_file).write_text(json.dumps(
@@ -1041,11 +1043,15 @@ def main():
     publication_repair = (not ran and (
         pr_state.get("pending_publication_head_sha") == head
         or bool(thread_action_rubrics(candidates, [], state_map, head))))
+    # A commit round that dispatched nothing because every approval carried (parent landed, patch
+    # unchanged) is a carry round: no reviewer ran, so it must not burn the review budget either.
     effective_mode = ("reply" if (a.mode == "commit" and ran and set(ran) <= contest_queued)
-                      else "repair" if publication_repair else a.mode)
+                      else "repair" if publication_repair
+                      else "carry" if (a.mode == "commit" and not ran and carried)
+                      else a.mode)
     prior_full = sum(1 for r in pr_state.get("rounds", [])
-                     if r.get("mode") not in ("reply", "repair"))
-    full_rounds = prior_full + (0 if effective_mode in ("reply", "repair") else 1)
+                     if r.get("mode") not in ("reply", "repair", "carry"))
+    full_rounds = prior_full + (0 if effective_mode in ("reply", "repair", "carry") else 1)
     prov["mode"] = effective_mode
     prov["full_rounds"] = full_rounds
     if stopped:
@@ -1141,6 +1147,7 @@ def main():
          "base_sha": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
          "rubrics_sha": a.rubrics_sha or None, "diff_sha256": prov.get("diff_sha256"),
          "diff_prompt_truncated": prov.get("diff_prompt_truncated"),
+         "patch_digest": digest, "carried": carried,
          "run_ids": [r.get("run_id") for r in run_results]})
     print(f"\nROUND {round_num} ({effective_mode}) {overall}  (ran {len(ran)}: {ran}; "
           + (f"halted at {halted} block; " if halted else "")
