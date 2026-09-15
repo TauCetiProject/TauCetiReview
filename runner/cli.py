@@ -602,8 +602,14 @@ def main():
         providers = ",".join(avail)
         print(f"reviewers (after de-contention): {providers}", file=sys.stderr)
 
-    diff = run(["gh", "pr", "diff", str(a.pr), "--repo", a.repo], capture=True, quiet=True).stdout
-    (work / "diff.txt").write_text(diff)
+    # Raw bytes end to end: the engine digests this file (casefile.patch_digest) to decide whether
+    # an approval carries to a new head, and a text-mode capture would fold CRLF into LF before
+    # the digest ever saw it. The workflow's shell redirection preserves bytes; match it here.
+    diff = subprocess.run(["gh", "pr", "diff", str(a.pr), "--repo", a.repo], capture_output=True)
+    if diff.returncode != 0:
+        sys.stderr.write(diff.stderr.decode("utf-8", "replace"))
+        die(f"command failed ({diff.returncode}): gh pr diff {a.pr}")
+    (work / "diff.txt").write_bytes(diff.stdout)
     # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
     # Passed to the engine so the prompt can assert the code compiles; best-effort (a fetch failure
     # just leaves it blank, and the engine then injects nothing).
