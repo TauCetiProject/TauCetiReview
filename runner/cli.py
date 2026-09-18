@@ -426,6 +426,11 @@ def main():
                          "kiro uses an exact --kiro-model and is explicit-only (never auto-drawn). "
                          "Default: every auto-drawn reviewer you "
                          "have available (claude, codex)")
+    ap.add_argument("--claude-model", default=None,
+                    help="pin the direct Claude reviewer model (default: engine policy)")
+    ap.add_argument("--codex-model", default=None,
+                    help="pin the Codex reviewer model (default: engine policy). An explicit pin "
+                         "disables the engine's automatic unavailable-model fallback.")
     ap.add_argument("--kiro-model", default="gpt-5.6-sol",
                     help="exact Kiro model (default: gpt-5.6-sol; e.g. claude-opus-5)")
     ap.add_argument("--no-mathlib", action="store_true",
@@ -710,6 +715,8 @@ def main():
            *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
            "--ci-build", ci_build or "", "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
+           *(["--claude-model", a.claude_model] if a.claude_model is not None else []),
+           *(["--codex-model", a.codex_model] if a.codex_model is not None else []),
            "--kiro-model", a.kiro_model,
            "--max-rounds-per-day", str(a.max_rounds_per_day),
            "--scoreboard-file", str(work / "scoreboard.md"),
