@@ -5,6 +5,7 @@
     "claude-opus-5":            [{"effective": "2026-07-24", "input": 5.0,  "output": 25.0, "cache_read": 0.5}],
     "claude-sonnet-4-6":        [{"effective": "2026-01-01", "input": 3.0,  "output": 15.0, "cache_read": 0.3}],
     "claude-fable-5":           [{"effective": "2026-01-01", "input": 10.0, "output": 50.0, "cache_read": 1.0}],
+    "claude-fable-5-1":         [{"effective": "2026-09-22", "input": 10.0, "output": 50.0, "cache_read": 0.25}],
     "claude-haiku-4-5":         [{"effective": "2026-01-01", "input": 1.0,  "output": 5.0,  "cache_read": 0.1}],
     "gpt-5.5":                  [{"effective": "2026-01-01", "input": 5.0,  "output": 30.0, "cache_read": 0.5,
                                   "long_context": {"threshold": 272000, "input": 10.0, "output": 45.0, "cache_read": 1.0}}],

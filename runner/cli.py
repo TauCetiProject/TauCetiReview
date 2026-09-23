@@ -451,6 +451,10 @@ def main():
                          "kiro uses an exact --kiro-model and is explicit-only (never auto-drawn). "
                          "Default: every auto-drawn reviewer you "
                          "have available (claude, codex)")
+    ap.add_argument("--claude-model", default=os.environ.get("TAUCETI_CLAUDE_MODEL") or None,
+                    help="exact direct-Claude model; overrides TAUCETI_CLAUDE_MODEL. "
+                         "Unset: keep the selected engine's default. Model must be priced in "
+                         "runner/prices.json (e.g. claude-fable-5-1)")
     ap.add_argument("--kiro-model", default="gpt-5.6-sol",
                     help="exact Kiro model (default: gpt-5.6-sol; e.g. claude-opus-5)")
     ap.add_argument("--no-mathlib", action="store_true",
@@ -519,6 +523,11 @@ def main():
     a.kiro_model = (a.kiro_model or "").strip()
     if not a.kiro_model or a.kiro_model.lower().startswith("auto"):
         die(f"--kiro-model needs an exact model id, not Kiro Auto: {a.kiro_model!r}")
+
+    # A whitespace-only TAUCETI_CLAUDE_MODEL is easy to produce from a CI variable and is
+    # truthy, so normalise here rather than letting it reach the engine and fail as an
+    # unpriced model only after workspace setup and the Mathlib fetch.
+    a.claude_model = (a.claude_model or "").strip() or None
 
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
     # host runs this after a --no-sync review (e.g. a bubble) to publish with its own creds. Loud:
@@ -740,6 +749,8 @@ def main():
            "--scoreboard-file", str(work / "scoreboard.md"),
            "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
            "--replies-json", str(replies_path)]
+    if a.claude_model:
+        cmd += ["--claude-model", a.claude_model]
     if a.rubrics:
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
