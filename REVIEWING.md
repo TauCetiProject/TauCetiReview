@@ -6,6 +6,7 @@ the trusted operator-run worker and from ad hoc command-line runs. `tauceti-revi
 person run the same review on their **own Claude / Codex / Kiro subscription**: the inference runs
 through the locally logged-in provider CLI, so there is no per-token bill. It is the same engine,
 same rubrics, same scoreboard and per-rubric threads — only the inference auth and who posts change.
+Claude can also use **Amazon Bedrock**, billed to your AWS account; see below.
 
 This is for people the project already trusts (maintainers, regular contributors). The tool is
 read-only and posts under *your* GitHub identity, but nothing stops a reviewer from rubber-stamping
@@ -80,7 +81,52 @@ Add `--post` to publish. Useful flags:
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |
 | `--auth api` | use the matching `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `KIRO_API_KEY` instead of a browser login |
+| `--auth bedrock` | use AWS credentials for Claude/Sonnet; billed to AWS |
 | `--keep` | keep the temporary workspace for inspection |
+
+### Amazon Bedrock
+
+With Claude Code, AWS CLI v2 supporting `configure export-credentials`, and an AWS profile
+that can invoke the pinned Opus reviewer:
+
+```bash
+export AWS_PROFILE=tauceti
+export AWS_REGION=us-east-1
+tauceti-review 42 --auth bedrock --reviewer claude --post
+```
+
+Set `AWS_REGION` (or `AWS_DEFAULT_REGION`) to a region available to your account. No Claude
+subscription login is needed. `--auth bedrock` is explicit and supports only `claude` and
+`sonnet`; an ambient `CLAUDE_CODE_USE_BEDROCK`, including `true` or `yes`, cannot change
+`--auth api` or `--auth subscription` into a billed AWS run.
+
+The trusted parent uses
+[`aws configure export-credentials`](https://docs.aws.amazon.com/cli/latest/reference/configure/export-credentials.html)
+to resolve the selected profile before creating the reviewer's throwaway HOME. Profile files,
+credential processes, SSO caches, and role credentials remain on the parent side: only the resolved
+access key, secret, and optional session token enter the reviewer environment. `AWS_CONFIG_FILE`
+and `AWS_SHARED_CREDENTIALS_FILE` are respected by the parent, but never forwarded. An explicit
+`AWS_PROFILE` or `AWS_DEFAULT_PROFILE` selects that profile even if ambient access keys exist.
+For SSO, log in with `aws sso login --profile tauceti` before starting. Resolution happens before
+each attempt, so a long worker run can obtain fresh credentials; credentials do **not** refresh
+inside an individual model attempt. An expired SSO login must be renewed by the operator.
+
+Alternatively, set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN`
+when applicable) with neither profile variable set, or set `AWS_BEARER_TOKEN_BEDROCK`.
+Those two routes do not require the AWS CLI. A Bedrock bearer token takes precedence over
+other AWS credentials. The reviewer cannot fall back to instance metadata, and receives no
+AWS profile paths, source-role settings, or credential-helper commands.
+
+The engine passes its exact `--claude-model` to Claude Code; `ANTHROPIC_DEFAULT_OPUS_MODEL`
+does not select this reviewer and is not forwarded. Records retain the requested model,
+the CLI's `modelUsage` model IDs when reported, and `auth: bedrock`. Credential-resolution
+failures and AWS authentication errors abort through the provider-down path without posting
+a blocking scoreboard.
+
+This isolates configuration and limits the credentials deliberately passed to a reviewer;
+it is **not** a filesystem sandbox. Read tools can still reach files accessible to the worker's
+OS user. Use a dedicated worker identity with narrowly scoped AWS permissions and no unrelated
+credentials. See [SECURITY.md](SECURITY.md#residual-risks-knowingly-accepted).
 
 ## What it does
 
@@ -91,10 +137,10 @@ Add `--post` to publish. Useful flags:
    agent against OpenRouter, **read-only** (`Read`/`Grep`/`Glob`, or pi's `read`/`grep`/`ls` —
    no shell, no writes). In `--auth subscription` mode Claude, Codex, and Kiro use the logged-in
    subscription; the OpenRouter reviewers are pay-per-token and use
-   `OPENROUTER_API_KEY`. Each reviewer runs in a **clean room**: a throwaway HOME seeded with only
-   its own credential, so it ignores your personal `CLAUDE.md` / `AGENTS.md`, skills, plugins, and
-   settings (and those are disabled outright). The review depends on the rubrics and the PR, not
-   on who runs it.
+   `OPENROUTER_API_KEY`. API and Bedrock reviewers use a throwaway HOME with only their selected
+   credential. Subscription reviewers copy the login credential when available, but Claude and
+   Codex fall back to personal configuration paths when it cannot be copied; see the isolation
+   caveat below. A throwaway HOME does not itself restrict filesystem reads.
 4. Reads each verdict from a fresh one-time marker token, so nothing in the PR text can forge an
    `approve` (this anti-forgery channel is kept even though you are trusted).
 5. Prints the scoreboard + threads, and with `--post`, publishes them via `gh` as you.
@@ -118,12 +164,13 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   is fine for occasional, interactive, human-initiated runs like this. Standing it up as a 24/7
   self-hosted auto-reviewer is closer to API-tier usage and likely outside subscription terms — for
   always-on review, enable Tau Ceti's CI path and use `--auth api` with API keys.
-- **Reproducibility.** The clean room means your personal `~/.claude/CLAUDE.md`, `~/.codex/`
-  config/`AGENTS.md`, skills, and MCP servers do **not** influence the review — two people running
-  the same rubrics on the same PR get reviews that differ only by the model, not by their local
-  setup. (The repo's own in-tree `CLAUDE.md` is still visible, as part of the code under review.)
-  On macOS, where the login lives in the keychain rather than a credential file, it falls back to
-  your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
+- **Configuration and credential isolation.** A throwaway HOME avoids loading personal
+  configuration by default. In subscription mode, if the Claude or Codex credential file cannot
+  be copied (for example, a keychain login), the runner falls back to the real HOME or CODEX_HOME.
+  That fallback exposes personal configuration and credential files: it loses the intended
+  credential boundary as well as reproducibility. API and Bedrock modes do not use that fallback,
+  but unrestricted filesystem reads remain a risk in every mode. The repository's own in-tree
+  instructions remain visible as part of the code under review.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
 - **Concurrent reviewers.** Before spending inference, a contributing run (one that posts or

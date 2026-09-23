@@ -17,8 +17,9 @@ consume the posted scoreboard.
 
 The PR diff, description, comments, and file contents are **attacker-controlled**. Every
 reviewer is treated as potentially prompt-injected. The design does not try to prevent
-injection (it can't, see R1); instead it ensures an injected reviewer **has nothing worth
-stealing and no power to merge on its own**.
+injection (it can't, see R1); it restricts reviewer tools, credentials deliberately supplied,
+and merge authority. A minimal environment and throwaway HOME do **not** establish a filesystem
+boundary: reviewers running as the operator's OS user may still read host secrets (see R6).
 
 ## The leak chain
 
@@ -30,8 +31,11 @@ four links hold:
 3. **the attacker induces it into the model's output** — prompt injection in the diff;
 4. **we persist/publish that output** — committed to the public branch, posted as a comment.
 
-We deliberately keep transcripts public with **no redaction gate** (link 4 is open by choice),
-so safety rests entirely on breaking links 1–2: removing the reviewer's *access* to any secret.
+Transcripts are public without a human redaction gate. Known credential formats are scrubbed as
+defense in depth, including AWS access-key IDs, credential-file/JSON fields, environment assignments,
+and bearer headers. Verdict text is scrubbed before case files and comments are rendered, as well
+as in stored records and archive blobs. This does not catch arbitrary encodings or all unlabeled
+secret values, so preventing access at links 1–2 remains necessary.
 
 ## Mitigations (mapped to audit findings)
 
@@ -44,7 +48,13 @@ so safety rests entirely on breaking links 1–2: removing the reviewer's *acces
   diff) with a minimal **per-provider** env: only that provider's key, never the other key and
   never a GitHub token. Keys are staged to files, read into memory, and unlinked before any
   reviewer runs. `persist-credentials: false` on every checkout. codex uses
-  `shell_environment_policy.inherit=none`.
+  `shell_environment_policy.inherit=none`. Bedrock is an explicit authentication mode: the trusted
+  parent resolves one credential per attempt, including profile/SSO/role resolution, and passes
+  only that credential to the isolated reviewer HOME. Shared AWS config/credentials paths,
+  credential helpers, source-role tokens, and SSO caches are not forwarded; child instance-metadata
+  fallback is disabled. This is environment/configuration isolation, not a restriction on reads of
+  files elsewhere on the host. Subscription credential-copy failures additionally fall back to the
+  real HOME/CODEX_HOME, exposing personal credentials and configuration.
 - **I3** — the App token is split into two narrowly-scoped tokens (TauCeti `pull-requests:write`
   to comment; TauCetiReview `contents:write` to persist), minted only *after* reviewers finish.
 - **I4** — `/review` requires an exact command line (not a substring); per-PR daily round cap.
@@ -80,8 +90,9 @@ must be re-enabled to resume normal operation.
 
 ## Residual risks (knowingly accepted)
 
-- **R1 — prompt injection is not eliminable.** No wording makes an LLM immune. Contained by
-  zero-privilege reviewers and no unilateral merge authority; treat every reviewer as injected.
+- **R1 — prompt injection is not eliminable.** No wording makes an LLM immune. Limited reviewer
+  tools and no unilateral merge authority reduce its effects; credential exposure remains in R6.
+  Treat every reviewer as injected.
 - **R2 — two-provider independence ceiling.** With only claude + codex, excluding the author
   would leave a single model deciding everything, so the gate is one model with no cross-check.
   Removing this needs a third provider or a human second-signal.
@@ -95,9 +106,15 @@ must be re-enabled to resume normal operation.
   review signal, although it cannot bypass the trusted `build` (which carries the axiom audit),
   `scope`, path-policy, or `bump-guard` checks. Restricting who may supply the review signal would be
   a separate policy change.
-- **R6 — a reviewer can read its *own* provider key** via `/proc/self/environ` (the CLI needs
-  it to function). Blast radius is one key, only on model compliance with injection. Tracked in
-  issue #22; the real fix is uid-separation or a local auth proxy.
+- **R6 — provider and host credentials remain reachable.** A reviewer can read its own provider
+  credential via `/proc/self/environ`. A Bedrock credential has the full permissions of its AWS
+  principal; inference is not its only possible authority. Unrestricted Read/Grep/Glob and same-UID
+  filesystem/process access can also expose other host credentials, even when no path is explicitly
+  forwarded. The subscription real-HOME/CODEX_HOME fallback makes that exposure more direct.
+  The blast radius is therefore **not guaranteed to be one key**. Use a dedicated OS identity with
+  no unrelated secrets and a narrowly scoped AWS role. Closing this requires enforced filesystem/
+  process separation or an auth proxy that keeps credentials outside the reviewer boundary;
+  redaction and unguessable temporary paths are not substitutes. Tracked in issue #22.
 - **Admin bypass.** `enforce_admins` is off (human break-glass); the bot's token has no admin
   and cannot bypass status checks.
 

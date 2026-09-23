@@ -77,6 +77,7 @@ def update_case_file(state_map, rubric, res, head_sha, digest=None, rubrics_vers
     verdict = v.get("verdict") or "error"
     cf = state_map.setdefault(rubric, {})
     cf.update(rubric=rubric, provider=res.get("provider"), model=res.get("model"),
+              auth=res.get("auth"), resolved_models=res.get("resolved_models"),
               verdict=verdict,
               summary=v.get("summary", ""), findings=v.get("findings") or [],
               reviewed_sha=head_sha, reviewed_digest=digest,

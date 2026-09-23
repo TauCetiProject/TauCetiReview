@@ -120,17 +120,94 @@ def reject_retired_opus(model):
         raise ValueError("Claude Opus 4.8 is retired; use the exact claude-opus-5 model")
 
 
+class BedrockAuthError(RuntimeError):
+    """A credential-resolution failure with a fixed, safe-to-log diagnosis."""
 
-def reviewer_env(provider, keys, subscription=False):
+
+def _bedrock_env():
+    """Resolve ONE credential in the trusted parent before changing HOME.
+
+    The AWS CLI resolves profiles (including SSO's real-HOME token cache), roles,
+    and credential processes. Only its resulting credential enters the reviewer:
+    no profile/config paths, source-role tokens, or credential helpers. Resolve
+    afresh for each attempt; credentials cannot refresh inside a running attempt.
+    Never put credential-process output, including errors, into an exception.
+    """
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    if not region:
+        raise BedrockAuthError("Bedrock authentication setup requires AWS_REGION or AWS_DEFAULT_REGION")
+    env = {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_REGION": region,
+           "AWS_EC2_METADATA_DISABLED": "true"}
+    if os.environ.get("CLAUDE_CODE_EFFORT_LEVEL"):
+        env["CLAUDE_CODE_EFFORT_LEVEL"] = os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
+    bearer = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+    if bearer:
+        env["AWS_BEARER_TOKEN_BEDROCK"] = bearer
+        return env
+
+    profile = os.environ.get("AWS_PROFILE") or os.environ.get("AWS_DEFAULT_PROFILE")
+    access = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if not profile and (access or secret):
+        if not (access and secret):
+            raise BedrockAuthError("Bedrock authentication requires both AWS access-key environment variables")
+        env.update(AWS_ACCESS_KEY_ID=access, AWS_SECRET_ACCESS_KEY=secret)
+        if os.environ.get("AWS_SESSION_TOKEN"):
+            env["AWS_SESSION_TOKEN"] = os.environ["AWS_SESSION_TOKEN"]
+        return env
+
+    # --profile explicitly selects that identity, even if the parent also has
+    # ambient access keys. Do not pass this profile or any of its backing paths on.
+    cmd = ["aws", "configure", "export-credentials", "--format", "process"]
+    if profile:
+        cmd += ["--profile", profile]
+    parent_env = {**os.environ, "AWS_PAGER": "", "AWS_CLI_AUTO_PROMPT": "off"}
+    # The helper runs from the trusted HOME, so preserve the meaning of paths
+    # supplied relative to the caller's working directory. These stay parent-only.
+    for name in ("AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+                 "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"):
+        if parent_env.get(name):
+            parent_env[name] = os.path.abspath(os.path.expanduser(parent_env[name]))
+    try:
+        result = subprocess.run(
+            cmd, cwd=os.path.expanduser("~"), stdin=subprocess.DEVNULL,
+            text=True, capture_output=True, timeout=60,
+            env=parent_env,
+        )
+        if result.returncode:
+            raise ValueError
+        credentials = json.loads(result.stdout)
+        if not isinstance(credentials, dict) or credentials.get("Version") != 1:
+            raise ValueError
+        for source, target in (("AccessKeyId", "AWS_ACCESS_KEY_ID"),
+                               ("SecretAccessKey", "AWS_SECRET_ACCESS_KEY"),
+                               ("SessionToken", "AWS_SESSION_TOKEN")):
+            value = credentials.get(source)
+            if source == "SessionToken" and value is None:
+                continue
+            if not isinstance(value, str) or not value.strip() or "\0" in value:
+                raise ValueError
+            env[target] = value
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise BedrockAuthError(
+            "Bedrock authentication failed: AWS CLI v2 could not export credentials; "
+            "check the selected profile and refresh its login before retrying"
+        ) from None
+    return env
+
+
+def reviewer_env(provider, keys, subscription=False, *, bedrock=False):
     """A minimal, isolated environment for a reviewer subprocess. Returns `(env, home)`; the caller
     must `cleanup_rev_home(home)` once the reviewer returns.
 
-    Each reviewer gets a fresh throwaway HOME and ONLY its own provider credential — never the
-    other provider's key, never a GitHub token (the parent posts/pushes in separate tokenless-here
-    steps). This isolation is load-bearing: with public transcripts and no redaction gate, a
-    prompt-injected reviewer must have nothing worth leaking. The unguessable HOME/CODEX_HOME keeps
-    each provider's credential out of the other's reach. Residual: a reviewer can still read its OWN
-    key via /proc/self/environ (documented in I2/R6; needs a proxy or uid-separation to close).
+    The environment carries only the selected provider credential, never another provider's
+    key or a GitHub token. Bedrock is explicit: ambient CLAUDE_CODE_USE_BEDROCK, regardless of its
+    spelling, cannot override API/subscription authentication. AWS credentials are resolved in
+    the parent; no shared AWS credential paths enter the reviewer environment.
+
+    A throwaway HOME isolates configuration, NOT filesystem access. Read/Grep/Glob are not
+    confined to the workspace, and same-UID reviewers can reach other host credentials.
+    Public-output redaction is defense in depth, not a security boundary; see SECURITY I2/R6.
 
     In `subscription` mode (a trusted human running locally) there is no API key, so we seed the
     same throwaway HOME with ONLY the provider's logged-in subscription credential — never the
@@ -138,8 +215,13 @@ def reviewer_env(provider, keys, subscription=False):
     on the subscription but sees none of the runner's personal `CLAUDE.md` / `AGENTS.md`, skills,
     plugins, or settings, so the review does not depend on who runs it. If the credential is not
     where we expect (e.g. a macOS keychain login), we fall back to the real HOME so auth still
-    works, trading reproducibility for a working review.
+    works. That fallback exposes personal configuration and credential files; it loses both
+    configuration isolation and the intended credential boundary.
     """
+    if bedrock and (provider not in ("claude", "sonnet") or subscription):
+        raise ValueError("Bedrock authentication is exclusive to Claude/Sonnet")
+    # Resolve before creating a throwaway directory so a failed export leaks no HOME.
+    bedrock_env = _bedrock_env() if bedrock else None
     # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp. The caller
     # removes `home` once the reviewer returns (cleanup_rev_home), so these don't accumulate.
     os.makedirs(REV_HOME_BASE, exist_ok=True)
@@ -153,7 +235,9 @@ def reviewer_env(provider, keys, subscription=False):
     if user:
         env.update(USER=user, LOGNAME=os.environ.get("LOGNAME") or user)
     if provider in ("claude", "sonnet"):
-        if subscription:
+        if bedrock:
+            env.update(bedrock_env)
+        elif subscription:
             # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
             src = os.path.expanduser("~/.claude/.credentials.json")
             if os.path.exists(src):
@@ -161,7 +245,7 @@ def reviewer_env(provider, keys, subscription=False):
                 os.makedirs(cdir, exist_ok=True)
                 shutil.copyfile(src, os.path.join(cdir, ".credentials.json"))
             else:
-                env["HOME"] = os.path.expanduser("~")  # fallback: keychain/other; less reproducible
+                env["HOME"] = os.path.expanduser("~")  # keychain fallback loses credential isolation
         else:
             env["ANTHROPIC_API_KEY"] = keys["anthropic"]
     elif provider == "kiro":
@@ -196,7 +280,7 @@ def reviewer_env(provider, keys, subscription=False):
             if os.path.exists(src):
                 shutil.copyfile(src, os.path.join(codex_home, "auth.json"))
             else:
-                env["CODEX_HOME"] = os.path.expanduser("~/.codex")  # fallback; less reproducible
+                env["CODEX_HOME"] = os.path.expanduser("~/.codex")  # loses credential isolation
         else:
             env["OPENAI_API_KEY"] = keys["openai"]
     # Return the throwaway dir alongside env so the caller cleans it up even in the fallback paths
@@ -403,12 +487,9 @@ def run_claude(prompt, cwd, model, env):
             # answering "SHELL_IS_AVAILABLE" — so this was never a permission that was being
             # declined, it was a shell nobody knew the reviewer had.
             #
-            # That contradicts what the rest of this module is built on. reviewer_env calls the
-            # isolation load-bearing "with public transcripts and no redaction gate", and names its
-            # residual as a reviewer reading its OWN key from /proc/self/environ. A shell plus the
-            # egress a reviewer needs to reach its provider turns that residual into a direct
-            # exfiltration path. run_pi states the intended property outright: "a read-only tool set
-            # (PI_TOOLS, no bash) means it has no shell to leak it with." Now true here too.
+            # A shell plus the egress needed to reach the provider gives a prompt-injected
+            # reviewer a direct exfiltration path. Removing shell tools closes that path,
+            # but Read/Grep/Glob still have host-filesystem access: see SECURITY R6.
             #
             # Both flags: --tools removes the tool, --allowedTools keeps the remaining three from
             # prompting. --disallowedTools was the other candidate and is worse — it blocks Bash but
@@ -439,6 +520,14 @@ def run_claude(prompt, cwd, model, env):
                    usage=d.get("usage"), session_id=d.get("session_id"),
                    is_error=d.get("is_error"), error_subtype=d.get("subtype"),
                    error_status=d.get("api_error_status"))
+        # The requested --model may be a provider alias. Preserve the CLI's billed model IDs
+        # separately instead of pretending the request string proves the resolved identity.
+        model_usage = d.get("modelUsage")
+        if isinstance(model_usage, dict) and model_usage:
+            out["resolved_models"] = sorted(
+                m for m in model_usage if isinstance(m, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,255}", m)
+            )
     except Exception as e:
         # NOT the raw stream. Under stream-json its tail is whatever events came last, which
         # includes tool_result blocks — the files the reviewer read. raw_stdout is stripped from

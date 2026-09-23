@@ -21,7 +21,7 @@ from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL,
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge
-from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
+from reviewers import BedrockAuthError, build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import build_reactivation_block, carry_forward, normalize_finding_path, patch_digest, pick_anchor, update_case_file
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
 
@@ -45,12 +45,13 @@ PRIVATE_KEYS = ("session_id", "raw_stderr", "raw_stdout")
 
 
 def public_record(value):
-    """`value` with every PRIVATE_KEYS entry removed, at any depth. Applied to everything this runner
-    writes to a persisted sink."""
+    """Remove PRIVATE_KEYS and scrub known credential shapes from strings, at every depth."""
     if isinstance(value, dict):
         return {k: public_record(v) for k, v in value.items() if k not in PRIVATE_KEYS}
     if isinstance(value, list):
         return [public_record(v) for v in value]
+    if isinstance(value, str):
+        return archive.redact(value)
     return value
 
 
@@ -60,8 +61,13 @@ def public_record(value):
 # otherwise was raw provider text nobody may print. A named kind carries the diagnosis without the
 # payload. Ordered: the first pattern to match wins, so the specific precede `unknown`.
 _ERROR_KINDS = (
-    ("not_authenticated", re.compile(r"not logged in|/login|invalid authentication|unauthorized|401"
-                                     r"|token has been revoked|failed to authenticate", re.I)),
+    ("not_authenticated", re.compile(r"not logged in|/login|invalid authentication|unauthorized|\b40[13]\b"
+                                     r"|token has been revoked|failed to authenticate"
+                                     r"|AccessDenied(?:Exception)?|ExpiredToken(?:Exception)?"
+                                     r"|InvalidClientTokenId|UnrecognizedClientException"
+                                     r"|NoCredentialsError|CredentialsProviderError"
+                                     r"|not authorized to perform|unable to locate credentials"
+                                     r"|could not load credentials|security token.*(?:expired|invalid)", re.I)),
     # The subscription CLIs report an exhausted plan as prose, with no status code anywhere:
     # "You've hit your session limit · resets 9:30pm (UTC)", "You've hit your weekly limit",
     # "You've hit your monthly spend limit". Every one of those is a wait, never a review.
@@ -117,7 +123,8 @@ def error_kind(res):
     -p mode puts a total provider failure in `result` with an empty stderr, so a stderr-only
     classifier called every one of those `unknown_error` — which is how 639 quota and auth failures
     were filed as reviews, and nine of them posted to a PR as blocking `error` rows."""
-    hay = f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}\n{res.get('error_message') or ''}"
+    hay = (f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}\n"
+           f"{res.get('error_message') or ''}\n{res.get('error_status') or ''}")
     if _cli_reports_failure(res):
         hay += f"\n{(res.get('text') or '').strip()}"
     for kind, pattern in _ERROR_KINDS:
@@ -385,9 +392,15 @@ def run_rubric(ctx, rubric):
 
     def attempt():
         t = time.monotonic()
-        env, rev_home = reviewer_env(provider, keys, subscription)
+        rev_home = None
         try:
+            env, rev_home = reviewer_env(provider, keys, subscription, bedrock=a.auth == "bedrock")
             r = fn(prompt, a.tool_cwd, model, env)
+        except BedrockAuthError as e:
+            # Credential export is part of the attempt, before model I/O. Use the same outage
+            # path as an AWS 403, not a traceback or ten blocking error rows on the PR.
+            r = {"returncode": 1, "is_error": True, "error_status": 401,
+                 "text": "", "raw_stderr": str(e), "cost_usd": 0.0}
         finally:
             cleanup_rev_home(rev_home)   # throwaway HOME, one per attempt — don't accumulate
         # Keep each attempt's execution facts: the retry path returns only the last result, but the
@@ -397,7 +410,7 @@ def run_rubric(ctx, rubric):
         # (TauCetiReview#105). It is a closed vocabulary, so unlike the stderr it derives from, it is
         # safe in a record that gets committed and pushed.
         attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
-                                           "usage", "session_id", "parse_error")
+                                           "usage", "session_id", "parse_error", "resolved_models")
                          if r.get(k) is not None}
                         | {"model": model, "secs": round(time.monotonic() - t, 1)}
                         | ({} if has_verdict(r) else {"error_kind": error_kind(r)}))
@@ -446,13 +459,14 @@ def run_rubric(ctx, rubric):
     rid = hashlib.sha256("|".join(
         [a.repo, str(a.pr), head, rubric, model, rubrics_version, started_at]
     ).encode()).hexdigest()[:6]
-    res.update(provider=provider, model=model, rubric=rubric,
+    res.update(provider=provider, model=model, auth=a.auth, rubric=rubric,
                run_id=(f"r-{started_at.translate(str.maketrans('', '', '-:'))}"
                        f"-{a.pr}-{rubric}-{rid}"),
                started_at=started_at, duration_s=round(time.monotonic() - t0, 1),
                attempts=attempts,
                prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
-               verdict_obj=extract_verdict(res.get("text", ""), marker))
+               verdict_obj=(public_record(extract_verdict(res.get("text", ""), marker))
+                            if has_verdict(res) else None))
     # Normalize finding file paths to PR-relative (strip the reviewer-workspace prefix) so the
     # rendered locations and the thread anchor are valid PR paths.
     vo = res.get("verdict_obj")
@@ -478,6 +492,7 @@ def run_rubric(ctx, rubric):
             "rubrics_sha_approx": a.rubrics_sha_approx or None,
             "rubrics_version": rubrics_version,
             "provider": provider, "model": model, "mode": a.mode, "auth": a.auth,
+            "resolved_models": res.get("resolved_models") or None,
             "ci": bool(os.environ.get("GITHUB_ACTIONS")) or None,
             "prompt_sha256": res["prompt_sha256"],
             "diff_sha256": prov.get("diff_sha256"),
@@ -655,7 +670,7 @@ def main():
                          "used as chosen.")
     ap.add_argument("--kiro-model", default=KIRO_MODEL,
                     help=f"exact Kiro reviewer model (default: {KIRO_MODEL}); Kiro is explicit-only")
-    ap.add_argument("--providers", default="claude,codex",
+    ap.add_argument("--providers", default=None,
                     help="comma-separated reviewers to draw from: claude, codex, and any "
                          "Kiro (explicit-only), and any OpenRouter model in OPENROUTER_MODELS "
                          "(deepseek, minimax — via the `pi` "
@@ -663,10 +678,11 @@ def main():
                          "if still listed; otherwise it is re-drawn from this set")
     ap.add_argument("--auto-subset", action="store_true",
                     help="re-review only rubrics whose last round was not approve")
-    ap.add_argument("--auth", choices=["api", "subscription"], default="api",
+    ap.add_argument("--auth", choices=["api", "subscription", "bedrock"], default="api",
                     help="api: each reviewer gets an isolated HOME and its own API key (CI). "
-                         "subscription: inherit the environment so a locally logged-in `claude` / "
-                         "`codex` reviews on the runner's own subscription (no API key, no spend)")
+                         "subscription: use the locally logged-in provider credential. "
+                         "bedrock: Claude/Sonnet via AWS; resolve one AWS credential per attempt "
+                         "in the parent (billed to AWS)")
     ap.add_argument("--keys-dir", default="",
                     help="dir with files 'anthropic', 'openai', 'kiro', and/or 'openrouter'; each key is "
                          "passed only to the matching reviewer subprocess and never kept in this "
@@ -696,6 +712,12 @@ def main():
                     help="write the post plan (scoreboard + thread upsert/close actions) here")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
+    a.providers = a.providers or ("claude" if a.auth == "bedrock" else "claude,codex")
+    if a.auth == "bedrock":
+        if any(p.strip() not in ("claude", "sonnet") for p in a.providers.split(",")):
+            ap.error("--auth bedrock supports only --providers claude,sonnet")
+        if a.keys_dir:
+            ap.error("--auth bedrock uses AWS credentials, not --keys-dir")
     try:
         a.kiro_model = exact_kiro_model(a.kiro_model)
         reject_retired_opus(a.claude_model)
@@ -719,7 +741,9 @@ def main():
                      "fresh, with no carried-forward case files, to be comparable")
 
     subscription = a.auth == "subscription"
-    if subscription:  # no keys: reviewers use the runner's logged-in claude/codex subscription
+    if a.auth == "bedrock":
+        keys = {}
+    elif subscription:  # no keys: reviewers use the runner's logged-in claude/codex subscription
         keys = {"anthropic": "", "openai": "", "kiro": (os.environ.get("KIRO_API_KEY", "") or "").strip()}
     elif a.keys_dir:
         kd = pathlib.Path(a.keys_dir)
@@ -740,7 +764,7 @@ def main():
     # API key. Prefer a keys-dir file if CI supplied one (read + removed above); otherwise take it
     # from the env, which is the worker's subscription-mode case (claude/codex use their OAuth
     # logins there, but DeepSeek/MiniMax still need OPENROUTER_API_KEY).
-    if not keys.get("openrouter"):
+    if a.auth != "bedrock" and not keys.get("openrouter"):
         keys["openrouter"] = os.environ.get("OPENROUTER_API_KEY", "")
 
     store = pathlib.Path(a.store)

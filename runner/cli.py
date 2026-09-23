@@ -437,9 +437,10 @@ def main():
                     help="commit (default): re-run only unresolved rubrics, carry prior approvals "
                          "forward as ♻️ (stale) until the PR is otherwise clean, then sweep them; "
                          "manual: force a full re-review of every rubric")
-    ap.add_argument("--auth", default="subscription", choices=["subscription", "api"],
+    ap.add_argument("--auth", default="subscription", choices=["subscription", "api", "bedrock"],
                     help="subscription (default): use your logged-in claude/codex; api: use "
-                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment (billed)")
+                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment; "
+                         "bedrock: Claude/Sonnet using AWS credentials (billed to AWS)")
     ap.add_argument("--post", action="store_true",
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")
@@ -568,14 +569,19 @@ def main():
     need("git", "Install git.")
     need("gh", "Install the GitHub CLI and run `gh auth login`.")
     want = [p.strip() for p in a.reviewer.split(",") if p.strip()] if a.reviewer else []
-    if a.auth == "subscription":
+    if a.auth == "bedrock":
+        if any(p not in ("claude", "sonnet") for p in want):
+            die("--auth bedrock supports only --reviewer claude,sonnet.")
+        avail = ["claude"] if shutil.which("claude") else []
+    elif a.auth == "subscription":
         avail = [p for p in ("claude", "codex") if shutil.which(p)]
     else:  # api: draw only from providers whose key is in the environment
         avail = [p for p, k in (("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY"))
                  if os.environ.get(k)]
     # sonnet is a cheaper claude-family A/B arm: same `claude` binary / ANTHROPIC_API_KEY as
     # claude, but explicit-only (never auto-drawn) so default reviews stay on Opus.
-    claude_ok = shutil.which("claude") if a.auth == "subscription" else os.environ.get("ANTHROPIC_API_KEY")
+    claude_ok = (shutil.which("claude") if a.auth in ("subscription", "bedrock")
+                 else os.environ.get("ANTHROPIC_API_KEY"))
     if "sonnet" in want and claude_ok and "sonnet" not in avail:
         avail.append("sonnet")
     # Kiro is subscription-credit backed and never auto-drawn. A browser login
@@ -583,14 +589,16 @@ def main():
     kiro_ok = shutil.which("kiro-cli") and (
         a.auth == "subscription" or (os.environ.get("KIRO_API_KEY") or "").strip()
     )
-    if "kiro" in want and kiro_ok and "kiro" not in avail:
+    if a.auth != "bedrock" and "kiro" in want and kiro_ok and "kiro" not in avail:
         avail.append("kiro")
     # OpenRouter reviewers (DeepSeek/MiniMax/Grok, driven by the `pi` agent) are pay-per-token, so
     # they are NEVER drawn by default — they join the pool ONLY when you name them in --reviewer
     # (the budget gate: no auto-dispatch), and then only if `pi` and OPENROUTER_API_KEY are present.
-    if shutil.which("pi") and os.environ.get("OPENROUTER_API_KEY"):
+    if a.auth != "bedrock" and shutil.which("pi") and os.environ.get("OPENROUTER_API_KEY"):
         avail += [p for p in ("deepseek", "minimax", "grok") if p in want and p not in avail]
     if not avail:
+        if a.auth == "bedrock":
+            die("--auth bedrock needs `claude` on PATH and AWS credentials; see REVIEWING.md.")
         if a.auth == "subscription":
             die("need at least one of `claude` / `codex` on PATH (and logged in), an explicit "
                 "`--reviewer kiro` with `kiro-cli`, or `pi` + "

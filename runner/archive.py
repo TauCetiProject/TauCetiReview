@@ -32,9 +32,18 @@ DATA_REPO = "TauCetiProject/TauCetiData"
 # Conservative scrubbing for blob text that may quote tool/CLI output: known credential shapes
 # and home paths. Records themselves never carry these fields, so this is defense in depth.
 _REDACT = [
+    # AWS INI profiles, exported environments (including /proc's NUL separators),
+    # and credential_process JSON use different spellings of these same fields.
+    (re.compile(r"""(\b(?:aws_access_key_id|aws_secret_access_key|aws_session_token|aws_security_token|"""
+                r"""aws_bearer_token_bedrock|AccessKeyId|SecretAccessKey|SessionToken)\b["']?[ \t]*[:=][ \t]*)"""
+                r"""(["']?)[^\s"',;}\x00]+\2""", re.I),
+     r"\1\2[REDACTED]\2"),
+    (re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"), "[REDACTED]"),
+    (re.compile(r"""(\bAuthorization["']?[ \t]*[:=][ \t]*["']?Bearer[ \t]+)[^\s"',}\x00]+""", re.I),
+     r"\1[REDACTED]"),
     (re.compile(r"\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|gho_[A-Za-z0-9]{8,}|"
                 r"github_pat_[A-Za-z0-9_]{8,}|xoxb-[A-Za-z0-9-]{8,})\b"), "[REDACTED]"),
-    (re.compile(r"\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)=\S+"),
+    (re.compile(r"\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)=[^\s\x00]+"),
      r"\1=[REDACTED]"),
     (re.compile(r"(/home/|/Users/)[^/\s]+"), r"\1[user]"),
 ]

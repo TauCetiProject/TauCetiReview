@@ -44,7 +44,7 @@ def _install_stubs():
     review.run_claude = _fake_runner
     review.run_codex = _fake_runner
     review.run_pi = _fake_runner
-    review.reviewer_env = lambda provider, keys, subscription=False: ({}, None)
+    review.reviewer_env = lambda provider, keys, subscription=False, **kwargs: ({}, None)
     review.cleanup_rev_home = lambda home: None
     review.sweep_rev_homes = lambda *a, **k: None
 
