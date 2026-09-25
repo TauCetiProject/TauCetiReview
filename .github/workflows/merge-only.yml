@@ -131,13 +131,20 @@ jobs:
           [ "$CUR_HEAD" = "$HEAD_SHA" ] || { echo "head moved; a new run will reconcile it"; exit 0; }
           if [ "$(jq -r .merge merge.json)" = true ]; then
             COMMAND="bors r+ sha=$HEAD_SHA"
+            FILES=$(gh api --paginate "/repos/TauCetiProject/TauCeti/pulls/$PR/files?per_page=100" \
+              --jq '.[].filename')
+            if printf '%s\n' "$FILES" | grep -qxE 'lake-manifest\.json|lean-toolchain'; then
+              COMMAND="bors r+ single sha=$HEAD_SHA"
+            fi
           else
             COMMAND="bors r- sha=$HEAD_SHA"
           fi
           LAST=$(gh api --paginate "repos/TauCetiProject/TauCeti/issues/$PR/comments?per_page=100" \
             --jq '.[] | select(.user.login == "tauceti-review-bot[bot]" and (.body | startswith("bors r"))) | .body' | tail -n 1)
           [ "$LAST" != "$COMMAND" ] || { echo "$COMMAND already posted"; exit 0; }
-          if [[ "$COMMAND" == "bors r- sha=$HEAD_SHA" && "$LAST" != "bors r+ sha=$HEAD_SHA" ]]; then
+          if [[ "$COMMAND" == "bors r- sha=$HEAD_SHA" &&
+                "$LAST" != "bors r+ sha=$HEAD_SHA" &&
+                "$LAST" != "bors r+ single sha=$HEAD_SHA" ]]; then
             echo "no current-head bors approval to revoke"
             exit 0
           fi
