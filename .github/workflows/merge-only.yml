@@ -16,6 +16,7 @@ on:
     inputs:
       pr: { required: true, type: string }
       review_ref: { required: false, type: string, default: main }
+      merge_backend: { required: false, type: string, default: queue }
     secrets:
       # Only the App credentials the merge needs — the caller passes these explicitly rather than
       # inheriting all of TauCeti's secrets into this public-triggerable path.
@@ -106,7 +107,7 @@ jobs:
 
       # ---- Auto-merge: mint the scoped merge token only now, and merge iff the decision is green.
       # ---- The App must be a ruleset bypass actor and hold TauCeti contents:write for it to land.
-      - name: Mint merge token (TauCeti contents + pull-requests write)
+      - name: Mint merge token (TauCeti contents + pull-requests + issues write)
         id: merge_token
         uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1; v1 ignores permission-* inputs
         with:
@@ -116,8 +117,36 @@ jobs:
           repositories: TauCeti
           permission-contents: write
           permission-pull-requests: write
+          permission-issues: write
+
+      - name: Reconcile the bors approval
+        if: ${{ inputs.merge_backend == 'bors' }}
+        env:
+          GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
+        run: |
+          set -euo pipefail
+          [ -f merge.json ] || { echo "::error::no merge decision"; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::invalid head"; exit 1; }
+          CUR_HEAD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
+          [ "$CUR_HEAD" = "$HEAD_SHA" ] || { echo "head moved; a new run will reconcile it"; exit 0; }
+          if [ "$(jq -r .merge merge.json)" = true ]; then
+            COMMAND="bors r+ sha=$HEAD_SHA"
+          else
+            COMMAND="bors r- sha=$HEAD_SHA"
+          fi
+          LAST=$(gh api --paginate "repos/TauCetiProject/TauCeti/issues/$PR/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "tauceti-review-bot[bot]" and (.body | startswith("bors r"))) | .body' | tail -n 1)
+          [ "$LAST" != "$COMMAND" ] || { echo "$COMMAND already posted"; exit 0; }
+          if [[ "$COMMAND" == "bors r- sha=$HEAD_SHA" && "$LAST" != "bors r+ sha=$HEAD_SHA" ]]; then
+            echo "no current-head bors approval to revoke"
+            exit 0
+          fi
+          # The bors webhook verifies this App's identity and fetches the live
+          # head again. A moved head is ignored even if it races this check.
+          gh api -X POST "repos/TauCetiProject/TauCeti/issues/$PR/comments" -f body="$COMMAND"
 
       - name: Reconcile the merge queue
+        if: ${{ inputs.merge_backend == 'queue' }}
         env:
           GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
           REPO: TauCetiProject/TauCeti
