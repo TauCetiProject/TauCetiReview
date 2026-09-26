@@ -5,14 +5,20 @@ Covers decide_action (the pure policy) and that the merge gate it relies on (dec
 the SAME one the merge-only path uses, so the sweep can never enqueue something the normal gate refuses.
 Dependency-free — run with `python tests/test_sweep.py` or under pytest.
 """
+import contextlib
 import datetime
+import io
 import json
+import os
 import sys
+import tempfile
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import sweep  # noqa: E402
 import merge_from_scoreboard as mfs  # noqa: E402
+import merge as mfs_merge  # noqa: E402
+import pr_diff  # noqa: E402
 
 
 def test_not_green_skips():
@@ -125,8 +131,13 @@ def test_pull_is_queued_reads_membership_and_fails_closed():
         sweep.gh_json = original
 
 
-def _scoreboard(head, states, updated="2026-06-26T00:00:00Z", mode="commit"):
+MB = "f" * 40   # the merge base every scoreboard below was reviewed against, unless noted
+
+
+def _scoreboard(head, states, updated="2026-06-26T00:00:00Z", mode="commit", merge_base=MB):
     payload = {"head_sha": head, "states": states}
+    if merge_base is not None:
+        payload["merge_base_sha"] = merge_base
     if mode is not None:
         payload["mode"] = mode
     meta = "<!--tauceti-meta:v1 " + json.dumps(payload) + "-->"
@@ -142,25 +153,25 @@ def test_gate_is_shared_with_merge_only():
     head = "deadbee"
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
-    diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
+    diff = {"TauCeti/Foo.lean"}
     # green + TauCeti-only + build/scope green -> mergeable
     assert mfs.decide_from_comments(
-        _scoreboard(head, green), head, required, diff, "SUCCESS", "", scope="SUCCESS")["merge"]
+        _scoreboard(head, green), head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)["merge"]
     # The trusted base-side scope status is a hard gate for every automatic merge. This also
     # prevents unusual quoted diff paths from bypassing path parsing.
     assert not mfs.decide_from_comments(
-        _scoreboard(head, green), head, required, diff, "SUCCESS", "", scope="")["merge"]
+        _scoreboard(head, green), head, required, diff, "SUCCESS", "", scope="", merge_base_sha=MB)["merge"]
     # a stale scoreboard (different head) is refused — the sweep must never enqueue an unreviewed commit
     assert not mfs.decide_from_comments(_scoreboard(head, green), "other99", required, diff,
-                                        "SUCCESS", "", scope="SUCCESS")["merge"]
+                                        "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)["merge"]
     # a path outside TauCeti/ is refused
-    diff2 = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
+    diff2 = {".github/workflows/x.yml"}
     assert not mfs.decide_from_comments(
-        _scoreboard(head, green), head, required, diff2, "SUCCESS", "", scope="SUCCESS")["merge"]
+        _scoreboard(head, green), head, required, diff2, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)["merge"]
     # an init (in-progress) board is refused even when it renders every rubric green: no verdict
     # for this head has completed, and a carried-forward approval must not enqueue before the run
     init_green = mfs.decide_from_comments(
-        _scoreboard(head, green, mode="init"), head, required, diff, "SUCCESS", "", scope="SUCCESS")
+        _scoreboard(head, green, mode="init"), head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)
     assert not init_green["merge"] and not init_green["review_safe"]
 
 
@@ -169,12 +180,12 @@ def test_newest_completed_current_head_scoreboard_wins():
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
     blocking = {"correctness": "green", "reuse": "blocking_request"}
-    diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
+    diff = {"TauCeti/Foo.lean"}
 
     comments = (_scoreboard(head, blocking, "2026-06-26T00:00:00Z")
                 + _scoreboard(head, green, "2026-06-26T01:00:00Z"))
     decision = mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)
     assert decision["review_safe"] and decision["merge"]
 
     # Conversely, a later completed blocker supersedes an earlier approval. Shuffle the API input to
@@ -182,13 +193,13 @@ def test_newest_completed_current_head_scoreboard_wins():
     comments = (_scoreboard(head, blocking, "2026-06-26T02:00:00Z")
                 + _scoreboard(head, green, "2026-06-26T01:00:00Z"))
     decision = mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)
     assert not decision["review_safe"] and not decision["merge"]
 
     # A blocking scoreboard for an old head says nothing about the current commit.
     comments = _scoreboard("oldbeef", blocking) + _scoreboard(head, green)
     decision = mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)
     assert decision["review_safe"] and decision["merge"]
 
 
@@ -198,24 +209,24 @@ def test_in_progress_scoreboard_does_not_supersede_a_completed_verdict():
     green = {"correctness": "green", "reuse": "green"}
     pending = {"correctness": "absent", "reuse": "absent"}
     blocking = {"correctness": "green", "reuse": "blocking_request"}
-    diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
+    diff = {"TauCeti/Foo.lean"}
     comments = (_scoreboard(head, green, "2026-06-26T00:00:00Z")
                 + _scoreboard(head, pending, "2026-06-26T01:00:00Z", mode="init"))
 
     decision = mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)
     assert decision["review_safe"] and decision["merge"]
 
     # Once that review publishes a completed blocking verdict, it becomes authoritative.
     comments += _scoreboard(head, blocking, "2026-06-26T02:00:00Z")
     decision = mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS")
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)
     assert not decision["review_safe"] and not decision["merge"]
 
     # With no completed scoreboard to preserve, an init-only review still fails closed.
     decision = mfs.decide_from_comments(
         _scoreboard(head, pending, mode="init"), head, required, diff,
-        "SUCCESS", "", scope="SUCCESS")
+        "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)
     assert not decision["review_safe"] and not decision["merge"]
 
 
@@ -223,21 +234,21 @@ def test_live_review_marker_holds_enqueue_without_revoking_green_review():
     head = "deadbee"
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
-    diff = "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n+x\n"
+    diff = {"TauCeti/Foo.lean"}
     comments = _scoreboard(head, green) + [_marker(head, 2000)]
 
     decision = mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", now=1000)
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB, now=1000)
     assert decision["review_safe"] and not decision["merge"]
 
     decision = mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", now=2000)
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB, now=2000)
     assert decision["review_safe"] and decision["merge"]
 
     # Malformed marker payloads fail harmlessly rather than crashing the gate.
     comments.append({"body": "<!--tauceti-review-in-progress []-->"})
     decision = mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", now=2000)
+        comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB, now=2000)
     assert decision["review_safe"] and decision["merge"]
 
 
@@ -245,11 +256,89 @@ def test_review_safe_is_separate_from_automatic_path_policy():
     head = "deadbee"
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
-    human_owned = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
+    human_owned = {".github/workflows/x.yml"}
     decision = mfs.decide_from_comments(
-        _scoreboard(head, green), head, required, human_owned, "SUCCESS", "", scope="SUCCESS")
+        _scoreboard(head, green), head, required, human_owned, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB)
     assert decision["review_safe"] and not decision["merge"]
 
+
+
+def test_verdict_is_bound_to_the_merge_base_it_reviewed():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    paths = {"TauCeti/Foo.lean"}
+    ok = mfs.decide_from_comments(_scoreboard(head, green), head, required, paths, "SUCCESS", "",
+                                  scope="SUCCESS", merge_base_sha=MB)
+    assert ok["review_safe"] and ok["merge"]
+    # Same head, different diff: the PR was retargeted or its base history rewritten. The green
+    # verdict is for another diff, so it is unsafe (dequeue), not merely unmergeable.
+    moved = mfs.decide_from_comments(_scoreboard(head, green), head, required, paths, "SUCCESS",
+                                     "", scope="SUCCESS", merge_base_sha="e" * 40)
+    assert not moved["review_safe"] and not moved["merge"], moved
+    # A scoreboard that recorded no merge base, or an unknown merge base now, fails closed.
+    for board, mb in ((_scoreboard(head, green, merge_base=None), MB),
+                      (_scoreboard(head, green, merge_base=""), MB),
+                      (_scoreboard(head, green), ""),
+                      (_scoreboard(head, green), None)):
+        d = mfs.decide_from_comments(board, head, required, paths, "SUCCESS", "",
+                                     scope="SUCCESS", merge_base_sha=mb)
+        assert not d["review_safe"] and not d["merge"], (board, mb)
+    # Absent the keyword (an old caller), nothing merges.
+    d = mfs.decide_from_comments(_scoreboard(head, green), head, required, paths, "SUCCESS", "",
+                                 scope="SUCCESS")
+    assert not d["merge"]
+
+
+def test_merge_reads_machine_paths_including_names_git_quotes():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    # A patch header git quotes (non-ASCII or control bytes) is invisible to the diff-text parser,
+    # so the merge gate reads the NUL-separated list pr_diff writes instead.
+    odd = [".github/w\u00f6rkflows/x.yml", "scripts/new\nline.py", "TauCeti/Foo.lean"]
+    quoted = ('diff --git "a/.github/w\\303\\266rkflows/x.yml" "b/.github/w\\303\\266rkflows/x.yml"\n'
+              "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n")
+    assert mfs_merge.changed_paths(quoted) == {"TauCeti/Foo.lean"}   # why the parser is not used
+    with tempfile.TemporaryDirectory() as d:
+        f = pathlib.Path(d) / "paths.z"
+        pr_diff.write_paths(f, odd)
+        paths = mfs_merge.read_paths(f)
+    assert paths == set(odd)
+    for bad in odd[:2]:
+        d = mfs.decide_from_comments(_scoreboard(head, green), head, required,
+                                     {bad, "TauCeti/Foo.lean"}, "SUCCESS", "", scope="SUCCESS",
+                                     merge_base_sha=MB)
+        assert d["review_safe"] and not d["merge"], (bad, d)
+
+
+def test_review_merge_decision_reads_machine_paths_and_fails_closed_without():
+    import types
+    import review
+    states = {"correctness": "green"}
+    with tempfile.TemporaryDirectory() as d:
+        f = pathlib.Path(d) / "paths.z"
+        args = dict(merge_path_prefix="TauCeti/", merge_allow_file=[], bump_guard="",
+                    ci_build="SUCCESS", scope="SUCCESS")
+        a = types.SimpleNamespace(paths_file="", **args)
+        ok, reason = review.merge_decision(a, states, ["correctness"], True, "h" * 40)
+        assert not ok and "--paths-file" in reason
+        a.paths_file = str(f)
+        pr_diff.write_paths(f, ["TauCeti/Foo.lean"])
+        assert review.merge_decision(a, states, ["correctness"], True, "h" * 40)[0]
+        pr_diff.write_paths(f, ["TauCeti/Foo.lean", ".github/w\u00f6rkflows/x.yml"])
+        assert not review.merge_decision(a, states, ["correctness"], True, "h" * 40)[0]
+        # Thread anchors come from the same list, so a finding on a file whose name git quotes in
+        # the patch header still anchors to it.
+        odd = "TauCeti/\u00c9tale.lean"
+        pr_diff.write_paths(f, ["TauCeti/Foo.lean", odd])
+        quoted = ('diff --git "a/TauCeti/\\303\\211tale.lean" "b/TauCeti/\\303\\211tale.lean"\n'
+                  "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n")
+        paths = review.changed_file_paths(a, quoted)
+        assert paths == {"TauCeti/Foo.lean", odd}
+        assert review.pick_anchor({"findings": [{"file": odd}]}, "TauCeti/Foo.lean", paths) == odd
+        a.paths_file = ""
+        assert review.changed_file_paths(a, quoted) == {"TauCeti/Foo.lean"}   # the old parser
 
 def test_workflows_pass_status_contexts():
     root = pathlib.Path(__file__).resolve().parent.parent
@@ -270,9 +359,70 @@ def test_workflows_pass_status_contexts():
     assert 'already in the queue' in merge_only
     merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
     assert 'ref: ${{ inputs.review_ref }}' in merge_sweep
-    assert '"headRefOid,baseRefName,id,labels,statusCheckRollup,isCrossRepository"' in sweep_source
-    assert 'MERGE_PREFIX, scope=scope' in sweep_source
+    assert '"headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"' in sweep_source
+    # merge-only re-checks the merge base as the last step before the enqueue mutation, and again
+    # straight after it (test_merge_only_merge_base_check runs the check itself).
+    mutation = merge_only.index("mutation($prId: ID!, $headOid: GitObjectID!)")
+    assert merge_only.index('check_merge_base "since the decision"') < mutation
+    assert merge_only.index('check_merge_base "while enqueuing"') > mutation
+    assert 'MERGE_PREFIX, scope=scope, merge_base_sha=merge_base' in sweep_source
+    # The merge paths read machine paths and bind to the merge base; nothing parses `gh pr diff`.
+    assert '--merge-base-sha "$MERGE_BASE" --paths-file paths.z' in merge_only
+    assert '--paths-out paths.z' in merge_only and '--paths-file paths.z' in review
+    shadow = (root / ".github/workflows/shadow-review.yml").read_text()
+    assert 'python3 .diff-helper/runner/pr_diff.py' in shadow
+    for workflow in (merge_only, review, shadow):
+        assert 'gh pr diff "$PR"' not in workflow
 
+
+
+def _merge_only_functions():
+    """merge-only.yml's dequeue / merge_base_now / check_merge_base, as a bash script."""
+    text = (pathlib.Path(__file__).resolve().parent.parent
+            / ".github/workflows/merge-only.yml").read_text()
+    start = text.index("          dequeue() {")
+    end = text.index("          # (end of the functions tests/test_sweep.py runs)")
+    return "\n".join(line[10:] for line in text[start:end].splitlines())
+
+
+def test_merge_only_merge_base_check():
+    """Run the workflow's own bash against a fake `gh`: a moved merge base dequeues and succeeds; a
+    failed or empty read dequeues AND fails the step; a match does nothing."""
+    import subprocess
+    fake_gh = """#!/usr/bin/env bash
+echo "$*" >> "$LOG"
+case "$*" in
+  "pr view"*) [ "$VIEW" = fail ] && exit 1; echo "$VIEW" ;;
+  "api /repos/"*compare*) [ "$MB_NOW" = fail ] && { echo "HTTP 502" >&2; exit 1; }
+                          echo "$MB_NOW" ;;
+  *isInMergeQueue*) echo true ;;
+  *dequeuePullRequest*) echo '{}' ;;
+  *) echo "unexpected: $*" >&2; exit 3 ;;
+esac
+"""
+    with tempfile.TemporaryDirectory() as d:
+        bindir = pathlib.Path(d) / "bin"
+        bindir.mkdir()
+        gh = bindir / "gh"
+        gh.write_text(fake_gh)
+        gh.chmod(0o755)
+        script = "set -euo pipefail\n" + _merge_only_functions() + '\ncheck_merge_base "now"\n'
+
+        def run(view, mb_now):
+            log = pathlib.Path(d) / "log"
+            log.write_text("")
+            env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "LOG": str(log),
+                   "VIEW": view, "MB_NOW": mb_now, "PR": "7", "PRID": "PR_7",
+                   "HEAD_SHA": "h" * 40, "MERGE_BASE": MB}
+            r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+            return r.returncode, "dequeuePullRequest" in log.read_text()
+
+        assert run("c" * 40, MB) == (0, False)          # unchanged: nothing to do
+        assert run("c" * 40, "e" * 40) == (0, True)     # moved: dequeued
+        assert run("c" * 40, "") == (1, True)           # empty: dequeued, and the step fails
+        assert run("c" * 40, "fail") == (1, True)       # compare failed: same
+        assert run("fail", MB) == (1, True)             # base read failed: same
+        assert run("", MB) == (1, True)
 
 def test_status_states_reads_trusted_contexts_and_fails_closed():
     rollup = [
@@ -288,21 +438,16 @@ def test_lakefile_never_auto_merges():
     head = "deadbee"
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
-    diff = (
-        "diff --git a/lakefile.toml b/lakefile.toml\n"
-        "+rev = \"deadbeef\"\n"
-        "diff --git a/lake-manifest.json b/lake-manifest.json\n"
-        "+{}\n"
-    )
+    diff = {"lakefile.toml", "lake-manifest.json"}
     comments = _scoreboard(head, green)
 
     assert not mfs.decide_from_comments(
-        comments, head, required, diff, "SUCCESS", "SUCCESS", scope="SUCCESS")["merge"]
+        comments, head, required, diff, "SUCCESS", "SUCCESS", scope="SUCCESS", merge_base_sha=MB)["merge"]
 
     # Bot authorship does not grant a general infrastructure bypass.
-    workflow_diff = "diff --git a/.github/workflows/x.yml b/.github/workflows/x.yml\n+y\n"
+    workflow_diff = {".github/workflows/x.yml"}
     assert not mfs.decide_from_comments(
-        comments, head, required, workflow_diff, "SUCCESS", "SUCCESS", scope="SUCCESS")["merge"]
+        comments, head, required, workflow_diff, "SUCCESS", "SUCCESS", scope="SUCCESS", merge_base_sha=MB)["merge"]
 
 
 # ---- merge-queue reservation ----
@@ -426,7 +571,8 @@ def test_main_hands_off_once_then_waits_until_push():
     from unittest.mock import patch
     head = "a" * 40
     labels, comments, mutations = [], [], []
-    view = {"headRefOid": head, "baseRefName": "main", "id": "PR_1", "labels": labels,
+    view = {"headRefOid": head, "baseRefName": "main", "baseRefOid": "c" * 40, "id": "PR_1",
+            "labels": labels,
             "statusCheckRollup": [], "isCrossRepository": True}
 
     def gh_json(args):
@@ -435,7 +581,7 @@ def test_main_hands_off_once_then_waits_until_push():
         if args[:2] == ["pr", "view"]:
             return view
         if "/compare/" in args[1]:
-            return {"behind_by": 10}
+            return {"behind_by": 10, "merge_base_commit": {"sha": MB}}
         if "/commits/" in args[1]:
             return {"commit": {"committer": {"date": "2026-09-01T00:00:00Z"}}}
         raise AssertionError(args)
@@ -446,8 +592,6 @@ def test_main_hands_off_once_then_waits_until_push():
         return [{"event": "removed_from_merge_queue", "created_at": "2026-09-02T00:00:00Z"}] * 2
 
     def gh(args):
-        if args[:2] == ["pr", "diff"]:
-            return SimpleNamespace(returncode=0, stdout="diff", stderr="")
         mutations.append(args[:2])
         if args[:2] == ["pr", "comment"]:
             comments.append({"author": "tauceti-review-bot[bot]", "body": args[-1]})
@@ -462,7 +606,7 @@ def test_main_hands_off_once_then_waits_until_push():
     with patch.object(sweep, "REPO", "owner/repo"), patch.object(sweep, "DRY_RUN", False), \
             patch.object(sweep, "queue_entries", return_value=[]), \
             patch.object(sweep, "gh_json", gh_json), patch.object(sweep, "gh_jsonl", gh_jsonl), \
-            patch.object(sweep, "gh", gh), \
+            patch.object(sweep, "gh", gh), patch.object(sweep, "pr_diff", return_value=["TauCeti/X.lean"]), \
             patch.object(sweep, "decide_from_comments", return_value={"merge": True}) as gate:
         assert sweep.main() == 0
         assert mutations == [["pr", "comment"], ["pr", "edit"]]
@@ -479,6 +623,57 @@ def test_main_hands_off_once_then_waits_until_push():
         assert mutations == [["pr", "edit"]]
         gate.assert_called_once()
 
+
+
+def test_merge_base_is_rechecked_right_before_enqueue():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    head = "a" * 40
+    view = {"headRefOid": head, "baseRefName": "main", "baseRefOid": "c" * 40, "id": "PR_1",
+            "labels": [], "statusCheckRollup": [], "isCrossRepository": False}
+    merge_bases = []
+
+    def gh_json(args):
+        if args[:2] == ["pr", "list"]:
+            return [{"number": 1, "isDraft": False, "labels": []}]
+        if args[:2] == ["pr", "view"]:
+            return view
+        if "/compare/" in args[1]:
+            return {"behind_by": 0, "merge_base_commit": {"sha": merge_bases.pop(0) or None}}
+        if "/commits/" in args[1]:
+            return {"commit": {"committer": {"date": "2026-09-01T00:00:00Z"}}}
+        raise AssertionError(args)
+
+    def run(decision_mb, recheck_mb, after_mb=MB, base_name="main"):
+        merge_bases[:] = [decision_mb, recheck_mb, after_mb]
+        with patch.object(sweep, "REPO", "owner/repo"), patch.object(sweep, "DRY_RUN", False), \
+                patch.object(sweep, "queue_entries", return_value=[]), \
+                patch.object(sweep, "gh_json", gh_json), \
+                patch.object(sweep, "gh_jsonl", return_value=[]), \
+                patch.object(sweep, "current_head", return_value=head), \
+                patch.object(sweep, "pr_diff", return_value=["TauCeti/X.lean"]), \
+                patch.object(sweep, "decide_from_comments", return_value={"merge": True}), \
+                patch.object(sweep, "enqueue", return_value=True) as enq, \
+                patch.object(sweep, "dequeue", return_value=True) as deq, \
+                patch.dict(view, {"baseRefName": "main"}):
+            orig = sweep.merge_base_now
+
+            def merge_base_now(pr, h):
+                view["baseRefName"] = base_name   # e.g. retargeted between decision and recheck
+                return orig(pr, h)
+            with patch.object(sweep, "merge_base_now", merge_base_now), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                assert sweep.main() == 0
+            return enq.call_count, deq.call_count
+
+    assert run(MB, MB) == (1, 0)                       # unchanged: enqueued
+    assert run(MB, "e" * 40) == (0, 0)                 # base rewritten under the same head: skipped
+    assert run(MB, MB, base_name="release") == (0, 0)  # retargeted away from main: skipped
+    assert run(MB, "") == (0, 0)                       # unreadable before enqueue: skipped
+    # Moved, or unreadable, between the pre-enqueue check and the mutation: dequeued at once.
+    assert run(MB, MB, after_mb="e" * 40) == (1, 1)
+    assert run(MB, MB, after_mb="") == (1, 1)
 
 def test_up_to_date_eviction_waits_for_human_without_worker_request():
     from types import SimpleNamespace

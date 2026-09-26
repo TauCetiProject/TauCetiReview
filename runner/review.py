@@ -20,7 +20,7 @@ from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL,
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
-from merge import changed_paths, decide_merge
+from merge import changed_paths, decide_merge, read_paths
 from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import build_reactivation_block, carry_forward, normalize_finding_path, patch_digest, pick_anchor, update_case_file
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
@@ -235,17 +235,18 @@ def thread_action_rubrics(candidates, ran, state_map, head):
     return out
 
 
-def render_thread_plan(candidates, ran, state_map, head, prov, diff_full, threads_dir,
+def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_dir,
                        merge_path_prefix, had_contest=None, repairs_only=False):
     """Render the thread half of a trusted post plan.
 
     Required adverse upserts are the review-publication transaction: the final scoreboard may not
     land until they do.  Close notes and direct contest answers remain best-effort UI actions.
     `repairs_only` is used by the daily-cap path, where no model may run but persisted findings must
-    still be made contestable.
+    still be made contestable. `paths` are the PR's changed paths (`changed_file_paths`), the only
+    files a thread may anchor to.
     """
     had_contest = had_contest or {}
-    paths_sorted = sorted(changed_paths(diff_full))
+    paths_sorted = sorted(paths)
     fallback_path = next((p for p in paths_sorted if p.startswith(merge_path_prefix)),
                          paths_sorted[0] if paths_sorted else "")
     threads_dir.mkdir(parents=True, exist_ok=True)
@@ -557,6 +558,20 @@ def run_rubric(ctx, rubric):
         ctx.note_provider_down(provider, None, 0)
 
 
+def changed_file_paths(a, diff_full):
+    """The PR's changed paths: machine-read from --paths-file (exact for names git quotes in patch
+    headers), else parsed from the diff, which skips those names."""
+    return read_paths(a.paths_file) if a.paths_file else changed_paths(diff_full)
+
+
+def merge_decision(a, states, candidates, all_green, head):
+    """decide_merge over the machine-read changed paths (--paths-file); none given fails closed."""
+    if not a.paths_file:
+        return False, "no --paths-file with the changed paths; refusing to merge"
+    return decide_merge(states, candidates, all_green, read_paths(a.paths_file), head,
+                        a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build, a.scope)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="TauCetiProject/TauCeti")
@@ -569,6 +584,10 @@ def main():
     ap.add_argument("--mathlib-path", default="")
     ap.add_argument("--lean-src", default="")
     ap.add_argument("--diff-file", required=True)
+    ap.add_argument("--paths-file", default="",
+                    help="the PR's changed paths, NUL-terminated (runner/pr_diff.py --paths-out): "
+                         "the thread anchors, and required for a merge decision, which never "
+                         "parses paths from the diff")
     ap.add_argument("--pr-desc-file", default="",
                     help="file with the PR title+body; included in the reviewer context as the "
                          "author's stated intent (untrusted, like the diff)")
@@ -587,7 +606,7 @@ def main():
                          "the meta block. NOT necessarily the merge base; see --merge-base-sha")
     ap.add_argument("--merge-base-sha", default="",
                     help="merge base of base and head — the actual left side of the reviewed "
-                         "diff (`gh pr diff` is three-dot). Recorded as provenance")
+                         "three-dot diff (runner/pr_diff.py). Recorded as provenance")
     ap.add_argument("--rubrics-repo", default="TauCetiProject/TauCetiReview",
                     help="owner/name the pinned rubric links point into")
     ap.add_argument("--rubrics-sha", default="",
@@ -834,10 +853,7 @@ def main():
     if a.mode == "merge":
         states = {r: state_of(state_map.get(r), head) for r in candidates}
         all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
-        paths = changed_paths(pathlib.Path(a.diff_file).read_text())
-        merge_ok, reason = decide_merge(
-            states, candidates, all_green, paths, head,
-            a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build, a.scope)
+        merge_ok, reason = merge_decision(a, states, candidates, all_green, head)
         if a.merge_decision_file:
             pathlib.Path(a.merge_decision_file).write_text(
                 json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
@@ -872,7 +888,7 @@ def main():
         diff_full = pathlib.Path(a.diff_file).read_text()
         threads_dir = pathlib.Path(a.threads_dir) if a.threads_dir else (outdir / "threads")
         thread_actions = render_thread_plan(
-            candidates, [], state_map, head, prov, diff_full, threads_dir,
+            candidates, [], state_map, head, prov, changed_file_paths(a, diff_full), threads_dir,
             a.merge_path_prefix, repairs_only=True)
         if a.post_plan_file:
             pathlib.Path(a.post_plan_file).write_text(json.dumps(
@@ -1096,7 +1112,7 @@ def main():
             "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
             "scoreboard_body": str(sb_path),
             "threads": render_thread_plan(
-                candidates, ran, state_map, head, prov, diff_full, threads_dir,
+                candidates, ran, state_map, head, prov, changed_file_paths(a, diff_full), threads_dir,
                 a.merge_path_prefix, had_contest=had_contest)}
     if a.post_plan_file:
         pathlib.Path(a.post_plan_file).write_text(json.dumps(plan, indent=2))
@@ -1107,9 +1123,7 @@ def main():
     if a.merge_decision_file:
         merge_ok, reason = False, "auto-merge not enabled"
         if a.auto_merge:
-            merge_ok, reason = decide_merge(
-                states, candidates, all_green, changed_paths(diff_full), head,
-                a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build, a.scope)
+            merge_ok, reason = merge_decision(a, states, candidates, all_green, head)
         pathlib.Path(a.merge_decision_file).write_text(
             json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
         print(f"[auto-merge] {merge_ok}: {reason}")

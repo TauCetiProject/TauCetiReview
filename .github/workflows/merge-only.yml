@@ -69,8 +69,17 @@ jobs:
           SCOPE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="scope") | .state] | first // ""')
           echo "SCOPE=$SCOPE" >> "$GITHUB_ENV"
-          gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
-          echo "diff lines: $(wc -l < diff.txt)"
+          # The merge base binds a scoreboard to the diff it reviewed (retargeting the PR or
+          # rewriting the base changes the diff under the same head), so without one there is no
+          # decision to make.
+          if [ -z "$MERGE_BASE" ]; then
+            echo "::error::could not resolve the merge base of $BASE_SHA and $HEAD_SHA"; exit 1
+          fi
+          # The changed paths of exactly HEAD_SHA, machine-read with git (runner/pr_diff.py) rather
+          # than parsed from `gh pr diff`, which refuses PRs touching more than 300 files.
+          python3 runner/pr_diff.py --repo TauCetiProject/TauCeti --pr "$PR" \
+            --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --paths-out paths.z
+          echo "changed paths: $(tr -cd '\0' < paths.z | wc -c)"
 
       - name: Fetch this PR's review comments
         env: { GH_TOKEN: "${{ github.token }}" }
@@ -101,7 +110,7 @@ jobs:
           # to the rendered table for comments posted before that field existed.
           python3 runner/merge_from_scoreboard.py \
             --repo TauCetiProject/TauCeti --pr "$PR" --head-sha "$HEAD_SHA" --comments-file comments.json \
-            --diff-file diff.txt --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" \
+            --merge-base-sha "$MERGE_BASE" --paths-file paths.z --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" \
             --merge-decision-file "$PWD/merge.json"
 
       # ---- Auto-merge: mint the scoped merge token only now, and merge iff the decision is green.
@@ -155,6 +164,33 @@ jobs:
             fi
           }
 
+          # The merge base of the PR's CURRENT base and the reviewed head, or empty if it cannot be
+          # read. Never aborts under `set -e`: a failed read must reach check_merge_base's dequeue.
+          merge_base_now() {
+            local base
+            base=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid \
+              -q .baseRefOid) || return 0
+            [ -n "$base" ] || return 0
+            gh api "/repos/TauCetiProject/TauCeti/compare/${base}...${HEAD_SHA}?per_page=1" \
+              --jq '.merge_base_commit.sha // ""' || true
+          }
+
+          # Require the merge base the decision was bound to ($MERGE_BASE): a retarget or a rewritten
+          # base changes the reviewed diff under the same head, and enqueuing binds only the head.
+          # Moved: dequeue. Unreadable: dequeue too (the review can no longer be verified), then fail.
+          check_merge_base() {
+            CUR_MB=$(merge_base_now)
+            if [ -z "$CUR_MB" ]; then
+              dequeue "could not re-read the merge base $1"
+              echo "::error::could not re-read the merge base of #$PR $1"; exit 1
+            fi
+            if [ "$CUR_MB" != "$MERGE_BASE" ]; then
+              dequeue "merge base moved ($MERGE_BASE -> $CUR_MB) $1"
+              exit 0
+            fi
+          }
+          # (end of the functions tests/test_sweep.py runs)
+
           if [ ! -f merge.json ]; then
             echo "::error::no queue decision file"; exit 1
           fi
@@ -206,6 +242,9 @@ jobs:
           # expectedHeadOid binds the enqueue to the exact reviewed commit (the old --match-head-commit
           # guarantee): if the author races a new push in between, the mutation is rejected rather than
           # queueing an un-reviewed commit. The CUR_HEAD check above is just a cheaper early-out.
+          # Last, re-check the merge base the decision was bound to (expectedHeadOid binds only the
+          # head), and again straight after the mutation to close the window between the two.
+          check_merge_base "since the decision"
           echo "enqueuing #$PR ($CUR_HEAD): $(jq -r .reason merge.json)"
           if out=$(gh api graphql -f query='
             mutation($prId: ID!, $headOid: GitObjectID!) {
@@ -226,3 +265,4 @@ jobs:
               echo "::error::unexpected enqueue failure for #$PR"; exit 1
             fi
           fi
+          check_merge_base "while enqueuing"

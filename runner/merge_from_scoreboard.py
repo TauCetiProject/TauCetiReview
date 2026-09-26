@@ -17,7 +17,8 @@ For comments whose meta predates the `states` field, fall back to reading the re
 table (one row per rubric; the 3rd cell is the state word). Writes `merge.json` like before.
 
     merge_from_scoreboard.py --pr 183 --head-sha <sha> --comments-file comments.json \
-        --diff-file diff.txt --ci-build SUCCESS --bump-guard SUCCESS --merge-decision-file merge.json
+        --merge-base-sha <sha> --paths-file paths.z --ci-build SUCCESS --bump-guard SUCCESS \
+        --merge-decision-file merge.json
 """
 import argparse
 import json
@@ -27,7 +28,8 @@ import subprocess
 import sys
 import time
 
-from review import DEFAULT_RUBRICS, changed_paths, decide_merge
+from merge import read_paths
+from review import DEFAULT_RUBRICS, decide_merge
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
@@ -153,9 +155,19 @@ def load_comments(text):
     return out
 
 
-def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump_guard,
-                         merge_path_prefix="TauCeti/", merge_allow_file=None, scope="", now=None):
+def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_guard,
+                         merge_path_prefix="TauCeti/", merge_allow_file=None, scope="", now=None,
+                         merge_base_sha=""):
     """The gate shared by merge-only and the sweep.
+
+    A verdict is bound to the diff it judged, which `head_sha` alone does not pin: retargeting the
+    PR or rewriting the base branch changes the diff under the same head. The diff is fully
+    determined by (merge base, head), and every scoreboard records the merge base it reviewed
+    against (`merge_base_sha`, from the same compare API the merge job asks), so the newest
+    completed scoreboard counts only if that equals `merge_base_sha`, the merge base now. It is
+    stable while the base branch merely advances. A scoreboard without it, or an unknown current
+    merge base, fails closed. `paths` are the PR's changed paths, machine-read
+    (runner/pr_diff.py), never parsed from the patch text.
 
     `review_safe` is intentionally separate from `merge`: the reconciler should dequeue a PR when
     its review state becomes unsafe, but should leave a human-queued PR alone when only the automatic
@@ -177,6 +189,12 @@ def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump
         return {"review_safe": False, "merge": False,
                 "reason": "no completed scoreboard for the current head yet; waiting",
                 "head_sha": head_sha}
+    if not merge_base_sha or meta.get("merge_base_sha") != merge_base_sha:
+        return {"review_safe": False, "merge": False,
+                "reason": (f"the newest completed scoreboard reviewed the diff from merge base "
+                           f"{(meta.get('merge_base_sha') or 'unrecorded')[:12]}, but the merge "
+                           f"base is now {(merge_base_sha or 'unknown')[:12]}; refusing"),
+                "head_sha": head_sha}
     raw = meta.get("states")
     if not isinstance(raw, dict) or not raw:
         raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
@@ -194,8 +212,7 @@ def decide_from_comments(comments, head_sha, required, diff_text, ci_build, bump
 
     states = {r: "green" for r in required}
     candidates = sorted(required)
-    paths = changed_paths(diff_text)
-    merge_ok, reason = decide_merge(states, candidates, True, paths, head_sha,
+    merge_ok, reason = decide_merge(states, candidates, True, set(paths), head_sha,
                                     merge_path_prefix, allow, bump_guard, ci_build, scope)
     return {"review_safe": True, "merge": merge_ok, "reason": reason, "head_sha": head_sha}
 
@@ -222,7 +239,10 @@ def main():
     ap.add_argument("--comments-file", required=True, help="JSON array of the PR's issue comments")
     ap.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS),
                     help="comma list of rubrics that must ALL be green to merge")
-    ap.add_argument("--diff-file", required=True)
+    ap.add_argument("--merge-base-sha", required=True,
+                    help="merge base of the PR's base and head now; must match the scoreboard's")
+    ap.add_argument("--paths-file", required=True,
+                    help="the PR's changed paths, NUL-terminated (runner/pr_diff.py --paths-out)")
     ap.add_argument("--ci-build", default="")
     ap.add_argument("--bump-guard", default="")
     ap.add_argument("--scope", default="",
@@ -238,13 +258,13 @@ def main():
     except OSError:
         text = ""
     try:
-        diff_text = pathlib.Path(a.diff_file).read_text()
+        paths = read_paths(a.paths_file)
     except OSError:
-        diff_text = ""
+        paths = set()   # decide_merge refuses an empty path set
     scope = a.scope or resolve_commit_status(a.repo, a.head_sha, "scope")
-    out = decide_from_comments(load_comments(text), a.head_sha, required, diff_text,
+    out = decide_from_comments(load_comments(text), a.head_sha, required, paths,
                                a.ci_build, a.bump_guard, a.merge_path_prefix, a.merge_allow_file,
-                               scope)
+                               scope, merge_base_sha=a.merge_base_sha)
     print(json.dumps(out))
     if a.merge_decision_file:
         pathlib.Path(a.merge_decision_file).write_text(json.dumps(out))
