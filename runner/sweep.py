@@ -429,6 +429,20 @@ def current_head(pr):
     return (gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "headRefOid"]) or {}).get("headRefOid", "")
 
 
+def merge_base_now(pr, head):
+    """The merge base of the PR's CURRENT base and `head`, re-read just before acting: a retarget
+    or a rewritten base changes the reviewed diff under the same head, and enqueueing binds only the
+    head. Raises RuntimeError when it cannot be read or the PR no longer targets main."""
+    v = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName,baseRefOid"]) or {}
+    if v.get("baseRefName") != "main" or not v.get("baseRefOid"):
+        raise RuntimeError(f"base is now {v.get('baseRefName') or 'unknown'}, not main")
+    cmp = gh_json(["api", f"/repos/{REPO}/compare/{v['baseRefOid']}...{head}?per_page=1"]) or {}
+    merge_base = (cmp.get("merge_base_commit") or {}).get("sha") or ""
+    if not merge_base:
+        raise RuntimeError("no merge base from the compare API")
+    return merge_base
+
+
 def enqueue(pr, node_id, head):
     """Hand the PR to the merge queue, bound to the reviewed head (expectedHeadOid rejects a racing
     push). Benign outcomes (already queued, head moved, not yet mergeable) are not failures."""
@@ -588,7 +602,8 @@ def main():
             continue
         try:
             v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
-                         "headRefOid,baseRefName,id,labels,statusCheckRollup,isCrossRepository"])
+                         "headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"
+                         "isCrossRepository"])
             head = v["headRefOid"]
             if (v.get("baseRefName") or "") != "main":
                 continue   # the sweep only drives PRs targeting main (the merge queue is main's)
@@ -602,7 +617,7 @@ def main():
             # the same git helper as merge-only (`gh pr diff` refuses >300 files). pr_diff's git
             # calls are time- and size-bounded and raise RuntimeError, so one PR cannot stall or
             # kill the sweep.
-            cmp = gh_json(["api", f"/repos/{REPO}/compare/main...{head}?per_page=1"])
+            cmp = gh_json(["api", f"/repos/{REPO}/compare/{v['baseRefOid']}...{head}?per_page=1"])
             merge_base = ((cmp or {}).get("merge_base_commit") or {}).get("sha") or ""
             if not merge_base:
                 raise RuntimeError("no merge base from the compare API")
@@ -625,15 +640,20 @@ def main():
             continue
         action, reason = decide_action(merge_ok=True, in_queue=False, evictions_at_head=evicted,
                                        behind=behind)
-        # Re-read the head right before acting: if a push landed during the sweep, the decision (and the
-        # green review) is for a commit that is no longer current — skip rather than act on a stale head.
+        # Re-read the head and the merge base right before acting: if a push, a retarget or a base
+        # rewrite landed during the sweep, the decision (and the green review) is for a diff that is no
+        # longer current — skip rather than act on it.
         if action != "skip" and not DRY_RUN:
             try:
                 if current_head(n) != head:
                     print(f"#{n}: head moved during the sweep; skipping")
                     continue
+                if merge_base_now(n, head) != merge_base:
+                    print(f"#{n}: merge base moved during the sweep (retargeted or base rewritten); "
+                          "skipping")
+                    continue
             except RuntimeError as e:
-                print(f"#{n}: head re-check failed ({e}); skipping", file=sys.stderr)
+                print(f"#{n}: head/merge-base re-check failed ({e}); skipping", file=sys.stderr)
                 continue
         print(f"#{n} ({head[:7]}): {action} — {reason}")
         if action == "enqueue":

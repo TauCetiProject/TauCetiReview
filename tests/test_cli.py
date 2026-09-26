@@ -93,6 +93,38 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
             assert actual == expected, (env_model, flags, cmd)
 
 
+
+def test_unresolved_merge_base_stops_before_the_diff_or_review():
+    # A scoreboard without a merge base can never pass the merge gate, so nothing may be spent.
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+        argv = ["tauceti-review", "1", "--reviewer", "claude", "--no-archive", "--no-mathlib",
+                "--workdir", tmp, "--store", tmp + "/store", "--submitted-by", "test-reviewer"]
+        stack.enter_context(patch.object(sys, "argv", argv))
+        stack.enter_context(patch.object(cli, "run", fake_run))
+        stack.enter_context(patch.object(cli, "need"))
+        stack.enter_context(patch.object(cli.shutil, "which",
+                                         side_effect=lambda n: "/bin/claude" if n == "claude" else None))
+        sub = stack.enter_context(patch.object(cli.subprocess, "run"))
+        stack.enter_context(patch.object(cli, "resolve_repo_dir",
+                                         return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
+        stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
+        stack.enter_context(patch.object(cli, "merge_base_sha", return_value=""))
+        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        try:
+            cli.main()
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("CLI went on without a merge base")
+    sub.assert_not_called()                     # no pr_diff run
+    assert not any(len(c) > 1 and str(c[1]).endswith("review.py") for c in calls)
+
 def test_fable_review_preserves_exact_model_and_reported_cost():
     # Exercise the actual engine dispatch and ledger, with only model I/O stubbed.
     import test_billing as billing

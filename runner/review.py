@@ -235,17 +235,18 @@ def thread_action_rubrics(candidates, ran, state_map, head):
     return out
 
 
-def render_thread_plan(candidates, ran, state_map, head, prov, diff_full, threads_dir,
+def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_dir,
                        merge_path_prefix, had_contest=None, repairs_only=False):
     """Render the thread half of a trusted post plan.
 
     Required adverse upserts are the review-publication transaction: the final scoreboard may not
     land until they do.  Close notes and direct contest answers remain best-effort UI actions.
     `repairs_only` is used by the daily-cap path, where no model may run but persisted findings must
-    still be made contestable.
+    still be made contestable. `paths` are the PR's changed paths (`changed_file_paths`), the only
+    files a thread may anchor to.
     """
     had_contest = had_contest or {}
-    paths_sorted = sorted(changed_paths(diff_full))
+    paths_sorted = sorted(paths)
     fallback_path = next((p for p in paths_sorted if p.startswith(merge_path_prefix)),
                          paths_sorted[0] if paths_sorted else "")
     threads_dir.mkdir(parents=True, exist_ok=True)
@@ -557,6 +558,12 @@ def run_rubric(ctx, rubric):
         ctx.note_provider_down(provider, None, 0)
 
 
+def changed_file_paths(a, diff_full):
+    """The PR's changed paths: machine-read from --paths-file (exact for names git quotes in patch
+    headers), else parsed from the diff, which skips those names."""
+    return read_paths(a.paths_file) if a.paths_file else changed_paths(diff_full)
+
+
 def merge_decision(a, states, candidates, all_green, head):
     """decide_merge over the machine-read changed paths (--paths-file); none given fails closed."""
     if not a.paths_file:
@@ -578,8 +585,9 @@ def main():
     ap.add_argument("--lean-src", default="")
     ap.add_argument("--diff-file", required=True)
     ap.add_argument("--paths-file", default="",
-                    help="the PR's changed paths, NUL-terminated (runner/pr_diff.py --paths-out); "
-                         "required for a merge decision, which never parses paths from the diff")
+                    help="the PR's changed paths, NUL-terminated (runner/pr_diff.py --paths-out): "
+                         "the thread anchors, and required for a merge decision, which never "
+                         "parses paths from the diff")
     ap.add_argument("--pr-desc-file", default="",
                     help="file with the PR title+body; included in the reviewer context as the "
                          "author's stated intent (untrusted, like the diff)")
@@ -880,7 +888,7 @@ def main():
         diff_full = pathlib.Path(a.diff_file).read_text()
         threads_dir = pathlib.Path(a.threads_dir) if a.threads_dir else (outdir / "threads")
         thread_actions = render_thread_plan(
-            candidates, [], state_map, head, prov, diff_full, threads_dir,
+            candidates, [], state_map, head, prov, changed_file_paths(a, diff_full), threads_dir,
             a.merge_path_prefix, repairs_only=True)
         if a.post_plan_file:
             pathlib.Path(a.post_plan_file).write_text(json.dumps(
@@ -1104,7 +1112,7 @@ def main():
             "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
             "scoreboard_body": str(sb_path),
             "threads": render_thread_plan(
-                candidates, ran, state_map, head, prov, diff_full, threads_dir,
+                candidates, ran, state_map, head, prov, changed_file_paths(a, diff_full), threads_dir,
                 a.merge_path_prefix, had_contest=had_contest)}
     if a.post_plan_file:
         pathlib.Path(a.post_plan_file).write_text(json.dumps(plan, indent=2))

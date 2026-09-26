@@ -5,7 +5,9 @@ Covers decide_action (the pure policy) and that the merge gate it relies on (dec
 the SAME one the merge-only path uses, so the sweep can never enqueue something the normal gate refuses.
 Dependency-free — run with `python tests/test_sweep.py` or under pytest.
 """
+import contextlib
 import datetime
+import io
 import json
 import sys
 import tempfile
@@ -325,6 +327,17 @@ def test_review_merge_decision_reads_machine_paths_and_fails_closed_without():
         assert review.merge_decision(a, states, ["correctness"], True, "h" * 40)[0]
         pr_diff.write_paths(f, ["TauCeti/Foo.lean", ".github/w\u00f6rkflows/x.yml"])
         assert not review.merge_decision(a, states, ["correctness"], True, "h" * 40)[0]
+        # Thread anchors come from the same list, so a finding on a file whose name git quotes in
+        # the patch header still anchors to it.
+        odd = "TauCeti/\u00c9tale.lean"
+        pr_diff.write_paths(f, ["TauCeti/Foo.lean", odd])
+        quoted = ('diff --git "a/TauCeti/\\303\\211tale.lean" "b/TauCeti/\\303\\211tale.lean"\n'
+                  "diff --git a/TauCeti/Foo.lean b/TauCeti/Foo.lean\n")
+        paths = review.changed_file_paths(a, quoted)
+        assert paths == {"TauCeti/Foo.lean", odd}
+        assert review.pick_anchor({"findings": [{"file": odd}]}, "TauCeti/Foo.lean", paths) == odd
+        a.paths_file = ""
+        assert review.changed_file_paths(a, quoted) == {"TauCeti/Foo.lean"}   # the old parser
 
 def test_workflows_pass_status_contexts():
     root = pathlib.Path(__file__).resolve().parent.parent
@@ -345,7 +358,12 @@ def test_workflows_pass_status_contexts():
     assert 'already in the queue' in merge_only
     merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
     assert 'ref: ${{ inputs.review_ref }}' in merge_sweep
-    assert '"headRefOid,baseRefName,id,labels,statusCheckRollup,isCrossRepository"' in sweep_source
+    assert '"headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"' in sweep_source
+    # merge-only re-reads the merge base as the last step before the enqueue mutation.
+    recheck = merge_only.index('if [ "$CUR_MB" != "$MERGE_BASE" ]; then')
+    assert merge_only.index("mutation($prId: ID!, $headOid: GitObjectID!)") > recheck
+    assert merge_only.index('CUR_BASE=$(gh pr view') < recheck
+    assert 'dequeue "merge base moved' in merge_only
     assert 'MERGE_PREFIX, scope=scope, merge_base_sha=merge_base' in sweep_source
     # The merge paths read machine paths and bind to the merge base; nothing parses `gh pr diff`.
     assert '--merge-base-sha "$MERGE_BASE" --paths-file paths.z' in merge_only
@@ -503,7 +521,8 @@ def test_main_hands_off_once_then_waits_until_push():
     from unittest.mock import patch
     head = "a" * 40
     labels, comments, mutations = [], [], []
-    view = {"headRefOid": head, "baseRefName": "main", "id": "PR_1", "labels": labels,
+    view = {"headRefOid": head, "baseRefName": "main", "baseRefOid": "c" * 40, "id": "PR_1",
+            "labels": labels,
             "statusCheckRollup": [], "isCrossRepository": True}
 
     def gh_json(args):
@@ -554,6 +573,52 @@ def test_main_hands_off_once_then_waits_until_push():
         assert mutations == [["pr", "edit"]]
         gate.assert_called_once()
 
+
+
+def test_merge_base_is_rechecked_right_before_enqueue():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    head = "a" * 40
+    view = {"headRefOid": head, "baseRefName": "main", "baseRefOid": "c" * 40, "id": "PR_1",
+            "labels": [], "statusCheckRollup": [], "isCrossRepository": False}
+    merge_bases = []
+
+    def gh_json(args):
+        if args[:2] == ["pr", "list"]:
+            return [{"number": 1, "isDraft": False, "labels": []}]
+        if args[:2] == ["pr", "view"]:
+            return view
+        if "/compare/" in args[1]:
+            return {"behind_by": 0, "merge_base_commit": {"sha": merge_bases.pop(0)}}
+        if "/commits/" in args[1]:
+            return {"commit": {"committer": {"date": "2026-09-01T00:00:00Z"}}}
+        raise AssertionError(args)
+
+    def run(decision_mb, recheck_mb, base_name="main"):
+        merge_bases[:] = [decision_mb, recheck_mb]
+        with patch.object(sweep, "REPO", "owner/repo"), patch.object(sweep, "DRY_RUN", False), \
+                patch.object(sweep, "queue_entries", return_value=[]), \
+                patch.object(sweep, "gh_json", gh_json), \
+                patch.object(sweep, "gh_jsonl", return_value=[]), \
+                patch.object(sweep, "current_head", return_value=head), \
+                patch.object(sweep, "pr_diff", return_value=["TauCeti/X.lean"]), \
+                patch.object(sweep, "decide_from_comments", return_value={"merge": True}), \
+                patch.object(sweep, "enqueue", return_value=True) as enq, \
+                patch.dict(view, {"baseRefName": "main"}):
+            orig = sweep.merge_base_now
+
+            def merge_base_now(pr, h):
+                view["baseRefName"] = base_name   # e.g. retargeted between decision and recheck
+                return orig(pr, h)
+            with patch.object(sweep, "merge_base_now", merge_base_now), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                assert sweep.main() == 0
+            return enq.call_count
+
+    assert run(MB, MB) == 1                       # unchanged: enqueued
+    assert run(MB, "e" * 40) == 0                 # base rewritten under the same head: skipped
+    assert run(MB, MB, base_name="release") == 0  # retargeted away from main: skipped
 
 def test_up_to_date_eviction_waits_for_human_without_worker_request():
     from types import SimpleNamespace

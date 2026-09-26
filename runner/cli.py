@@ -191,8 +191,7 @@ def pr_ref_oids(repo, pr):
 
 def merge_base_sha(repo, base, head):
     """The merge base of base...head, from the compare API — the actual left side of the reviewed
-    three-dot diff (baseRefOid is the branch tip, which may have moved on). Best-effort: runner/
-    pr_diff.py resolves it again itself when this comes back empty."""
+    three-dot diff (baseRefOid is the branch tip, which may have moved on). Empty on failure."""
     if not (base and head):
         return ""
     r = run(["gh", "api", f"/repos/{repo}/compare/{base}...{head}",
@@ -643,10 +642,15 @@ def main():
     # must produce it identically. The helper ships beside this file, so a --rubrics-sha pin to an
     # older engine still gets it.
     merge_base = merge_base_sha(a.repo, base, head)
+    if not merge_base:
+        # The merge gate matches a scoreboard to the merge base it records; a review without one
+        # could never merge, so stop before spending anything on it.
+        die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
     diff = subprocess.run(
         [sys.executable, str(pathlib.Path(__file__).resolve().parent / "pr_diff.py"),
          "--repo", a.repo, "--pr", str(a.pr), "--head-sha", head,
-         "--merge-base-sha", merge_base, "--out", str(work / "diff.txt")])
+         "--merge-base-sha", merge_base, "--out", str(work / "diff.txt"),
+         "--paths-out", str(work / "paths.z")])
     if diff.returncode != 0:
         die(f"could not compute the diff of PR #{a.pr} ({diff.returncode})")
     # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
@@ -741,7 +745,8 @@ def main():
            "--rubrics-dir", str(repo_dir / "rubrics"), "--tool-cwd", str(work),
            "--code-path", "code", "--roadmap-path", "roadmap",
            *mathlib_args,
-           "--diff-file", str(work / "diff.txt"), "--pr-desc-file", str(work / "pr_desc.txt"),
+           "--diff-file", str(work / "diff.txt"), "--paths-file", str(work / "paths.z"),
+           "--pr-desc-file", str(work / "pr_desc.txt"),
            "--store", str(store), "--head-sha", head, "--base-sha", base,
            "--merge-base-sha", merge_base,
            "--rubrics-sha", rub_sha, *(["--rubrics-sha-approx"] if rub_approx else []),

@@ -215,6 +215,18 @@ jobs:
           # expectedHeadOid binds the enqueue to the exact reviewed commit (the old --match-head-commit
           # guarantee): if the author races a new push in between, the mutation is rejected rather than
           # queueing an un-reviewed commit. The CUR_HEAD check above is just a cheaper early-out.
+          # Last, re-check the merge base the decision was bound to: a retarget or a rewritten base
+          # changes the reviewed diff under the same head, and expectedHeadOid binds only the head.
+          CUR_BASE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid -q .baseRefOid)
+          CUR_MB=$(gh api "/repos/TauCetiProject/TauCeti/compare/${CUR_BASE}...${HEAD_SHA}?per_page=1" \
+            --jq '.merge_base_commit.sha // ""')
+          if [ -z "$CUR_MB" ]; then
+            echo "::error::could not re-read the merge base of #$PR; refusing to enqueue"; exit 1
+          fi
+          if [ "$CUR_MB" != "$MERGE_BASE" ]; then
+            dequeue "merge base moved ($MERGE_BASE -> $CUR_MB) since the decision"
+            exit 0
+          fi
           echo "enqueuing #$PR ($CUR_HEAD): $(jq -r .reason merge.json)"
           if out=$(gh api graphql -f query='
             mutation($prId: ID!, $headOid: GitObjectID!) {

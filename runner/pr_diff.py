@@ -22,9 +22,10 @@ rule, so the merge paths (merge-only, the sweep, review.py's merge decision) rea
 Renames are not detected for the list: a rename then lists as a deletion plus an addition, which is
 exactly the old and the new path the rename would contribute, and git needs only the trees for it.
 
-Bounded: every git call has a timeout, and the diff and the path list are streamed with a hard
-byte limit, so a hostile or pathological PR fails clearly instead of hanging a job or filling a
-disk.
+Bounded: every git call has a timeout, the diff and the path list are streamed with a hard byte
+limit, and everything downloaded (the two commits' trees, then exactly the changed files' blobs;
+git's lazy fetching is off) is capped, so a hostile or pathological PR fails clearly instead of
+hanging a job or filling a disk.
 
 Security: nothing from the PR is executed. The fetch is anonymous HTTPS by SHA into a bare
 repository with no work tree. git runs with an allowlisted environment (no tokens, provider keys,
@@ -53,6 +54,10 @@ INDEX_ABBREV = 11
 # 909-file mathlib4 bump #3780 is about 6 MB, the 338-file mathlib4 #26077 0.36 MB, TauCeti's
 # biggest diffs well under 1 MB.
 MAX_BYTES = 64 << 20
+# Hard cap on everything downloaded into the throwaway repository (trees plus the changed files'
+# contents), enforced while git runs and checked again after. mathlib4 #3780 (909 files) needs
+# about 6 MB; TauCeti's trees are about 0.4 MB and its largest tracked file under 0.3 MB.
+MAX_FETCH_BYTES = 256 << 20
 FETCH_TIMEOUT = 300   # seconds, per git call
 DIFF_TIMEOUT = 300
 # The only variables git sees. Everything else (GH_TOKEN, GITHUB_TOKEN, provider API keys,
@@ -78,26 +83,50 @@ def _killpg(p):
         pass
 
 
-def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES):
-    """Run `git -C d args`, streaming stdout into `sink` (a binary file) up to `limit` bytes and
-    killing git's whole process group at `timeout`. Returns stdout bytes when `sink` is None.
-    Raises RuntimeError on failure, timeout, or overflow."""
+def _du(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass   # a temporary pack renamed or removed under us
+    return total
+
+
+def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=None):
+    """Run `git -C d args` with `stdin`, streaming stdout into `sink` (a binary file) up to `limit`
+    bytes, killing git's whole process group at `timeout` or, when `disk_cap` is given, as soon as
+    the repository directory `d` grows past it (checked every 0.1 s, so a fast download can
+    overshoot slightly before the kill). Returns stdout bytes when `sink` is None. Raises
+    RuntimeError on failure, timeout, or overflow."""
     name = args[0]
-    with tempfile.TemporaryFile() as err:
+    with tempfile.TemporaryFile() as err, tempfile.TemporaryFile() as inp:
+        inp.write(stdin)
+        inp.seek(0)
         try:
-            p = subprocess.Popen(["git", "-C", d, *args], stdin=subprocess.DEVNULL,
+            p = subprocess.Popen(["git", "-C", d, *args], stdin=inp,
                                  stdout=subprocess.PIPE, stderr=err, env=env,
                                  start_new_session=True)
         except OSError as e:
             raise RuntimeError(f"cannot run git: {e}")
-        timed_out = threading.Event()
+        timed_out, too_big, done = threading.Event(), threading.Event(), threading.Event()
 
         def on_timeout():
             timed_out.set()
             _killpg(p)
 
+        def watch_disk():
+            while not done.wait(0.1):
+                if _du(d) > disk_cap:
+                    too_big.set()
+                    _killpg(p)
+                    return
+
         timer = threading.Timer(timeout, on_timeout)
         timer.start()
+        if disk_cap is not None:
+            threading.Thread(target=watch_disk, daemon=True).start()
         out, total = [], 0
         try:
             while True:
@@ -112,13 +141,19 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES):
                 else:
                     sink.write(chunk)
             p.wait()
+            if disk_cap is not None and _du(d) > disk_cap:
+                too_big.set()   # finished between two checks
         except BaseException:
             _killpg(p)
             p.wait()
             raise
         finally:
+            done.set()
             timer.cancel()
             p.stdout.close()
+        if too_big.is_set():
+            raise RuntimeError(f"git {name}: the objects downloaded exceed the {disk_cap}-byte "
+                               "limit")
         if timed_out.is_set():
             raise RuntimeError(f"git {name} timed out after {timeout}s")
         if p.returncode != 0:
@@ -128,25 +163,50 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES):
         return b"".join(out)
 
 
-def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES):
-    """Diff `merge_base..head` from a throwaway bare clone of `remote`. Only the two commits
-    (blobless, depth 1) are fetched; git then fetches just the blobs the diff reads, and none at all
-    when `diff_out` is None. Writes the raw diff to the binary file `diff_out` if given and returns
-    the changed paths (str, surrogate-escaped if not UTF-8). Raises RuntimeError on failure."""
+def _changed_blobs(raw):
+    """Blob ids on either side of a `git diff --raw -z --no-renames` listing (no submodules)."""
+    fields = raw.split(b"\0")
+    blobs = set()
+    for meta in fields[0::2]:
+        if not meta.startswith(b":"):
+            continue
+        old_mode, new_mode, old, new = meta[1:].split(b" ")[:4]
+        for mode, oid in ((old_mode, old), (new_mode, new)):
+            if mode != b"160000" and oid.strip(b"0"):
+                blobs.add(oid)
+    return sorted(blobs)
+
+
+def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES,
+             fetch_limit=MAX_FETCH_BYTES):
+    """Diff `merge_base..head` from a throwaway bare clone of `remote`. Only the two commits'
+    trees (blobless, depth 1) are fetched, then, when `diff_out` is given, exactly the changed
+    files' blobs, all under `fetch_limit` bytes in total. git never fetches lazily after that
+    (GIT_NO_LAZY_FETCH), so nothing else can be downloaded. Writes the raw diff to the binary file
+    `diff_out` if given and returns the changed paths (str, surrogate-escaped if not UTF-8).
+    Raises RuntimeError on failure."""
     if not (merge_base and head):
         raise RuntimeError("need both the merge base and the head SHA")
     env = _git_env()
+    local = {**env, "GIT_NO_LAZY_FETCH": "1"}
     with tempfile.TemporaryDirectory(prefix="pr-diff-") as d:
         _git(d, ["init", "-q", "--bare"], env, FETCH_TIMEOUT)
         _git(d, ["remote", "add", "origin", remote], env, FETCH_TIMEOUT)
         _git(d, ["fetch", "-q", "--no-tags", "--depth", "1", "--filter=blob:none",
-                 "origin", merge_base, head], env, FETCH_TIMEOUT)
+                 "origin", merge_base, head], env, FETCH_TIMEOUT, disk_cap=fetch_limit)
         names = _git(d, ["diff", "--name-only", "-z", "--no-renames", merge_base, head, "--"],
-                     env, DIFF_TIMEOUT, limit=limit)
+                     local, DIFF_TIMEOUT, limit=limit, disk_cap=fetch_limit)
         if diff_out is not None:
+            raw = _git(d, ["diff", "--raw", "-z", "--no-renames", "--abbrev=40", merge_base,
+                           head, "--"], local, DIFF_TIMEOUT, limit=limit, disk_cap=fetch_limit)
+            blobs = _changed_blobs(raw)
+            if blobs:
+                _git(d, ["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--stdin", "origin"],
+                     env, FETCH_TIMEOUT, stdin=b"\n".join(blobs) + b"\n", disk_cap=fetch_limit)
             _git(d, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M",
                      f"--abbrev={INDEX_ABBREV}", "--src-prefix=a/", "--dst-prefix=b/",
-                     merge_base, head, "--"], env, DIFF_TIMEOUT, sink=diff_out, limit=limit)
+                     merge_base, head, "--"], local, DIFF_TIMEOUT, sink=diff_out, limit=limit,
+                 disk_cap=fetch_limit)
     return [p.decode("utf-8", "surrogateescape") for p in names.split(b"\0") if p]
 
 

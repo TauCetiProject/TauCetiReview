@@ -200,6 +200,36 @@ def test_binary_file_is_summarised_not_streamed():
         assert paths == ["blob.bin"]
 
 
+
+def test_download_cap_refuses_an_oversized_blob():
+    blob = os.urandom(3 << 20)
+    with tempfile.TemporaryDirectory() as d:
+        url, base, head = _two_commits(pathlib.Path(d), {"a.lean": b"x\n"}, {"blob.bin": blob})
+        try:
+            _diff(url, base, head, fetch_limit=1 << 20)
+        except RuntimeError as e:
+            assert "objects downloaded exceed the 1048576-byte limit" in str(e), e
+        else:
+            raise AssertionError("no download-size error")
+        # The paths alone need no blob contents, so they stay within the same cap.
+        assert pr_diff.git_diff(url, base, head, fetch_limit=1 << 20) == ["blob.bin"]
+
+
+def test_diff_never_fetches_lazily():
+    # Only the prefetched changed blobs are ever downloaded: skip the prefetch and the diff must
+    # fail on the missing contents rather than fetch them itself.
+    with tempfile.TemporaryDirectory() as d:
+        url, base, head = _two_commits(pathlib.Path(d), {"a.lean": b"x\n"},
+                                       {"a.lean": b"y\n"})
+        assert b"+y\n" in _diff(url, base, head)[0]
+        with patch.object(pr_diff, "_changed_blobs", return_value=[]):
+            try:
+                _diff(url, base, head)
+            except RuntimeError as e:
+                assert "git diff failed" in str(e), e
+            else:
+                raise AssertionError("the diff fetched the missing blobs itself")
+
 def test_oversized_path_list_fails_clearly():
     with tempfile.TemporaryDirectory() as d:
         url, mb, head, _ = _fixture(pathlib.Path(d))
