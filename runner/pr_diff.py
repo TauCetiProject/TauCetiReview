@@ -97,8 +97,8 @@ def _du(path):
 def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=None):
     """Run `git -C d args` with `stdin`, streaming stdout into `sink` (a binary file) up to `limit`
     bytes, killing git's whole process group at `timeout` or, when `disk_cap` is given, as soon as
-    the repository directory `d` grows past it (checked every 0.1 s, so a fast download can
-    overshoot slightly before the kill). Returns stdout bytes when `sink` is None. Raises
+    the repository directory `d` grows past it (checked every 0.1 s while git runs, so a fast
+    download can overshoot slightly before the kill, and once more after it exits). Returns stdout bytes when `sink` is None. Raises
     RuntimeError on failure, timeout, or overflow."""
     name = args[0]
     with tempfile.TemporaryFile() as err, tempfile.TemporaryFile() as inp:
@@ -111,22 +111,27 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
         except OSError as e:
             raise RuntimeError(f"cannot run git: {e}")
         timed_out, too_big, done = threading.Event(), threading.Event(), threading.Event()
+        lock = threading.Lock()
 
-        def on_timeout():
-            timed_out.set()
-            _killpg(p)
+        def kill(reason):
+            # Only while git is unreaped (`done` is set before the reaping wait), so a recycled PID
+            # is never signalled.
+            with lock:
+                if not done.is_set():
+                    reason.set()
+                    _killpg(p)
 
         def watch_disk():
             while not done.wait(0.1):
                 if _du(d) > disk_cap:
-                    too_big.set()
-                    _killpg(p)
+                    kill(too_big)
                     return
 
-        timer = threading.Timer(timeout, on_timeout)
+        timer = threading.Timer(timeout, kill, args=(timed_out,))
         timer.start()
+        watcher = threading.Thread(target=watch_disk, daemon=True)
         if disk_cap is not None:
-            threading.Thread(target=watch_disk, daemon=True).start()
+            watcher.start()
         out, total = [], 0
         try:
             while True:
@@ -140,17 +145,22 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
                     out.append(chunk)
                 else:
                     sink.write(chunk)
-            p.wait()
-            if disk_cap is not None and _du(d) > disk_cap:
-                too_big.set()   # finished between two checks
+            # Wait for git to exit WITHOUT reaping it, so the timer and the watcher can still
+            # kill it safely until `done` is set below.
+            os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)
         except BaseException:
-            _killpg(p)
-            p.wait()
+            kill(threading.Event())
             raise
         finally:
-            done.set()
+            with lock:
+                done.set()
             timer.cancel()
+            if watcher.is_alive():
+                watcher.join()
+            p.wait()
             p.stdout.close()
+        if disk_cap is not None and _du(d) > disk_cap:
+            too_big.set()   # grew past the cap between two checks
         if too_big.is_set():
             raise RuntimeError(f"git {name}: the objects downloaded exceed the {disk_cap}-byte "
                                "limit")

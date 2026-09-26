@@ -177,6 +177,34 @@ def test_timeout_kills_git_and_its_children():
         assert time.monotonic() - t0 < 10
 
 
+
+def test_disk_cap_kills_git_while_it_is_still_running():
+    # git (here a stand-in that writes 3 MB into the repository, then idles) is killed as soon as
+    # the directory passes the cap, well before its timeout, and the error says why.
+    with tempfile.TemporaryDirectory() as d:
+        grow = f"!head -c 3000000 /dev/zero > '{d}/grown' && sleep 30"
+        t0 = time.monotonic()
+        try:
+            pr_diff._git(d, ["-c", f"alias.grow={grow}", "grow"], pr_diff._git_env(), 20,
+                         disk_cap=1 << 20)
+        except RuntimeError as e:
+            assert "exceed the 1048576-byte limit" in str(e), e
+        else:
+            raise AssertionError("no size error")
+        assert time.monotonic() - t0 < 10
+
+
+def test_disk_cap_is_checked_after_a_fast_exit():
+    with tempfile.TemporaryDirectory() as d:
+        grow = f"!head -c 3000000 /dev/zero > '{d}/grown'"
+        try:
+            pr_diff._git(d, ["-c", f"alias.grow={grow}", "grow"], pr_diff._git_env(), 20,
+                         disk_cap=1 << 20)
+        except RuntimeError as e:
+            assert "exceed" in str(e), e
+        else:
+            raise AssertionError("no size error")
+
 def test_oversized_text_diff_fails_clearly():
     big = "".join(f"line {i}\n" for i in range(200_000)).encode()    # ~2.3 MB
     with tempfile.TemporaryDirectory() as d:

@@ -443,6 +443,20 @@ def merge_base_now(pr, head):
     return merge_base
 
 
+def recheck_after_enqueue(pr, node_id, head, merge_base):
+    """Re-read the merge base straight after enqueueing (the mutation binds only the head) and
+    dequeue if it moved or can no longer be read, so a retarget or base rewrite racing the enqueue
+    never leaves the PR queued on a review of another diff. Returns False only on a failed dequeue."""
+    try:
+        if merge_base_now(pr, head) == merge_base:
+            return True
+        why = "moved"
+    except RuntimeError as e:
+        why = f"could not be re-read ({e})"
+    print(f"#{pr}: merge base {why} while enqueueing; dequeuing")
+    return dequeue(pr, node_id)
+
+
 def enqueue(pr, node_id, head):
     """Hand the PR to the merge queue, bound to the reviewed head (expectedHeadOid rejects a racing
     push). Benign outcomes (already queued, head moved, not yet mergeable) are not failures."""
@@ -658,6 +672,8 @@ def main():
         print(f"#{n} ({head[:7]}): {action} — {reason}")
         if action == "enqueue":
             failures += not enqueue(n, v["id"], head)
+            if not DRY_RUN:
+                failures += not recheck_after_enqueue(n, v["id"], head, merge_base)
         elif action == "update_branch":
             failures += not recover_branch(n, head, v.get("isCrossRepository"), comments)
         elif action == "flag":

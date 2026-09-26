@@ -9,6 +9,7 @@ import contextlib
 import datetime
 import io
 import json
+import os
 import sys
 import tempfile
 import pathlib
@@ -359,11 +360,11 @@ def test_workflows_pass_status_contexts():
     merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
     assert 'ref: ${{ inputs.review_ref }}' in merge_sweep
     assert '"headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"' in sweep_source
-    # merge-only re-reads the merge base as the last step before the enqueue mutation.
-    recheck = merge_only.index('if [ "$CUR_MB" != "$MERGE_BASE" ]; then')
-    assert merge_only.index("mutation($prId: ID!, $headOid: GitObjectID!)") > recheck
-    assert merge_only.index('CUR_BASE=$(gh pr view') < recheck
-    assert 'dequeue "merge base moved' in merge_only
+    # merge-only re-checks the merge base as the last step before the enqueue mutation, and again
+    # straight after it (test_merge_only_merge_base_check runs the check itself).
+    mutation = merge_only.index("mutation($prId: ID!, $headOid: GitObjectID!)")
+    assert merge_only.index('check_merge_base "since the decision"') < mutation
+    assert merge_only.index('check_merge_base "while enqueuing"') > mutation
     assert 'MERGE_PREFIX, scope=scope, merge_base_sha=merge_base' in sweep_source
     # The merge paths read machine paths and bind to the merge base; nothing parses `gh pr diff`.
     assert '--merge-base-sha "$MERGE_BASE" --paths-file paths.z' in merge_only
@@ -373,6 +374,55 @@ def test_workflows_pass_status_contexts():
     for workflow in (merge_only, review, shadow):
         assert 'gh pr diff "$PR"' not in workflow
 
+
+
+def _merge_only_functions():
+    """merge-only.yml's dequeue / merge_base_now / check_merge_base, as a bash script."""
+    text = (pathlib.Path(__file__).resolve().parent.parent
+            / ".github/workflows/merge-only.yml").read_text()
+    start = text.index("          dequeue() {")
+    end = text.index("          # (end of the functions tests/test_sweep.py runs)")
+    return "\n".join(line[10:] for line in text[start:end].splitlines())
+
+
+def test_merge_only_merge_base_check():
+    """Run the workflow's own bash against a fake `gh`: a moved merge base dequeues and succeeds; a
+    failed or empty read dequeues AND fails the step; a match does nothing."""
+    import subprocess
+    fake_gh = """#!/usr/bin/env bash
+echo "$*" >> "$LOG"
+case "$*" in
+  "pr view"*) [ "$VIEW" = fail ] && exit 1; echo "$VIEW" ;;
+  "api /repos/"*compare*) [ "$MB_NOW" = fail ] && { echo "HTTP 502" >&2; exit 1; }
+                          echo "$MB_NOW" ;;
+  *isInMergeQueue*) echo true ;;
+  *dequeuePullRequest*) echo '{}' ;;
+  *) echo "unexpected: $*" >&2; exit 3 ;;
+esac
+"""
+    with tempfile.TemporaryDirectory() as d:
+        bindir = pathlib.Path(d) / "bin"
+        bindir.mkdir()
+        gh = bindir / "gh"
+        gh.write_text(fake_gh)
+        gh.chmod(0o755)
+        script = "set -euo pipefail\n" + _merge_only_functions() + '\ncheck_merge_base "now"\n'
+
+        def run(view, mb_now):
+            log = pathlib.Path(d) / "log"
+            log.write_text("")
+            env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "LOG": str(log),
+                   "VIEW": view, "MB_NOW": mb_now, "PR": "7", "PRID": "PR_7",
+                   "HEAD_SHA": "h" * 40, "MERGE_BASE": MB}
+            r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+            return r.returncode, "dequeuePullRequest" in log.read_text()
+
+        assert run("c" * 40, MB) == (0, False)          # unchanged: nothing to do
+        assert run("c" * 40, "e" * 40) == (0, True)     # moved: dequeued
+        assert run("c" * 40, "") == (1, True)           # empty: dequeued, and the step fails
+        assert run("c" * 40, "fail") == (1, True)       # compare failed: same
+        assert run("fail", MB) == (1, True)             # base read failed: same
+        assert run("", MB) == (1, True)
 
 def test_status_states_reads_trusted_contexts_and_fails_closed():
     rollup = [
@@ -589,13 +639,13 @@ def test_merge_base_is_rechecked_right_before_enqueue():
         if args[:2] == ["pr", "view"]:
             return view
         if "/compare/" in args[1]:
-            return {"behind_by": 0, "merge_base_commit": {"sha": merge_bases.pop(0)}}
+            return {"behind_by": 0, "merge_base_commit": {"sha": merge_bases.pop(0) or None}}
         if "/commits/" in args[1]:
             return {"commit": {"committer": {"date": "2026-09-01T00:00:00Z"}}}
         raise AssertionError(args)
 
-    def run(decision_mb, recheck_mb, base_name="main"):
-        merge_bases[:] = [decision_mb, recheck_mb]
+    def run(decision_mb, recheck_mb, after_mb=MB, base_name="main"):
+        merge_bases[:] = [decision_mb, recheck_mb, after_mb]
         with patch.object(sweep, "REPO", "owner/repo"), patch.object(sweep, "DRY_RUN", False), \
                 patch.object(sweep, "queue_entries", return_value=[]), \
                 patch.object(sweep, "gh_json", gh_json), \
@@ -604,6 +654,7 @@ def test_merge_base_is_rechecked_right_before_enqueue():
                 patch.object(sweep, "pr_diff", return_value=["TauCeti/X.lean"]), \
                 patch.object(sweep, "decide_from_comments", return_value={"merge": True}), \
                 patch.object(sweep, "enqueue", return_value=True) as enq, \
+                patch.object(sweep, "dequeue", return_value=True) as deq, \
                 patch.dict(view, {"baseRefName": "main"}):
             orig = sweep.merge_base_now
 
@@ -614,11 +665,15 @@ def test_merge_base_is_rechecked_right_before_enqueue():
                     contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
                 assert sweep.main() == 0
-            return enq.call_count
+            return enq.call_count, deq.call_count
 
-    assert run(MB, MB) == 1                       # unchanged: enqueued
-    assert run(MB, "e" * 40) == 0                 # base rewritten under the same head: skipped
-    assert run(MB, MB, base_name="release") == 0  # retargeted away from main: skipped
+    assert run(MB, MB) == (1, 0)                       # unchanged: enqueued
+    assert run(MB, "e" * 40) == (0, 0)                 # base rewritten under the same head: skipped
+    assert run(MB, MB, base_name="release") == (0, 0)  # retargeted away from main: skipped
+    assert run(MB, "") == (0, 0)                       # unreadable before enqueue: skipped
+    # Moved, or unreadable, between the pre-enqueue check and the mutation: dequeued at once.
+    assert run(MB, MB, after_mb="e" * 40) == (1, 1)
+    assert run(MB, MB, after_mb="") == (1, 1)
 
 def test_up_to_date_eviction_waits_for_human_without_worker_request():
     from types import SimpleNamespace
