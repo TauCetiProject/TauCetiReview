@@ -75,6 +75,14 @@ def diff_url(prov):
 
 
 
+def discussion_url(prov, comment_id):
+    """Link to a review comment on its pull request."""
+    if not (prov and prov.get("repo") and prov.get("pr") and comment_id is not None):
+        return ""
+    return f"https://github.com/{prov['repo']}/pull/{prov['pr']}#discussion_r{comment_id}"
+
+
+
 def run_meta(res):
     """The per-run slice of the meta block: runner-verified execution facts, no model text."""
     u = res.get("usage") or {}
@@ -137,9 +145,11 @@ def render_contest_reply(cf, head_sha, prov=None, answered_id=None):
     else:
         why = sanitize((cf.get("summary") or "").replace("\n", " ")) or "the prior finding still holds"
         verdict = f"the finding stands — {why}"
+    comment_url = discussion_url(prov, aid)
+    comment = f"[{aid}]({comment_url})" if comment_url else str(aid)
     return (f"<!--tauceti-reply:{rubric}:through:{aid}-->\n"
             f"**Re: your reply on `{rubric}` —** re-reviewed on `{head_sha[:7]}`; {verdict}\n\n"
-            f"<sub>`{judge}` · addresses your replies through comment {aid}.</sub>")
+            f"<sub>`{judge}` · addresses your replies through comment {comment}.</sub>")
 
 
 
