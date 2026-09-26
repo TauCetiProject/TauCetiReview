@@ -598,14 +598,20 @@ def main():
             if handoff != "ready":
                 failures += handoff == "error"
                 continue
-            # Same git-built diff as the review and merge-only paths (`gh pr diff` refuses >300 files).
-            diff = pr_diff(REPO, n, head).decode("utf-8", "replace")
+            # The merge base binds the review to the diff it judged; the changed paths come from
+            # the same git helper as merge-only (`gh pr diff` refuses >300 files). pr_diff's git
+            # calls are time- and size-bounded and raise RuntimeError, so one PR cannot stall or
+            # kill the sweep.
+            cmp = gh_json(["api", f"/repos/{REPO}/compare/main...{head}?per_page=1"])
+            merge_base = ((cmp or {}).get("merge_base_commit") or {}).get("sha") or ""
+            if not merge_base:
+                raise RuntimeError("no merge base from the compare API")
+            paths = pr_diff(REPO, n, head, merge_base)
             ci_build, bump_guard, scope = status_states(v.get("statusCheckRollup"))
-            decision = decide_from_comments(comments, head, required, diff, ci_build, bump_guard,
-                                            MERGE_PREFIX, scope=scope)
+            decision = decide_from_comments(comments, head, required, paths, ci_build, bump_guard,
+                                            MERGE_PREFIX, scope=scope, merge_base_sha=merge_base)
             if not decision["merge"]:
                 continue   # not green at head / not TauCeti-only — the normal gate would not merge it
-            cmp = gh_json(["api", f"/repos/{REPO}/compare/main...{head}"])
             behind = int((cmp or {}).get("behind_by") or 0)
             head_dt = parse_ts((gh_json(["api", f"/repos/{REPO}/commits/{head}"]) or {})
                                .get("commit", {}).get("committer", {}).get("date"))

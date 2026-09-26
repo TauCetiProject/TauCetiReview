@@ -73,11 +73,12 @@ jobs:
           SCOPE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="scope") | .state] | first // ""')
           echo "SCOPE=$SCOPE" >> "$GITHUB_ENV"
-          # The three-dot diff of exactly HEAD_SHA, built with git (runner/pr_diff.py): `gh pr diff`
-          # refuses PRs touching more than 300 files, and every review/merge path must compute
-          # the diff the same way (its bytes feed the patch digest and the changed-path check).
+          # The three-dot diff of exactly HEAD_SHA and its changed paths, built with git
+          # (runner/pr_diff.py): `gh pr diff` refuses PRs touching more than 300 files, and every
+          # review/merge path must compute them the same way (the diff bytes feed the patch digest;
+          # the machine-read paths feed the merge path rule).
           python3 runner/pr_diff.py --repo TauCetiProject/TauCeti --pr "$PR" \
-            --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --out diff.txt
+            --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --out diff.txt --paths-out paths.z
           echo "diff lines: $(wc -l < diff.txt)"
           # The PR title+body: the author's stated intent, sources, and dependencies. The
           # rubric tells agents to read it; pass it through (as untrusted author input, like
@@ -198,7 +199,7 @@ jobs:
             --repo TauCetiProject/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
-            --diff-file diff.txt --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
+            --diff-file diff.txt --paths-file paths.z --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
             --rubrics-sha "$RUBRICS_SHA" --archive-dir store/outbox \
             --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" $AM --merge-decision-file "$PWD/merge.json" \

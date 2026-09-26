@@ -69,12 +69,17 @@ jobs:
           SCOPE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="scope") | .state] | first // ""')
           echo "SCOPE=$SCOPE" >> "$GITHUB_ENV"
-          # The three-dot diff of exactly HEAD_SHA, built with git (runner/pr_diff.py): `gh pr diff`
-          # refuses PRs touching more than 300 files, and every review/merge path must compute
-          # the diff the same way (its bytes feed the patch digest and the changed-path check).
+          # The merge base binds a scoreboard to the diff it reviewed (retargeting the PR or
+          # rewriting the base changes the diff under the same head), so without one there is no
+          # decision to make.
+          if [ -z "$MERGE_BASE" ]; then
+            echo "::error::could not resolve the merge base of $BASE_SHA and $HEAD_SHA"; exit 1
+          fi
+          # The changed paths of exactly HEAD_SHA, machine-read with git (runner/pr_diff.py) rather
+          # than parsed from `gh pr diff`, which refuses PRs touching more than 300 files.
           python3 runner/pr_diff.py --repo TauCetiProject/TauCeti --pr "$PR" \
-            --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --out diff.txt
-          echo "diff lines: $(wc -l < diff.txt)"
+            --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --paths-out paths.z
+          echo "changed paths: $(tr -cd '\0' < paths.z | wc -c)"
 
       - name: Fetch this PR's review comments
         env: { GH_TOKEN: "${{ github.token }}" }
@@ -105,7 +110,7 @@ jobs:
           # to the rendered table for comments posted before that field existed.
           python3 runner/merge_from_scoreboard.py \
             --repo TauCetiProject/TauCeti --pr "$PR" --head-sha "$HEAD_SHA" --comments-file comments.json \
-            --diff-file diff.txt --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" \
+            --merge-base-sha "$MERGE_BASE" --paths-file paths.z --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" \
             --merge-decision-file "$PWD/merge.json"
 
       # ---- Auto-merge: mint the scoped merge token only now, and merge iff the decision is green.

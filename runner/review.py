@@ -20,7 +20,7 @@ from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL,
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
-from merge import changed_paths, decide_merge
+from merge import changed_paths, decide_merge, read_paths
 from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import build_reactivation_block, carry_forward, normalize_finding_path, patch_digest, pick_anchor, update_case_file
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
@@ -557,6 +557,14 @@ def run_rubric(ctx, rubric):
         ctx.note_provider_down(provider, None, 0)
 
 
+def merge_decision(a, states, candidates, all_green, head):
+    """decide_merge over the machine-read changed paths (--paths-file); none given fails closed."""
+    if not a.paths_file:
+        return False, "no --paths-file with the changed paths; refusing to merge"
+    return decide_merge(states, candidates, all_green, read_paths(a.paths_file), head,
+                        a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build, a.scope)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="TauCetiProject/TauCeti")
@@ -569,6 +577,9 @@ def main():
     ap.add_argument("--mathlib-path", default="")
     ap.add_argument("--lean-src", default="")
     ap.add_argument("--diff-file", required=True)
+    ap.add_argument("--paths-file", default="",
+                    help="the PR's changed paths, NUL-terminated (runner/pr_diff.py --paths-out); "
+                         "required for a merge decision, which never parses paths from the diff")
     ap.add_argument("--pr-desc-file", default="",
                     help="file with the PR title+body; included in the reviewer context as the "
                          "author's stated intent (untrusted, like the diff)")
@@ -834,10 +845,7 @@ def main():
     if a.mode == "merge":
         states = {r: state_of(state_map.get(r), head) for r in candidates}
         all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
-        paths = changed_paths(pathlib.Path(a.diff_file).read_text())
-        merge_ok, reason = decide_merge(
-            states, candidates, all_green, paths, head,
-            a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build, a.scope)
+        merge_ok, reason = merge_decision(a, states, candidates, all_green, head)
         if a.merge_decision_file:
             pathlib.Path(a.merge_decision_file).write_text(
                 json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
@@ -1107,9 +1115,7 @@ def main():
     if a.merge_decision_file:
         merge_ok, reason = False, "auto-merge not enabled"
         if a.auto_merge:
-            merge_ok, reason = decide_merge(
-                states, candidates, all_green, changed_paths(diff_full), head,
-                a.merge_path_prefix, a.merge_allow_file, a.bump_guard, a.ci_build, a.scope)
+            merge_ok, reason = merge_decision(a, states, candidates, all_green, head)
         pathlib.Path(a.merge_decision_file).write_text(
             json.dumps({"merge": merge_ok, "reason": reason, "head_sha": head}))
         print(f"[auto-merge] {merge_ok}: {reason}")

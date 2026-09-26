@@ -40,6 +40,18 @@ jobs:
           ref: ${{ inputs.rubrics_sha }}
           persist-credentials: false
 
+      # The diff helper comes from THIS workflow's own commit, not the pinned engine: every arm must
+      # see the diff the production paths compute, however old the engine under test is.
+      - name: Checkout the diff helper (this workflow's commit)
+        uses: actions/checkout@v4
+        with:
+          repository: TauCetiProject/TauCetiReview
+          ref: ${{ github.sha }}
+          path: .diff-helper
+          sparse-checkout: runner/pr_diff.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Checkout roadmap (public)
         uses: actions/checkout@v4
         with:
@@ -61,14 +73,9 @@ jobs:
           CI_BUILD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="build") | .state] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
-          # Same diff as review.yml (runner/pr_diff.py); an engine pinned from before that helper
-          # existed falls back to `gh pr diff`, the only method that engine knows.
-          if [ -f runner/pr_diff.py ]; then
-            python3 runner/pr_diff.py --repo TauCetiProject/TauCeti --pr "$PR" \
-              --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --out diff.txt
-          else
-            gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
-          fi
+          # Same diff as review.yml, from the helper checked out above.
+          python3 .diff-helper/runner/pr_diff.py --repo TauCetiProject/TauCeti --pr "$PR" \
+            --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --out diff.txt
           gh pr view "$PR" --repo TauCetiProject/TauCeti --json title,body \
             --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
 
