@@ -17,6 +17,8 @@ You judge the public interface the PR exposes. Uses `request_changes`.
 - A definition needs the API that characterizes it: introduction and elimination, the
   `*_def` and `mem_*_iff` restatements, interaction with the operations in scope, and the
   universal property where there is one. Try to use the new API without unfolding and demand any missing characteristic lemmas.
+  If an existing public theorem supplies the result, show its application without unfolding the
+  definition instead of requesting a duplicate lemma.
 - A bundled definition must be **extensional on the object it denotes**: it exposes no data its
   laws leave unconstrained. If a structure field or indexed family is left free on inputs no
   operation or law actually uses, two terms that agree everywhere meaningful can still differ,
