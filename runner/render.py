@@ -66,8 +66,8 @@ def rubric_url(prov, rubric=None):
 
 
 def diff_url(prov):
-    """The exact diff reviewed, as a three-dot compare (merge-base semantics — what `gh pr diff`
-    produces); both endpoint SHAs stay visible in the URL."""
+    """The exact diff reviewed, as a three-dot compare (merge-base semantics, as runner/pr_diff.py
+    builds it); both endpoint SHAs stay visible in the URL."""
     if not (prov and prov.get("base_sha") and prov.get("head_sha")):
         return ""
     return (f"https://github.com/{prov['repo']}/compare/"

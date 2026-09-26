@@ -69,7 +69,11 @@ jobs:
           SCOPE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="scope") | .state] | first // ""')
           echo "SCOPE=$SCOPE" >> "$GITHUB_ENV"
-          gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
+          # The three-dot diff of exactly HEAD_SHA, built with git (runner/pr_diff.py): `gh pr diff`
+          # refuses PRs touching more than 300 files, and every review/merge path must compute
+          # the diff the same way (its bytes feed the patch digest and the changed-path check).
+          python3 runner/pr_diff.py --repo TauCetiProject/TauCeti --pr "$PR" \
+            --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --out diff.txt
           echo "diff lines: $(wc -l < diff.txt)"
 
       - name: Fetch this PR's review comments

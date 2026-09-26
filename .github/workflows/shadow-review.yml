@@ -61,7 +61,14 @@ jobs:
           CI_BUILD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="build") | .state] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
-          gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
+          # Same diff as review.yml (runner/pr_diff.py); an engine pinned from before that helper
+          # existed falls back to `gh pr diff`, the only method that engine knows.
+          if [ -f runner/pr_diff.py ]; then
+            python3 runner/pr_diff.py --repo TauCetiProject/TauCeti --pr "$PR" \
+              --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --out diff.txt
+          else
+            gh pr diff "$PR" --repo TauCetiProject/TauCeti > diff.txt
+          fi
           gh pr view "$PR" --repo TauCetiProject/TauCeti --json title,body \
             --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
 

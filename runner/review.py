@@ -587,7 +587,7 @@ def main():
                          "the meta block. NOT necessarily the merge base; see --merge-base-sha")
     ap.add_argument("--merge-base-sha", default="",
                     help="merge base of base and head — the actual left side of the reviewed "
-                         "diff (`gh pr diff` is three-dot). Recorded as provenance")
+                         "three-dot diff (runner/pr_diff.py). Recorded as provenance")
     ap.add_argument("--rubrics-repo", default="TauCetiProject/TauCetiReview",
                     help="owner/name the pinned rubric links point into")
     ap.add_argument("--rubrics-sha", default="",

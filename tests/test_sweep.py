@@ -446,8 +446,6 @@ def test_main_hands_off_once_then_waits_until_push():
         return [{"event": "removed_from_merge_queue", "created_at": "2026-09-02T00:00:00Z"}] * 2
 
     def gh(args):
-        if args[:2] == ["pr", "diff"]:
-            return SimpleNamespace(returncode=0, stdout="diff", stderr="")
         mutations.append(args[:2])
         if args[:2] == ["pr", "comment"]:
             comments.append({"author": "tauceti-review-bot[bot]", "body": args[-1]})
@@ -462,7 +460,7 @@ def test_main_hands_off_once_then_waits_until_push():
     with patch.object(sweep, "REPO", "owner/repo"), patch.object(sweep, "DRY_RUN", False), \
             patch.object(sweep, "queue_entries", return_value=[]), \
             patch.object(sweep, "gh_json", gh_json), patch.object(sweep, "gh_jsonl", gh_jsonl), \
-            patch.object(sweep, "gh", gh), \
+            patch.object(sweep, "gh", gh), patch.object(sweep, "pr_diff", return_value=b"diff"), \
             patch.object(sweep, "decide_from_comments", return_value={"merge": True}) as gate:
         assert sweep.main() == 0
         assert mutations == [["pr", "comment"], ["pr", "edit"]]

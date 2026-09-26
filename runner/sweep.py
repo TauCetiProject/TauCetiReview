@@ -46,6 +46,7 @@ import subprocess
 import sys
 
 from merge_from_scoreboard import decide_from_comments
+from pr_diff import pr_diff
 from review import DEFAULT_RUBRICS
 
 REPO = os.environ.get("REPO", "")
@@ -597,7 +598,8 @@ def main():
             if handoff != "ready":
                 failures += handoff == "error"
                 continue
-            diff = gh(["pr", "diff", str(n), "--repo", REPO]).stdout or ""
+            # Same git-built diff as the review and merge-only paths (`gh pr diff` refuses >300 files).
+            diff = pr_diff(REPO, n, head).decode("utf-8", "replace")
             ci_build, bump_guard, scope = status_states(v.get("statusCheckRollup"))
             decision = decide_from_comments(comments, head, required, diff, ci_build, bump_guard,
                                             MERGE_PREFIX, scope=scope)

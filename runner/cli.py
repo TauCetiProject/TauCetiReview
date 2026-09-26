@@ -190,8 +190,9 @@ def pr_ref_oids(repo, pr):
 
 
 def merge_base_sha(repo, base, head):
-    """The merge base of base...head, from the compare API — the actual left side of the diff
-    `gh pr diff` produces (baseRefOid is the branch tip, which may have moved on). Best-effort."""
+    """The merge base of base...head, from the compare API — the actual left side of the reviewed
+    three-dot diff (baseRefOid is the branch tip, which may have moved on). Best-effort: runner/
+    pr_diff.py resolves it again itself when this comes back empty."""
     if not (base and head):
         return ""
     r = run(["gh", "api", f"/repos/{repo}/compare/{base}...{head}",
@@ -636,14 +637,18 @@ def main():
         providers = ",".join(avail)
         print(f"reviewers (after de-contention): {providers}", file=sys.stderr)
 
-    # Raw bytes end to end: the engine digests this file (casefile.patch_digest) to decide whether
-    # an approval carries to a new head, and a text-mode capture would fold CRLF into LF before
-    # the digest ever saw it. The workflow's shell redirection preserves bytes; match it here.
-    diff = subprocess.run(["gh", "pr", "diff", str(a.pr), "--repo", a.repo], capture_output=True)
+    # The diff of exactly `head`, built with git by the same helper the workflows run (`gh pr diff`
+    # refuses PRs touching more than 300 files), as raw bytes: the engine digests this file
+    # (casefile.patch_digest) to decide whether an approval carries to a new head, so every path
+    # must produce it identically. The helper ships beside this file, so a --rubrics-sha pin to an
+    # older engine still gets it.
+    merge_base = merge_base_sha(a.repo, base, head)
+    diff = subprocess.run(
+        [sys.executable, str(pathlib.Path(__file__).resolve().parent / "pr_diff.py"),
+         "--repo", a.repo, "--pr", str(a.pr), "--head-sha", head,
+         "--merge-base-sha", merge_base, "--out", str(work / "diff.txt")])
     if diff.returncode != 0:
-        sys.stderr.write(diff.stderr.decode("utf-8", "replace"))
-        die(f"command failed ({diff.returncode}): gh pr diff {a.pr}")
-    (work / "diff.txt").write_bytes(diff.stdout)
+        die(f"could not compute the diff of PR #{a.pr} ({diff.returncode})")
     # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
     # Passed to the engine so the prompt can assert the code compiles; best-effort (a fetch failure
     # just leaves it blank, and the engine then injects nothing).
@@ -738,7 +743,7 @@ def main():
            *mathlib_args,
            "--diff-file", str(work / "diff.txt"), "--pr-desc-file", str(work / "pr_desc.txt"),
            "--store", str(store), "--head-sha", head, "--base-sha", base,
-           "--merge-base-sha", merge_base_sha(a.repo, base, head),
+           "--merge-base-sha", merge_base,
            "--rubrics-sha", rub_sha, *(["--rubrics-sha-approx"] if rub_approx else []),
            *(["--archive-dir", outbox] if outbox else []),
            *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
