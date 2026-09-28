@@ -76,7 +76,7 @@ Add `--post` to publish. Useful flags:
 | `--reviewer claude\|codex\|kiro\|sonnet\|deepseek\|minimax\|grok` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). Direct `claude` defaults to exact `claude-opus-5`; override with `--claude-model`. `kiro` is explicit-only and always uses the exact `--kiro-model`. `sonnet` is the `claude` CLI pinned to Sonnet. `deepseek`/`minimax`/`grok` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. All but `claude`/`codex` are explicit-only (never auto-drawn) |
 | `--claude-model MODEL` | exact direct-Claude model ID, also configurable through `TAUCETI_CLAUDE_MODEL` for managed workers. The flag takes precedence. Unset: use the selected engine's default. The model must have an entry in `runner/prices.json`; its exact ID is recorded in review provenance |
 | `--kiro-model MODEL` | exact Kiro model ID; defaults to `gpt-5.6-sol`. Use `claude-opus-5` for Kiro's current Opus |
-| `--mode commit` | review only rubrics not already passing in the local store (default `manual` = all) |
+| `--mode manual` | re-run every rubric. The default, `commit`, re-runs only rubrics that are blocking or not yet run, shows earlier approvals as ♻️ (stale), and re-runs those once nothing else blocks. Approvals from the PR's newest scoreboard, whoever posted it, count as ♻️ for rubrics your local store has no verdict for |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |
 | `--auth api` | use the matching `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `KIRO_API_KEY` instead of a browser login |
@@ -111,7 +111,8 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   subscription runs are recorded at $0 rather than assigned a fictional API price.
 - **Who it posts as.** With `--post`, comments are created under your `gh` identity, not the review
   bot's, and as a fresh scoreboard comment (a local run keeps no state shared with CI, so it won't
-  edit the bot's comment in place). The authenticated login is also recorded as `submitted_by` in
+  edit the bot's comment in place). It does read the PR's newest scoreboard, to show the approvals
+  there as ♻️ rather than re-run them while other rubrics are still blocking. The authenticated login is also recorded as `submitted_by` in
   the scoreboard's hidden provenance so cooperating workers can give that reviewer first refusal on
   the next head.
 - **Subscription terms.** Driving a personal Claude/ChatGPT/Kiro subscription as an automated reviewer

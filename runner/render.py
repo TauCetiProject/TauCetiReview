@@ -172,6 +172,11 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
         state = word[s]
         if s == "green" and cf.get("carried_from_sha"):
             state += f" (carried from `{cf['carried_from_sha'][:7]}`, patch unchanged)"
+        elif s == "stale" and cf.get("imported_from"):
+            src = cf["imported_from"]
+            by = f"@{src['by']}'s" if src.get("by") else "another"
+            at = f" of `{src['head_sha'][:7]}`" if src.get("head_sha") else ""
+            state += f" (approved in {by} review{at})"
         lines.append(f"| {icon[s]} | {name} | {state} | `{judge}` | {summ} |")
     note = "♻️ = approved on an earlier commit, re-run before merge."
     lines += ["", f"{note}{(' ' + budget_note) if budget_note else ''}"]

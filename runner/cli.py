@@ -257,6 +257,37 @@ def fetch_thread_replies(repo, pr):
     return replies
 
 
+SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
+META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
+
+
+def latest_scoreboard(comments):
+    """The newest completed scoreboard on the PR, at any head and by any poster, as
+    {comment_id, by, head_sha, states}; None if there is none. In-progress (init) boards carry no
+    verdicts and are skipped. Duplicates merge_from_scoreboard's parsing: this CLI never imports the
+    engine's modules (see PROVIDER_DOWN_EXIT above)."""
+    best = None
+    for index, c in enumerate(comments):
+        body = c.get("body") or ""
+        if SCOREBOARD_MARKER not in body:
+            continue
+        metas = META_RE.findall(body)
+        try:
+            meta = json.loads(metas[-1].strip()) if metas else None
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(meta, dict) or meta.get("mode") == "init":
+            continue
+        if (not isinstance(meta.get("states"), dict) or not isinstance(meta.get("head_sha"), str)
+                or not re.fullmatch(r"[0-9a-f]{40}", meta["head_sha"])):
+            continue
+        key = (c.get("updated_at") or c.get("created_at") or meta.get("ts") or "", index)
+        if best is None or key > best[0]:
+            best = (key, {"comment_id": c.get("id"), "by": (c.get("user") or {}).get("login"),
+                          "head_sha": meta["head_sha"], "states": meta["states"]})
+    return best[1] if best else None
+
+
 def issue_comments(repo, pr):
     """All issue comments on a PR. Returns None on a fetch FAILURE (distinct from an empty list), so the
     caller can tell "no markers" from "couldn't look" and not mistake an API blip for a clear field."""
@@ -729,6 +760,13 @@ def main():
     replies = fetch_thread_replies(a.repo, a.pr)
     replies_path = work / "replies.json"
     replies_path.write_text(json.dumps(replies))
+    # Another reviewer's newest scoreboard, whose approvals the engine seeds as stale (♻️) where this
+    # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
+    prior_board = None
+    if a.mode == "commit" and not (a.fresh or a.shadow):
+        prior_board = latest_scoreboard(issue_comments(a.repo, a.pr) or [])
+    prior_board_path = work / "prior_scoreboard.json"
+    prior_board_path.write_text(json.dumps(prior_board or {}))
     if replies:
         print("author replies on threads: "
               + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
@@ -758,7 +796,7 @@ def main():
            "--max-rounds-per-day", str(a.max_rounds_per_day),
            "--scoreboard-file", str(work / "scoreboard.md"),
            "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
-           "--replies-json", str(replies_path)]
+           "--replies-json", str(replies_path), "--prior-scoreboard-json", str(prior_board_path)]
     if a.claude_model:
         cmd += ["--claude-model", a.claude_model]
     if a.rubrics:

@@ -2,6 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 import hashlib
+import re
 
 # Bumped whenever patch_digest's normalisation changes, so digests recorded by an older engine can
 # never match a digest computed by a newer one.
@@ -70,6 +71,38 @@ def carry_forward(state_map, head_sha, digest, rubrics_version=None):
 
 
 
+def seed_stale_approvals(state_map, board, candidates):
+    """Seed an approval from another reviewer's scoreboard (`board`: the newest completed one on the
+    PR, as {comment_id, by, head_sha, states}) into every candidate rubric this store has no verdict
+    for, so a reviewer taking over a PR shows it as ♻️ and defers re-running it while other rubrics
+    are blocking, instead of re-running every rubric from scratch. A seeded approval is always stale
+    (`approved_sha` is None, never any head), so it is re-run before this reviewer can post a green
+    verdict: trusting the board only postpones work, and a forged board can do no more than that.
+    It has no `approved_digest` (any left on a verdict-less case file is dropped), so carry_forward
+    never promotes it to green either. The board is untrusted input: only well-formed origin fields
+    are kept. Returns the rubrics seeded, sorted."""
+    states = (board or {}).get("states")
+    if not isinstance(states, dict):
+        return []
+    checks = {"comment_id": lambda v: isinstance(v, int),
+              "by": lambda v: isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9-]+(\[bot\])?", v),
+              "head_sha": lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{40}", v)}
+    origin = {k: board[k] for k, ok in checks.items() if ok(board.get(k))}
+    seeded = []
+    for rubric in candidates:
+        cf = state_map.get(rubric) or {}
+        if cf.get("verdict") or states.get(rubric) not in ("green", "stale"):
+            continue
+        cf = state_map.setdefault(rubric, {})
+        for stale_field in ("approved_digest", "approved_rubrics_version", "carried_from_sha"):
+            cf.pop(stale_field, None)
+        cf.update(rubric=rubric, verdict="approve", approved_sha=None, imported_from=origin)
+        cf.setdefault("thread", None)
+        cf.setdefault("author_replies", [])
+        seeded.append(rubric)
+    return sorted(seeded)
+
+
 def update_case_file(state_map, rubric, res, head_sha, digest=None, rubrics_version=None):
     """Fold a finished rubric run into its persistent case file (= the scoreboard/staleness
     state and the compact context a later re-run audits instead of re-deriving)."""
@@ -86,8 +119,10 @@ def update_case_file(state_map, rubric, res, head_sha, digest=None, rubrics_vers
               run_id=res.get("run_id"), started_at=res.get("started_at"),
               duration_s=res.get("duration_s"), usage=res.get("usage"),
               cost_usd=res.get("cost_usd"), cost_estimated=res.get("cost_estimated"))
-    # A fresh run supersedes any verdict carried here from an earlier commit.
+    # A fresh run supersedes any verdict carried here from an earlier commit or seeded from another
+    # reviewer's scoreboard.
     cf.pop("carried_from_sha", None)
+    cf.pop("imported_from", None)
     if verdict == "approve":
         cf["approved_sha"] = head_sha
         cf["approved_digest"] = digest

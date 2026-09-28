@@ -22,7 +22,8 @@ from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge, read_paths
 from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
-from casefile import build_reactivation_block, carry_forward, normalize_finding_path, patch_digest, pick_anchor, update_case_file
+from casefile import (build_reactivation_block, carry_forward, normalize_finding_path, patch_digest,
+                      pick_anchor, seed_stale_approvals, update_case_file)
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
 
 
@@ -703,6 +704,10 @@ def main():
                          "merge.json — dispatches no reviewers, spends nothing, posts nothing")
     ap.add_argument("--reply-rubric", default="", help="reply mode: the single rubric to re-run")
     ap.add_argument("--reply-file", default="", help="reply mode: file with the author's reply")
+    ap.add_argument("--prior-scoreboard-json", default="",
+                    help="JSON {comment_id, by, head_sha, states} of the PR's newest completed "
+                         "scoreboard; commit/reply mode seeds its approvals as stale (♻️) into "
+                         "rubrics this store has no verdict for")
     ap.add_argument("--replies-json", default="",
                     help="JSON map {rubric: [{by, body}, ...]} of author replies on the rubric "
                          "threads (e.g. gathered from GitHub by the CLI). Folded into each rubric's "
@@ -807,6 +812,19 @@ def main():
         origin = state_map[carried[0]].get("carried_from_sha") or ""
         print(f"[carry] {', '.join(carried)}: approvals carried to {head[:9]} — patch unchanged "
               f"since {origin[:9]}, nothing to re-review.")
+
+    # A reviewer taking over a PR another reviewer has been reviewing has no case files for it. Seed
+    # that reviewer's approvals as stale, so this round re-runs only the blocking rubrics and sweeps
+    # the seeded ones once the PR is otherwise clean, exactly as if it had made them itself.
+    if (a.mode in ("commit", "reply") and not a.shadow and a.prior_scoreboard_json
+            and pathlib.Path(a.prior_scoreboard_json).exists()):
+        board = json.loads(pathlib.Path(a.prior_scoreboard_json).read_text())
+        seeded = seed_stale_approvals(state_map, board, candidates)
+        if seeded:
+            prov["seeded_rubrics"] = ",".join(seeded)
+            src = state_map[seeded[0]]["imported_from"]
+            print(f"[seed] {', '.join(seeded)}: approved in {src.get('by') or 'another'}'s review of "
+                  f"{(src.get('head_sha') or '')[:9]}; shown as stale, re-run before merge.")
 
     # Fold author replies gathered from the PR's rubric threads into each rubric's case file, so a
     # re-run sees the author's contest (untrusted argument) and re-adjudicates against it. Replaces
