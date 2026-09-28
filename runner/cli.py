@@ -278,7 +278,8 @@ def latest_scoreboard(comments):
             continue
         if not isinstance(meta, dict) or meta.get("mode") == "init":
             continue
-        if not isinstance(meta.get("states"), dict) or not meta.get("head_sha"):
+        if (not isinstance(meta.get("states"), dict) or not isinstance(meta.get("head_sha"), str)
+                or not re.fullmatch(r"[0-9a-f]{40}", meta["head_sha"])):
             continue
         key = (c.get("updated_at") or c.get("created_at") or meta.get("ts") or "", index)
         if best is None or key > best[0]:

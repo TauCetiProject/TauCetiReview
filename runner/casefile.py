@@ -2,6 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 import hashlib
+import re
 
 # Bumped whenever patch_digest's normalisation changes, so digests recorded by an older engine can
 # never match a digest computed by a newer one.
@@ -77,18 +78,24 @@ def seed_stale_approvals(state_map, board, candidates):
     are blocking, instead of re-running every rubric from scratch. A seeded approval is always stale
     (`approved_sha` is None, never any head), so it is re-run before this reviewer can post a green
     verdict: trusting the board only postpones work, and a forged board can do no more than that.
-    It has no `approved_digest`, so carry_forward never promotes it to green either. Returns the
-    rubrics seeded, sorted."""
+    It has no `approved_digest` (any left on a verdict-less case file is dropped), so carry_forward
+    never promotes it to green either. The board is untrusted input: only well-formed origin fields
+    are kept. Returns the rubrics seeded, sorted."""
     states = (board or {}).get("states")
     if not isinstance(states, dict):
         return []
-    origin = {k: board.get(k) for k in ("comment_id", "by", "head_sha") if board.get(k)}
+    checks = {"comment_id": lambda v: isinstance(v, int),
+              "by": lambda v: isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9-]+(\[bot\])?", v),
+              "head_sha": lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{40}", v)}
+    origin = {k: board[k] for k, ok in checks.items() if ok(board.get(k))}
     seeded = []
     for rubric in candidates:
         cf = state_map.get(rubric) or {}
         if cf.get("verdict") or states.get(rubric) not in ("green", "stale"):
             continue
         cf = state_map.setdefault(rubric, {})
+        for stale_field in ("approved_digest", "approved_rubrics_version", "carried_from_sha"):
+            cf.pop(stale_field, None)
         cf.update(rubric=rubric, verdict="approve", approved_sha=None, imported_from=origin)
         cf.setdefault("thread", None)
         cf.setdefault("author_replies", [])

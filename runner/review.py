@@ -822,8 +822,9 @@ def main():
         seeded = seed_stale_approvals(state_map, board, candidates)
         if seeded:
             prov["seeded_rubrics"] = ",".join(seeded)
-            print(f"[seed] {', '.join(seeded)}: approved in {board.get('by') or 'another'}'s review of "
-                  f"{(board.get('head_sha') or '')[:9]}; shown as stale, re-run before merge.")
+            src = state_map[seeded[0]]["imported_from"]
+            print(f"[seed] {', '.join(seeded)}: approved in {src.get('by') or 'another'}'s review of "
+                  f"{(src.get('head_sha') or '')[:9]}; shown as stale, re-run before merge.")
 
     # Fold author replies gathered from the PR's rubric threads into each rubric's case file, so a
     # re-run sees the author's contest (untrusted argument) and re-adjudicates against it. Replaces

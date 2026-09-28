@@ -37,14 +37,16 @@ def board_comment(cid, login, head, states, ts, mode="commit"):
 
 
 print("latest_scoreboard")
+H1, H2, H3 = "1" * 40, "2" * 40, "3" * 40
 comments = [
-    board_comment(1, "alice", "h1", {"reuse": "green"}, "2026-09-01T00:00:00Z"),
-    board_comment(2, "bob", "h2", {"reuse": "stale"}, "2026-09-02T00:00:00Z"),
-    board_comment(3, "carol", "h3", {}, "2026-09-03T00:00:00Z", mode="init"),
+    board_comment(1, "alice", H1, {"reuse": "green"}, "2026-09-01T00:00:00Z"),
+    board_comment(2, "bob", H2, {"reuse": "stale"}, "2026-09-02T00:00:00Z"),
+    board_comment(3, "carol", H3, {}, "2026-09-03T00:00:00Z", mode="init"),
+    board_comment(5, "eve", 1, {"reuse": "green"}, "2026-09-05T00:00:00Z"),
     {"id": 4, "user": {"login": "dave"}, "updated_at": "2026-09-04T00:00:00Z", "body": "lgtm"},
 ]
 check("newest completed board wins, init and plain comments skipped", cli.latest_scoreboard(comments),
-      {"comment_id": 2, "by": "bob", "head_sha": "h2", "states": {"reuse": "stale"}})
+      {"comment_id": 2, "by": "bob", "head_sha": H2, "states": {"reuse": "stale"}})
 check("no board", cli.latest_scoreboard(comments[3:]), None)
 
 print("seed_stale_approvals")
@@ -62,6 +64,14 @@ check("blocker on the board is not seeded", "c" in sm, False)
 check("carry_forward never promotes a seeded approval",
       casefile.carry_forward(sm, HEAD, casefile.patch_digest("diff --git a/x b/x\n+x\n")), [])
 check("idempotent", casefile.seed_stale_approvals(sm, board, ["a", "b"]), [])
+leftover = {"a": {"approved_digest": "D", "approved_rubrics_version": "V", "carried_from_sha": "x"}}
+casefile.seed_stale_approvals(leftover, board, ["a"])
+check("leftover carry metadata cannot promote a seeded approval",
+      casefile.carry_forward(leftover, HEAD, "D", "V"), [])
+forged = {}
+casefile.seed_stale_approvals(forged, {"by": "x|y", "head_sha": 1, "comment_id": "7",
+                                       "states": {"a": "green"}}, ["a"])
+check("malformed origin fields are dropped", forged["a"]["imported_from"], {})
 check("board without states seeds nothing", casefile.seed_stale_approvals({}, {"by": "x"}, ["a"]), [])
 row = [ln for ln in render.render_scoreboard(["a"], sm, "new", "x", "").splitlines() if "| a |" in ln]
 check("scoreboard names the origin", "stale (re-run pending) (approved in @alice's review of `aaaaaaa`)"
