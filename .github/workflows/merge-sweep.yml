@@ -18,9 +18,9 @@ on:
         type: boolean
         default: false
       review_ref:
-        description: "Exact TauCetiReview engine commit to run (defaults to main)"
+        description: "TauCetiReview ref to check out for the runner. Omit it: the default is this workflow file's own commit (job.workflow_sha). Set it only to test a different policy commit."
         type: string
-        default: main
+        default: ""
     secrets:
       APP_ID: { required: true }
       APP_PRIVATE_KEY: { required: true }
@@ -36,11 +36,21 @@ jobs:
   sweep:
     runs-on: ubuntu-latest
     steps:
+      # An empty ref would make checkout fall back to TauCetiReview's default branch, silently
+      # running unpinned code; refuse instead.
+      - name: Require a pinned review ref
+        env: { REVIEW_REF: "${{ inputs.review_ref || job.workflow_sha }}" }
+        run: |
+          if [ -z "$REVIEW_REF" ]; then
+            echo "::error::neither review_ref nor job.workflow_sha is set"; exit 1
+          fi
+
       - name: Checkout review repo (runner)
         uses: actions/checkout@v4
         with:
           repository: TauCetiProject/TauCetiReview
-          ref: ${{ inputs.review_ref }}
+          # This workflow file's own commit (the SHA the caller pins in `uses:`); review_ref overrides it.
+          ref: ${{ inputs.review_ref || job.workflow_sha }}
           persist-credentials: false
 
       # contents:write to enqueue (as a queue bypass actor) and update-branch; pull-requests:write to

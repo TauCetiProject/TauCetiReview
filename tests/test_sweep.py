@@ -352,13 +352,14 @@ def test_workflows_pass_status_contexts():
         query = f'.__typename=="StatusContext" and .context=="{context}"'
         assert query in merge_only
         assert query in review
-    assert 'ref: ${{ inputs.review_ref }}' in merge_only
+    assert 'ref: ${{ inputs.review_ref || job.workflow_sha }}' in merge_only
+    assert 'ref: ${{ inputs.review_ref || job.workflow_sha }}' in review
     assert 'dequeuePullRequest' in merge_only
     assert 'isInMergeQueue' in merge_only
     assert 'jq -r .review_safe merge.json' in merge_only
     assert 'already in the queue' in merge_only
     merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
-    assert 'ref: ${{ inputs.review_ref }}' in merge_sweep
+    assert 'ref: ${{ inputs.review_ref || job.workflow_sha }}' in merge_sweep
     assert '"headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"' in sweep_source
     # merge-only re-checks the merge base as the last step before the enqueue mutation, and again
     # straight after it (test_merge_only_merge_base_check runs the check itself).

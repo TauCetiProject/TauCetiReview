@@ -6,9 +6,11 @@ permission; other tokens list their required permissions explicitly. Use the
 pinned create-github-app-token v2.2.1: v1 silently ignores permission inputs and
 inherits every App permission.
 
-Both reusable-workflow references and `review_ref` in callers must pin the same
-reviewed TauCetiReview commit. The sweep runs trusted pinned code and never
-executes a PR. Permission changes do not bypass build or review gates.
+Callers pin the reusable-workflow reference to a reviewed TauCetiReview commit.
+The workflow checks out its runner at that same commit (`job.workflow_sha`), so
+callers should not pass `review_ref`; it exists only to test a different policy
+commit. The sweep runs trusted pinned code and never executes a PR. Permission
+changes do not bypass build or review gates.
 
 ## Fork branches
 

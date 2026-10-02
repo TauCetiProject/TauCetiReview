@@ -15,7 +15,11 @@ on:
   workflow_call:
     inputs:
       pr: { required: true, type: string }
-      review_ref: { required: false, type: string, default: main }
+      review_ref:
+        required: false
+        type: string
+        default: ""
+        description: "TauCetiReview ref to check out for the runner. Omit it: the default is this workflow file's own commit (job.workflow_sha). Set it only to test a different policy commit."
       merge_backend: { required: false, type: string, default: queue }
     secrets:
       # Only the App credentials the merge needs — the caller passes these explicitly rather than
@@ -36,13 +40,23 @@ jobs:
     env:
       PR: ${{ inputs.pr }}
     steps:
+      # An empty ref would make checkout fall back to TauCetiReview's default branch, silently
+      # running unpinned code; refuse instead.
+      - name: Require a pinned review ref
+        env: { REVIEW_REF: "${{ inputs.review_ref || job.workflow_sha }}" }
+        run: |
+          if [ -z "$REVIEW_REF" ]; then
+            echo "::error::neither review_ref nor job.workflow_sha is set"; exit 1
+          fi
+
       # No provider keys, no reviewer step — nothing here runs PR-influenced code, so the
       # security posture is simpler than review.yml: only trusted GitHub-derived inputs.
       - name: Checkout review repo (runner + rubrics)
         uses: actions/checkout@v4
         with:
           repository: TauCetiProject/TauCetiReview
-          ref: ${{ inputs.review_ref }}
+          # This workflow file's own commit (the SHA the caller pins in `uses:`); review_ref overrides it.
+          ref: ${{ inputs.review_ref || job.workflow_sha }}
           persist-credentials: false
 
       - name: Resolve PR head and fetch diff
