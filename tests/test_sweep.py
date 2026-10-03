@@ -340,6 +340,20 @@ def test_review_merge_decision_reads_machine_paths_and_fails_closed_without():
         a.paths_file = ""
         assert review.changed_file_paths(a, quoted) == {"TauCeti/Foo.lean"}   # the old parser
 
+def test_workflows_pin_the_policy_to_their_own_commit():
+    root = pathlib.Path(__file__).resolve().parent.parent
+    expr = "${{ inputs.review_ref || job.workflow_sha }}"
+    for name in ("merge-only.yml", "merge-sweep.yml", "review.yml"):
+        text = (root / ".github/workflows" / name).read_text()
+        # No caller-facing default may point anywhere but the workflow's own commit.
+        assert "default: main" not in text, name
+        assert "ref: ${{ inputs.review_ref }}" not in text, name
+        # The guard refuses an empty ref before anything is checked out or run.
+        guard = text.index("Require a pinned review ref")
+        checkout = text.index(f"ref: {expr}")
+        assert guard < checkout, name
+        assert text.index("actions/checkout") > guard, name
+
 def test_workflows_pass_status_contexts():
     root = pathlib.Path(__file__).resolve().parent.parent
     merge_only = (root / ".github/workflows/merge-only.yml").read_text()
