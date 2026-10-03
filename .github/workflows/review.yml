@@ -5,7 +5,11 @@ on:
     inputs:
       pr: { required: true, type: string }
       trigger: { required: false, type: string, default: "manual" }
-      review_ref: { required: false, type: string, default: main }
+      review_ref:
+        required: false
+        type: string
+        default: ""
+        description: "TauCetiReview ref to check out for the runner and rubrics. Omit it: the default is this workflow file's own commit (job.workflow_sha). Set it only to test a different policy commit."
       enable_automerge: { required: false, type: boolean, default: false }
       # Reply flow (Stage 2): re-run a single rubric in response to an author reply.
       mode: { required: false, type: string, default: "" }
@@ -14,7 +18,11 @@ on:
   workflow_dispatch:
     inputs:
       pr: { required: true, type: string }
-      review_ref: { required: false, type: string, default: main }
+      review_ref:
+        required: false
+        type: string
+        default: ""
+        description: "TauCetiReview ref to check out for the runner and rubrics. Omit it: the default is this workflow file's own commit (job.workflow_sha). Set it only to test a different policy commit."
       enable_automerge: { required: false, type: boolean, default: false }
 
 permissions:
@@ -30,13 +38,23 @@ jobs:
     env:
       PR: ${{ inputs.pr }}
     steps:
+      # An empty ref would make checkout fall back to TauCetiReview's default branch, silently
+      # running unpinned code; refuse instead.
+      - name: Require a pinned review ref
+        env: { REVIEW_REF: "${{ inputs.review_ref || job.workflow_sha }}" }
+        run: |
+          if [ -z "$REVIEW_REF" ]; then
+            echo "::error::neither review_ref nor job.workflow_sha is set"; exit 1
+          fi
+
       # ---- Untrusted-input phase: NO tokens, NO provider keys reachable by PR code ----
       - name: Checkout review repo (runner + rubrics)
         uses: actions/checkout@v4
         with:
           repository: TauCetiProject/TauCetiReview
-          # main in production (workflow_call); a dispatch can point at a branch to test changes.
-          ref: ${{ inputs.review_ref || 'main' }}
+          # The commit that defines this workflow (the SHA a caller pins in `uses:`, or the dispatched
+          # ref), so the runner and rubrics always match the workflow file. review_ref overrides it.
+          ref: ${{ inputs.review_ref || job.workflow_sha }}
           persist-credentials: false
 
       - name: Checkout roadmap (public)

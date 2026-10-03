@@ -340,6 +340,20 @@ def test_review_merge_decision_reads_machine_paths_and_fails_closed_without():
         a.paths_file = ""
         assert review.changed_file_paths(a, quoted) == {"TauCeti/Foo.lean"}   # the old parser
 
+def test_workflows_pin_the_policy_to_their_own_commit():
+    root = pathlib.Path(__file__).resolve().parent.parent
+    expr = "${{ inputs.review_ref || job.workflow_sha }}"
+    for name in ("merge-only.yml", "merge-sweep.yml", "review.yml"):
+        text = (root / ".github/workflows" / name).read_text()
+        # No caller-facing default may point anywhere but the workflow's own commit.
+        assert "default: main" not in text, name
+        assert "ref: ${{ inputs.review_ref }}" not in text, name
+        # The guard refuses an empty ref before anything is checked out or run.
+        guard = text.index("Require a pinned review ref")
+        checkout = text.index(f"ref: {expr}")
+        assert guard < checkout, name
+        assert text.index("actions/checkout") > guard, name
+
 def test_workflows_pass_status_contexts():
     root = pathlib.Path(__file__).resolve().parent.parent
     merge_only = (root / ".github/workflows/merge-only.yml").read_text()
@@ -352,13 +366,14 @@ def test_workflows_pass_status_contexts():
         query = f'.__typename=="StatusContext" and .context=="{context}"'
         assert query in merge_only
         assert query in review
-    assert 'ref: ${{ inputs.review_ref }}' in merge_only
+    assert 'ref: ${{ inputs.review_ref || job.workflow_sha }}' in merge_only
+    assert 'ref: ${{ inputs.review_ref || job.workflow_sha }}' in review
     assert 'dequeuePullRequest' in merge_only
     assert 'isInMergeQueue' in merge_only
     assert 'jq -r .review_safe merge.json' in merge_only
     assert 'already in the queue' in merge_only
     merge_sweep = (root / ".github/workflows/merge-sweep.yml").read_text()
-    assert 'ref: ${{ inputs.review_ref }}' in merge_sweep
+    assert 'ref: ${{ inputs.review_ref || job.workflow_sha }}' in merge_sweep
     assert '"headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"' in sweep_source
     # merge-only re-checks the merge base as the last step before the enqueue mutation, and again
     # straight after it (test_merge_only_merge_base_check runs the check itself).
