@@ -56,7 +56,7 @@ from pathlib import Path
 # Read the dated price table through the engine's pricing module — one source of truth for the
 # prices.json path and its load, so the analytics price runs from exactly the file the engine bills
 # from. (costs runs as `runner.costs` / `python3 -m runner.costs`, so this package import resolves.)
-from runner.pricing import load_price_windows as load_history
+from runner.pricing import load_price_windows as load_history, usage_totals
 
 CACHE = Path.home() / ".cache" / "tauceti-review"
 DEFAULT_DB = CACHE / "review-costs.db"
@@ -165,11 +165,10 @@ def _norm_ts(ts: str | None) -> str:
     return ts.replace("T", " ")[:19]
 
 
-def _usage_tokens(u: dict) -> tuple[int, int, int, int]:
-    return (u.get("input_tokens", 0) or 0,
-            u.get("cached_input_tokens", 0) or u.get("cache_read_input_tokens", 0) or 0,
-            u.get("output_tokens", 0) or 0,
-            u.get("reasoning_output_tokens", 0) or 0)
+def _usage_tokens(u: dict, provider: str | None) -> tuple[int, int, int, int]:
+    totals = usage_totals(provider, u)
+    return (totals["input_tokens"], totals["cached_input_tokens"],
+            totals["output_tokens"], totals["reasoning_output_tokens"])
 
 
 def _add_run(con, agg, history, today, unpriced, *, run_key, pr, rd, rubric, provider, model,
@@ -251,7 +250,7 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
             pr, rd = int(f.parent.parent.name), int(f.parent.name)
         except ValueError:
             continue
-        it, ct, ot, rt = _usage_tokens(d.get("usage") or {})
+        it, ct, ot, rt = _usage_tokens(d.get("usage") or {}, d.get("provider"))
         raw_ts = ts_map.get((pr, rd))
         ts = (_norm_ts(raw_ts) if raw_ts
               else datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
@@ -305,7 +304,7 @@ def ingest_data(con: sqlite3.Connection, data_dir: Path, include_shadows: bool =
             pr, rd = int(d["pr"]), int(d.get("round") or 0)
         except (KeyError, ValueError, TypeError):
             continue
-        it, ct, ot, rt = _usage_tokens(d.get("usage") or {})
+        it, ct, ot, rt = _usage_tokens(d.get("usage") or {}, d.get("provider"))
         _add_run(con, agg, history, today, unpriced, run_key=run_key, pr=pr, rd=rd,
                  rubric=d.get("rubric"), provider=d.get("provider"), model=d.get("model"),
                  it=it, ct=ct, ot=ot, rt=rt, recorded=d.get("cost_usd", 0) or 0,
@@ -565,7 +564,7 @@ def report(con, window="day", csv_path=None):
         ti = sum(d["it"] or 0 for d in s["rows"]); tc = sum(d["ct"] or 0 for d in s["rows"])
         to = sum(d["ot"] or 0 for d in s["rows"]); tr = sum(d["rt"] or 0 for d in s["rows"])
         est = con.execute("SELECT AVG(est_frac) FROM review_rounds WHERE est_frac IS NOT NULL").fetchone()[0]
-        print(f"\nTOKENS   input {fmt_tok(ti)} (cached {fmt_tok(tc)}, "
+        print(f"\nTOKENS   input {fmt_tok(ti)} (cache read {fmt_tok(tc)}, "
               f"{100*tc/ti:.0f}%) · output {fmt_tok(to)} · reasoning {fmt_tok(tr)}")
         print(f"DOLLARS  {fmt_money(s['total'])} imputed — each run priced as of its own date "
               f"(faithful; {100*(est or 0):.0f}% of rounds derived from tokens, tokens measured)")

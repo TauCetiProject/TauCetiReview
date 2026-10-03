@@ -103,13 +103,38 @@ def require_priced(models):
 
 
 
+def usage_totals(provider, usage):
+    """Normalize provider usage to total input and its disjoint components.
+
+    Claude and pi report fresh input separately from cache reads (and Claude cache writes).
+    Codex reports total input with cached input as a subset. Keep the raw per-run usage intact;
+    this view is for display and aggregate token accounting, not provider billing.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+
+    def count(key):
+        value = usage.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    inp = count("input_tokens")
+    cached = count("cache_read_input_tokens") if "cache_read_input_tokens" in usage else count("cached_input_tokens")
+    written = count("cache_creation_input_tokens") if "cache_creation_input_tokens" in usage else count("cache_write_input_tokens")
+    separate = (provider in {"claude", "sonnet"} or provider in OPENROUTER_MODELS
+                or "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage)
+    total = inp + cached + written if separate else inp
+    fresh = inp if separate else max(0, inp - cached - written)
+    return {"input_tokens": total, "fresh_input_tokens": fresh,
+            "cached_input_tokens": cached, "cache_creation_input_tokens": written,
+            "output_tokens": count("output_tokens"),
+            "reasoning_output_tokens": count("reasoning_output_tokens")}
+
+
 def sum_usage(run_results):
-    """Token totals across a round's runs — stored alongside the round's `cost` in the ledger so
-    the dollar figure is reconstructable from the immutable fact (tokens) at any price table."""
-    t = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0}
+    """Comparable token totals across a round's runs, stored alongside its cost in the ledger."""
+    t = {k: 0 for k in usage_totals(None, {})}
     for r in run_results:
-        for k in t:
-            t[k] += (r.get("usage") or {}).get(k, 0) or 0
+        for k, value in usage_totals(r.get("provider"), r.get("usage")).items():
+            t[k] += value
     return t
 
 
