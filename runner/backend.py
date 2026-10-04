@@ -15,10 +15,16 @@ ACTIVE = {"waiting", "running"}
 
 
 def gh_json(args):
-    r = subprocess.run(["gh", *args], text=True, capture_output=True, timeout=30)
+    try:
+        r = subprocess.run(["gh", *args], text=True, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("GitHub observation/mutation timed out") from e
     if r.returncode:
         raise RuntimeError(f"GitHub observation/mutation failed: {r.stderr.strip()}")
-    data = json.loads(r.stdout or "null")
+    try:
+        data = json.loads(r.stdout or "null")
+    except json.JSONDecodeError as e:
+        raise RuntimeError("GitHub returned invalid JSON") from e
     if isinstance(data, dict) and data.get("errors"):
         raise RuntimeError("GitHub returned GraphQL errors")
     return data
@@ -167,10 +173,12 @@ def bors_command(repo, pr, head, approve, single=False, dry_run=False, merge_bas
         if approved is not True:
             pages = gh_json(["api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr}/comments?per_page=100"])
             commands = [c.get("body") for page in pages for c in page
-                        if (c.get("body") or "").startswith("bors r")]
+                        if ((c.get("performed_via_github_app") or {}).get("id") == 3947238
+                            or (c.get("user") or {}).get("login") == "tauceti-review-bot[bot]")
+                        and (c.get("body") or "").startswith("bors r")]
             if commands and commands[-1] == f"bors r- sha={head}":
                 return
-            if not commands and approved is False:
+            if not commands:
                 return
     body = f"bors {'r+ single' if single else 'r+'} sha={head}" if approve else f"bors r- sha={head}"
     if dry_run:

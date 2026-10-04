@@ -1,5 +1,6 @@
 import io
 import pathlib
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -9,6 +10,14 @@ import backend
 
 
 class BackendTests(unittest.TestCase):
+    def test_observation_timeout_and_invalid_json_use_the_failure_path(self):
+        with patch.object(backend.subprocess, "run", side_effect=subprocess.TimeoutExpired("gh", 30)):
+            with self.assertRaises(RuntimeError):
+                backend.github_entries("o/r")
+        with patch.object(backend.subprocess, "run", return_value=subprocess.CompletedProcess("gh", 0, "invalid", "")):
+            with self.assertRaises(RuntimeError):
+                backend.github_entries("o/r")
+
     def test_authorized_absence_only_defaults_to_queue(self):
         with patch.object(backend, "gh_json", return_value=[{"variables": [], "total_count": 0}]):
             self.assertEqual(backend.selected("o/r")["backend"], "queue")
@@ -70,6 +79,28 @@ class BackendTests(unittest.TestCase):
                 patch.object(backend, "bors_observation", return_value={"batches": [], "held": [], "outcomes": []}):
             backend.bors_command("o/r", 1, h, True)
             self.assertEqual(gh.call_count, 1)  # only the live PR read; no command
+
+    def test_outage_without_bot_approval_history_does_not_post(self):
+        h = "a" * 40
+        live = {"state": "open", "base": {"ref": "main"}, "head": {"sha": h}}
+        with patch.object(backend, "gh_json", side_effect=[live, [[]]]) as gh, \
+                patch.object(backend, "bors_observation", side_effect=RuntimeError("outage")):
+            backend.bors_command("o/r", 1, h, False)
+            self.assertEqual(gh.call_count, 2)
+
+    def test_untrusted_revocation_cannot_suppress_bot_revocation_during_outage(self):
+        h = "a" * 40
+        live = {"state": "open", "base": {"ref": "main"}, "head": {"sha": h}}
+        comments = [[
+            {"body": "bors r+ sha=" + h, "user": {"login": "tauceti-review-bot[bot]"}},
+            {"body": "bors r- sha=" + h, "user": {"login": "contributor"}},
+        ]]
+        with patch.object(backend, "gh_json", side_effect=[live, comments, {}]) as gh, \
+                patch.object(backend, "bors_observation", side_effect=RuntimeError("outage")), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            backend.bors_command("o/r", 1, h, False)
+            self.assertEqual(gh.call_count, 3)
+            self.assertIn("body=bors r- sha=" + h, gh.call_args.args[0])
 
 
 if __name__ == "__main__":
