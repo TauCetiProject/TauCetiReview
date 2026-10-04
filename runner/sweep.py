@@ -570,7 +570,7 @@ def withdraw_both(pr, node_id, head):
     return ok
 
 
-def sweep_bors(prs):
+def sweep_bors(prs, admit=True):
     failures = 0
     eligible = 0
     for p in prs:
@@ -596,6 +596,8 @@ def sweep_bors(prs):
                 failures += not withdraw_both(n, v["id"], head)
             elif decision.get("merge") is True:
                 eligible += 1
+                if not admit:
+                    continue
                 backend.bors_command(REPO, n, head, True, is_pin_moving(paths), DRY_RUN, mb)
                 if not DRY_RUN and merge_base_now(n, head) != mb:
                     failures += not withdraw_both(n, v["id"], head)
@@ -610,10 +612,16 @@ def main():
     if not REPO:
         print("merge-sweep: REPO env is required", file=sys.stderr)
         return 1
-    mode = backend.selected(REPO)["backend"]
+    try:
+        mode = backend.selected(REPO)["backend"]
+    except Exception as e:
+        backend.log(reason="observation_unavailable", error=str(e))
+        mode = "unknown"
     prs = open_prs()
     if mode == "bors":
         return sweep_bors(prs)
+    if mode == "unknown":
+        return sweep_bors(prs, admit=False)
     required = set(DEFAULT_RUBRICS)
     failures = 0
     suffix = " [dry-run]" if DRY_RUN else ""
@@ -628,7 +636,7 @@ def main():
 
     if not backend.allow(REPO, "queue"):
         print("merge-sweep: native reservation/recovery deferred during drainage")
-        return 0
+        return sweep_bors(prs, admit=False)
 
     # The merge-queue reservation. A pin-moving PR rebuilds everything (83-95 min), and anything
     # landing under it that the new mathlib deprecates evicts it, so it gets the queue to itself.

@@ -165,6 +165,13 @@ def bors_command(repo, pr, head, approve, single=False, dry_run=False, merge_bas
     # Read again after all potentially slow observations.
     if approve and not allow(repo, "bors"):
         return
+    if approve and merge_base:
+        live = gh_json(["api", f"repos/{repo}/pulls/{pr}"])
+        if live.get("head", {}).get("sha") != head or live.get("base", {}).get("ref") != "main":
+            return
+        cmp = gh_json(["api", f"repos/{repo}/compare/{live['base']['sha']}...{head}?per_page=1"])
+        if cmp.get("merge_base_commit", {}).get("sha") != merge_base:
+            return
     gh_json(["api", "-X", "POST", f"repos/{repo}/issues/{pr}/comments", "-f", "body=" + body])
     log(pr=pr, head_sha=head, command=body)
 
