@@ -629,7 +629,8 @@ def main():
         entries = queue_entries()
         in_queue = queue_numbers(entries)
     except RuntimeError as e:
-        print(f"merge-sweep: cannot read the merge queue ({e}); aborting", file=sys.stderr)
+        print(f"merge-sweep: cannot read the merge queue ({e}); attempting withdrawals", file=sys.stderr)
+        sweep_bors(prs, admit=False)
         return 1
     cand = [p for p in prs if p.get("isDraft") is False and not has_keep_label(p)]
     print(f"merge-sweep: {len(cand)} candidate PR(s); {len(in_queue)} already queued{suffix}")
@@ -667,9 +668,6 @@ def main():
 
     for p in cand:
         n = p["number"]
-        if holder is not None:
-            print(f"#{n}: skip — merge queue reserved for pin-moving #{holder}")
-            continue
         try:
             v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
                          "headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"
@@ -697,6 +695,9 @@ def main():
                                             MERGE_PREFIX, scope=scope, merge_base_sha=merge_base)
             if decision.get("review_safe", True) is not True:
                 failures += not withdraw_both(n, v["id"], head)
+                continue
+            if holder is not None:
+                print(f"#{n}: skip admission — merge queue reserved for pin-moving #{holder}")
                 continue
             if n in in_queue:
                 continue

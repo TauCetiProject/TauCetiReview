@@ -51,6 +51,17 @@ class BackendTests(unittest.TestCase):
         d["held"] = [{"pr": 1, "head_sha": head}]
         self.assertEqual(backend.bors_head_state(d, 1, head), "approved")
 
+    def test_lost_revocation_is_retried_from_observed_approval(self):
+        h = "a" * 40
+        live = {"state": "open", "base": {"ref": "main"}, "head": {"sha": h}}
+        data = {"batches": [], "held": [{"pr": 1, "head_sha": h}], "outcomes": []}
+        with patch.object(backend, "gh_json", return_value=live) as gh, \
+                patch.object(backend, "bors_observation", return_value=data), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            backend.bors_command("o/r", 1, h, False)
+            self.assertEqual(gh.call_count, 2)
+            self.assertIn("body=bors r- sha=" + h, gh.call_args.args[0])
+
     def test_a_backend_flip_during_observation_prevents_post(self):
         h = "a" * 40
         live = {"state": "open", "draft": False, "base": {"ref": "main"}, "head": {"sha": h}}

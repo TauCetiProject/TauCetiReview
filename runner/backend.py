@@ -135,7 +135,7 @@ def bors_head_state(data, pr, head):
 
 def bors_command(repo, pr, head, approve, single=False, dry_run=False, merge_base=None):
     live = gh_json(["api", f"repos/{repo}/pulls/{pr}"])
-    if live.get("state") != "open" or live.get("base", {}).get("ref") != "main" or live.get("head", {}).get("sha") != head:
+    if live.get("state") != "open" or live.get("base", {}).get("ref") != "main" or (approve and live.get("head", {}).get("sha") != head):
         log(pr=pr, head_sha=head, reason="head_or_base_moved", admitted=False)
         return
     if approve:
@@ -151,13 +151,24 @@ def bors_command(repo, pr, head, approve, single=False, dry_run=False, merge_bas
                 log(pr=pr, head_sha=head, reason="merge_base_moved", admitted=False)
                 return
     else:
+        head = live["head"]["sha"]
+        approved = None
+        try:
+            data = bors_observation()
+            approved = (any(m.get("pr") == pr for b in data["batches"] for m in b["members"])
+                        or any(m.get("pr") == pr for m in data["held"]))
+        except Exception:
+            pass
         # Revoke even when the other queue is selected or observations fail.
-        # Dedup only revocations; an old r+ comment is not evidence of admission.
-        pages = gh_json(["api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr}/comments?per_page=100"])
-        commands = [c.get("body") for page in pages for c in page
-                    if (c.get("body") or "").startswith("bors r")]
-        if not commands or commands[-1] == f"bors r- sha={head}":
-            return
+        # A lost r- delivery is retried while real approval is still present.
+        if approved is not True:
+            pages = gh_json(["api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr}/comments?per_page=100"])
+            commands = [c.get("body") for page in pages for c in page
+                        if (c.get("body") or "").startswith("bors r")]
+            if commands and commands[-1] == f"bors r- sha={head}":
+                return
+            if not commands and approved is False:
+                return
     body = f"bors {'r+ single' if single else 'r+'} sha={head}" if approve else f"bors r- sha={head}"
     if dry_run:
         log(pr=pr, head_sha=head, dry_run=True, command=body)
