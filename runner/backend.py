@@ -79,7 +79,10 @@ def github_entries(repo):
 
 
 def bors_observation():
-    req = urllib.request.Request(BORS_URL, headers={"Cache-Control": "no-cache"})
+    req = urllib.request.Request(BORS_URL, headers={
+        "Cache-Control": "no-cache", "Accept": "application/json",
+        "User-Agent": "TauCetiReview/1.0",
+    })
     with urllib.request.urlopen(req, timeout=10) as r:
         data = json.load(r)
     if (not isinstance(data, dict) or data.get("schema") != "tauceti-bors.observation/v1"
