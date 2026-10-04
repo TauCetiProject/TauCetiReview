@@ -72,6 +72,8 @@ jobs:
           permission-pull-requests: write
           permission-issues: write  # create recovery/reservation labels when absent
           permission-workflows: write
+        env:
+          INPUT_PERMISSION-ACTIONS-VARIABLES: read
 
       - name: Re-drive evicted green PRs
         env:

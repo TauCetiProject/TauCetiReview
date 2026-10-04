@@ -25,6 +25,7 @@ import datetime
 import sys
 
 import sweep
+import backend
 
 
 def main(argv=None):
@@ -54,6 +55,8 @@ def main(argv=None):
 
     # clear: the holder is enqueued only after the queue is empty, never before. An entry already
     # ahead of it can merge in the window between the two, and no later dequeue undoes a commit.
+    if not backend.allow(sweep.REPO, "queue"):
+        return 3
     failures = sweep.reconcile_reservation(entries, args.holder)
     return 1 if failures else 0
 

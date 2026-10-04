@@ -620,6 +620,9 @@ def test_main_hands_off_once_then_waits_until_push():
 
     with patch.object(sweep, "REPO", "owner/repo"), patch.object(sweep, "DRY_RUN", False), \
             patch.object(sweep, "queue_entries", return_value=[]), \
+            patch.object(sweep.backend, "selected", return_value={"backend": "queue"}), \
+            patch.object(sweep.backend, "allow", return_value=True), \
+            patch.object(sweep, "open_prs", return_value=[{"number": 1, "isDraft": False, "labels": labels if "labels" in locals() else []}]), \
             patch.object(sweep, "gh_json", gh_json), patch.object(sweep, "gh_jsonl", gh_jsonl), \
             patch.object(sweep, "gh", gh), patch.object(sweep, "pr_diff", return_value=["TauCeti/X.lean"]), \
             patch.object(sweep, "decide_from_comments", return_value={"merge": True}) as gate:
@@ -663,6 +666,9 @@ def test_merge_base_is_rechecked_right_before_enqueue():
         merge_bases[:] = [decision_mb, recheck_mb, after_mb]
         with patch.object(sweep, "REPO", "owner/repo"), patch.object(sweep, "DRY_RUN", False), \
                 patch.object(sweep, "queue_entries", return_value=[]), \
+            patch.object(sweep.backend, "selected", return_value={"backend": "queue"}), \
+            patch.object(sweep.backend, "allow", return_value=True), \
+            patch.object(sweep, "open_prs", return_value=[{"number": 1, "isDraft": False, "labels": labels if "labels" in locals() else []}]), \
                 patch.object(sweep, "gh_json", gh_json), \
                 patch.object(sweep, "gh_jsonl", return_value=[]), \
                 patch.object(sweep, "current_head", return_value=head), \

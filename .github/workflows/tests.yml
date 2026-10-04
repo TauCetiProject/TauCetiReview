@@ -30,6 +30,7 @@ jobs:
       - run: python tests/test_seed_approvals.py
       - run: python tests/test_pr_diff.py
       - run: python tests/test_sweep.py
+      - run: python tests/test_backend.py
       - run: python tests/test_codex_fallback.py
       - run: python tests/test_reviewer_env.py
       - run: python tests/test_kiro.py
