@@ -45,6 +45,7 @@ import os
 import subprocess
 import sys
 
+import backend
 from merge_from_scoreboard import decide_from_comments
 from pr_diff import pr_diff
 from review import DEFAULT_RUBRICS
@@ -292,24 +293,9 @@ def queue_entries():
     queue is empty" — which, for the reservation, means "no bump is holding it" and lets everything
     merge under a bump. So `hasNextPage` on the entries connection, or any top-level `errors`, raises.
     """
-    q = gh_json(["api", "graphql", "-f", "query="
-                 '{repository(owner:"%s",name:"%s"){mergeQueue(branch:"main"){'
-                 'entries(first:100){pageInfo{hasNextPage}nodes{enqueuedAt '
-                 'pullRequest{number id}}}}}}'
-                 % tuple(REPO.split("/", 1))])
-    if (q or {}).get("errors"):
-        raise RuntimeError(f"merge-queue query returned errors: {(q or {}).get('errors')}")
-    mq = (((q or {}).get("data") or {}).get("repository") or {}).get("mergeQueue") or {}
-    conn = mq.get("entries") or {}
-    if ((conn.get("pageInfo") or {}).get("hasNextPage")):
-        raise RuntimeError("merge queue has more than 100 entries; refusing to read it partially")
-    out = []
-    for n in conn.get("nodes") or []:
-        pr = n.get("pullRequest") or {}
-        if not pr:
-            continue
-        out.append({"number": pr["number"], "node_id": pr.get("id"),
-                    "enqueued_at": n.get("enqueuedAt"), "paths": pr_paths(pr["number"])})
+    out = backend.github_entries(REPO)
+    for entry in out:
+        entry["paths"] = pr_paths(entry["number"])
     return out
 
 
@@ -406,6 +392,8 @@ def reconcile_reservation(entries, holder):
     (this sweep and merge-only.yml) mutate the queue independently, so a check-then-act race can
     leave an ordinary entry beside the holder; reconciling converges without a lock, and it also
     recovers when a job dies between enqueuing the holder and clearing the queue."""
+    if not backend.allow(REPO, "queue"):
+        return 0
     failures = 0
     for e in entries:
         if e["number"] != holder:
@@ -460,6 +448,8 @@ def recheck_after_enqueue(pr, node_id, head, merge_base):
 def enqueue(pr, node_id, head):
     """Hand the PR to the merge queue, bound to the reviewed head (expectedHeadOid rejects a racing
     push). Benign outcomes (already queued, head moved, not yet mergeable) are not failures."""
+    if not backend.allow(REPO, "queue"):
+        return True
     if DRY_RUN:
         print(f"[dry-run] would enqueue #{pr} ({head[:7]})")
         return True
@@ -562,10 +552,76 @@ def recover_branch(pr, head, is_fork, comments):
     return res != "error"
 
 
+def open_prs():
+    pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/pulls?state=open&base=main&per_page=100"])
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise RuntimeError("incomplete open PR listing")
+    return [{**p, "isDraft": p["draft"]} for page in pages for p in page]
+
+
+def withdraw_both(pr, node_id, head):
+    # Both attempts are made even if the first fails. Backend selection is irrelevant.
+    ok = dequeue(pr, node_id)
+    try:
+        backend.bors_command(REPO, pr, head, False, dry_run=DRY_RUN)
+    except Exception as e:
+        print(f"#{pr}: bors revocation failed: {e}", file=sys.stderr)
+        ok = False
+    return ok
+
+
+def sweep_bors(prs, admit=True):
+    failures = 0
+    eligible = 0
+    for p in prs:
+        n = p["number"]
+        if p.get("isDraft") or has_keep_label(p):
+            continue
+        try:
+            v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
+                         "headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup"])
+            if v["baseRefName"] != "main":
+                continue
+            head = v["headRefOid"]
+            comments = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/issues/{n}/comments?per_page=100",
+                                 "--jq", ".[] | {body, updated_at, created_at, author: .user.login}"])
+            mb = merge_base_now(n, head)
+            paths = pr_diff(REPO, n, head, mb)
+            build, bump, scope = status_states(v.get("statusCheckRollup"))
+            decision = decide_from_comments(comments, head, set(DEFAULT_RUBRICS), paths, build, bump,
+                                            MERGE_PREFIX, scope=scope, merge_base_sha=mb)
+            if current_head(n) != head or merge_base_now(n, head) != mb:
+                continue
+            if decision.get("review_safe") is not True:
+                failures += not withdraw_both(n, v["id"], head)
+            elif decision.get("merge") is True:
+                eligible += 1
+                if not admit:
+                    continue
+                backend.bors_command(REPO, n, head, True, is_pin_moving(paths), DRY_RUN, mb)
+                if not DRY_RUN and merge_base_now(n, head) != mb:
+                    failures += not withdraw_both(n, v["id"], head)
+        except Exception as e:
+            print(f"#{n}: bors reconciliation failed: {e}", file=sys.stderr)
+            failures += 1
+    backend.log(backend="bors", candidates=len(prs), eligible=eligible, dry_run=DRY_RUN)
+    return 1 if failures else 0
+
+
 def main():
     if not REPO:
         print("merge-sweep: REPO env is required", file=sys.stderr)
         return 1
+    try:
+        mode = backend.selected(REPO)["backend"]
+    except Exception as e:
+        backend.log(reason="observation_unavailable", error=str(e))
+        mode = "unknown"
+    prs = open_prs()
+    if mode == "bors":
+        return sweep_bors(prs)
+    if mode == "unknown":
+        return sweep_bors(prs, admit=False)
     required = set(DEFAULT_RUBRICS)
     failures = 0
     suffix = " [dry-run]" if DRY_RUN else ""
@@ -573,12 +629,15 @@ def main():
         entries = queue_entries()
         in_queue = queue_numbers(entries)
     except RuntimeError as e:
-        print(f"merge-sweep: cannot read the merge queue ({e}); aborting", file=sys.stderr)
+        print(f"merge-sweep: cannot read the merge queue ({e}); attempting withdrawals", file=sys.stderr)
+        sweep_bors(prs, admit=False)
         return 1
-    prs = gh_json(["pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
-                   "--json", "number,isDraft,labels"]) or []
     cand = [p for p in prs if p.get("isDraft") is False and not has_keep_label(p)]
     print(f"merge-sweep: {len(cand)} candidate PR(s); {len(in_queue)} already queued{suffix}")
+
+    if not backend.allow(REPO, "queue"):
+        print("merge-sweep: native reservation/recovery deferred during drainage")
+        return sweep_bors(prs, admit=False)
 
     # The merge-queue reservation. A pin-moving PR rebuilds everything (83-95 min), and anything
     # landing under it that the new mathlib deprecates evicts it, so it gets the queue to itself.
@@ -609,11 +668,6 @@ def main():
 
     for p in cand:
         n = p["number"]
-        if n in in_queue:
-            continue
-        if holder is not None:
-            print(f"#{n}: skip — merge queue reserved for pin-moving #{holder}")
-            continue
         try:
             v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
                          "headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"
@@ -639,6 +693,14 @@ def main():
             ci_build, bump_guard, scope = status_states(v.get("statusCheckRollup"))
             decision = decide_from_comments(comments, head, required, paths, ci_build, bump_guard,
                                             MERGE_PREFIX, scope=scope, merge_base_sha=merge_base)
+            if decision.get("review_safe", True) is not True:
+                failures += not withdraw_both(n, v["id"], head)
+                continue
+            if holder is not None:
+                print(f"#{n}: skip admission — merge queue reserved for pin-moving #{holder}")
+                continue
+            if n in in_queue:
+                continue
             if not decision["merge"]:
                 continue   # not green at head / not TauCeti-only — the normal gate would not merge it
             behind = int((cmp or {}).get("behind_by") or 0)
