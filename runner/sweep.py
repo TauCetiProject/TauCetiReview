@@ -44,6 +44,7 @@ import re
 import os
 import subprocess
 import sys
+import hashlib
 
 import backend
 import api_budget
@@ -103,7 +104,7 @@ def rebase_request_heads(comments, *, stalled=False):
 
 
 def gh(args):
-    return api_budget.run(["gh", *args], capture_output=True, text=True, timeout=30)
+    return api_budget.run(["gh", *args], capture_output=True, text=True)
 
 
 def gh_json(args):
@@ -297,6 +298,7 @@ def queue_entries():
     """
     out = backend.github_entries(REPO)
     for entry in out:
+        api_budget.begin_pr()
         entry["paths"] = pr_paths(entry["number"])
     return out
 
@@ -398,8 +400,9 @@ def reconcile_reservation(entries, holder):
         return 0
     failures = 0
     for e in entries:
+        api_budget.begin_pr()
         if e["number"] != holder:
-            failures += not dequeue(e["number"], e["node_id"])
+            failures += not api_budget.check_result(dequeue(e["number"], e["node_id"]))
     return failures
 
 
@@ -564,7 +567,7 @@ def open_prs():
 def candidates(prs, queue_prs, bors_prs):
     """Labels select work, never authorize it. Existing approvals take priority.
 
-    Hourly background work rotates so a bounded run does not always strand the
+    Hourly background ordering changes so a bounded run does not always strand the
     same old PRs. Both main queues are inspected under either backend selection.
     """
     active = set(queue_prs) | set(bors_prs)
@@ -580,15 +583,13 @@ def candidates(prs, queue_prs, bors_prs):
                 background.append(p)
     if background:
         hour = int(datetime.datetime.now(datetime.timezone.utc).timestamp() // 3600)
-        offset = hour % len(background)
-        background = background[offset:] + background[:offset]
-    # Rotate within each priority tier too: a large batch or waiting queue must
+        background.sort(key=lambda p: hashlib.sha256(f"{hour}:{p['number']}".encode()).digest())
+    # Vary ordering within each priority tier too: a large batch or waiting queue must
     # not monopolize every bounded heartbeat with the same first few PRs.
     slot = int(datetime.datetime.now(datetime.timezone.utc).timestamp() // 300)
     for group in (priority, hinted):
         if group:
-            offset = slot % len(group)
-            group[:] = group[offset:] + group[:offset]
+            group.sort(key=lambda p: hashlib.sha256(f"{slot}:{p['number']}".encode()).digest())
     return priority + hinted + ([] if FOCUSED else background)
 
 
@@ -606,14 +607,22 @@ def bors_approved_prs():
 
 def withdraw_both(pr, node_id, head):
     # Both attempts are made even if the first fails. Backend selection is irrelevant.
-    ok = dequeue(pr, node_id)
+    quota_error = None
+    try:
+        ok = dequeue(pr, node_id)
+    except api_budget.Exhausted as e:
+        quota_error, ok = e, False
+        api_budget.check_result(False)
     try:
         backend.bors_command(REPO, pr, head, False, dry_run=DRY_RUN)
-    except api_budget.Exhausted:
-        raise
+    except api_budget.Exhausted as e:
+        quota_error = e
+        api_budget.check_result(False)
     except Exception as e:
         print(f"#{pr}: bors revocation failed: {e}", file=sys.stderr)
         ok = False
+    if quota_error:
+        raise quota_error
     return ok
 
 
@@ -639,18 +648,19 @@ def sweep_bors(prs, admit=True):
             if current_head(n) != head or merge_base_now(n, head) != mb:
                 continue
             if decision.get("review_safe") is not True:
-                failures += not withdraw_both(n, v["id"], head)
+                failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
             elif decision.get("merge") is True:
                 eligible += 1
                 if not admit or p.get("isDraft") or has_keep_label(p):
                     continue
                 backend.bors_command(REPO, n, head, True, is_pin_moving(paths), DRY_RUN, mb)
                 if not DRY_RUN and merge_base_now(n, head) != mb:
-                    failures += not withdraw_both(n, v["id"], head)
+                    failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
         except api_budget.Exhausted:
             raise
         except Exception as e:
             print(f"#{n}: bors reconciliation failed: {e}", file=sys.stderr)
+            api_budget.check_result(False)
             failures += 1
     backend.log(backend="bors", candidates=len(prs), eligible=eligible, dry_run=DRY_RUN)
     return 1 if failures else 0
@@ -666,6 +676,7 @@ def main():
         raise
     except Exception as e:
         backend.log(reason="observation_unavailable", error=str(e))
+        api_budget.check_result(False)
         mode = "unknown"
     prs = open_prs()
     bors_prs = bors_approved_prs()
@@ -696,7 +707,8 @@ def main():
         raise
     except RuntimeError as e:
         print(f"merge-sweep: cannot read the merge queue ({e}); attempting withdrawals", file=sys.stderr)
-        sweep_bors(selected_prs, admit=False)
+        api_budget.check_result(False)
+        sweep_bors(candidates(prs, {p["number"] for p in prs}, set()), admit=False)
         return 1
     # Queued PRs need withdrawal checks even when draft/keep pauses admissions.
     cand = candidates(prs, in_queue, bors_priority)
@@ -713,21 +725,24 @@ def main():
     exhausted = {n for n, ls in labels_by_pr.items() if EXHAUSTED_LABEL in ls}
     now = datetime.datetime.now(datetime.timezone.utc)
     holder = reservation_holder(entries, now, MAX_HOLD, exhausted)
+    if holder is not None:
+        api_budget.begin_pr()
     if holder is not None and reservations_spent(holder) >= MAX_RESERVATIONS:
         print(f"#{holder}: has taken the merge queue {MAX_RESERVATIONS}x without landing; "
               f"labelling {EXHAUSTED_LABEL} and releasing the queue")
-        failures += not mark(holder, EXHAUSTED_LABEL)
+        failures += not api_budget.check_result(mark(holder, EXHAUSTED_LABEL))
         exhausted.add(holder)
         holder = reservation_holder(entries, now, MAX_HOLD, exhausted)
     # A pin-moving entry too old to be merely slow is stuck: release the queue and say so.
     for e in entries:
+        api_budget.begin_pr()
         if (is_pin_moving(e.get("paths")) and e["number"] != holder
                 and e["number"] not in exhausted
                 and now - parse_ts(e.get("enqueued_at")) > MAX_HOLD):
             print(f"#{e['number']}: held the merge queue longer than {MAX_HOLD}; "
                   f"dequeuing and labelling {LAPSED_LABEL}")
-            failures += not dequeue(e["number"], e["node_id"])
-            failures += not mark(e["number"], LAPSED_LABEL)
+            failures += not api_budget.check_result(dequeue(e["number"], e["node_id"]))
+            failures += not api_budget.check_result(mark(e["number"], LAPSED_LABEL))
     if holder is not None:
         print(f"merge-sweep: merge queue reserved for pin-moving #{holder}; "
               "clearing other entries and holding new ones")
@@ -745,10 +760,14 @@ def main():
                 continue   # the sweep only drives PRs targeting main (the merge queue is main's)
             comments = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/issues/{n}/comments?per_page=100",
                                  "--jq", ".[] | {body, updated_at, created_at, author: .user.login}"])
-            handoff = reconcile_rebase_request(n, head, v.get("labels") or [], comments)
-            if handoff != "ready":
-                failures += handoff == "error"
-                continue
+            paused = p.get("isDraft") or has_keep_label(p) or has_keep_label(v)
+            active_approval = n in in_queue or n in bors_priority
+            if not paused and not active_approval:
+                handoff = reconcile_rebase_request(n, head, v.get("labels") or [], comments)
+                if handoff != "ready":
+                    api_budget.check_result(handoff != "error")
+                    failures += handoff == "error"
+                    continue
             # The merge base binds the review to the diff it judged; the changed paths come from
             # the same git helper as merge-only (`gh pr diff` refuses >300 files). pr_diff's git
             # calls are time- and size-bounded and raise RuntimeError, so one PR cannot stall or
@@ -762,10 +781,16 @@ def main():
             decision = decide_from_comments(comments, head, required, paths, ci_build, bump_guard,
                                             MERGE_PREFIX, scope=scope, merge_base_sha=merge_base)
             if decision.get("review_safe", True) is not True:
-                failures += not withdraw_both(n, v["id"], head)
+                failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
                 continue
-            if p.get("isDraft") or has_keep_label(p):
+            if paused:
                 continue
+            if active_approval:
+                handoff = reconcile_rebase_request(n, head, v.get("labels") or [], comments)
+                if handoff != "ready":
+                    api_budget.check_result(handoff != "error")
+                    failures += handoff == "error"
+                    continue
             if holder is not None:
                 print(f"#{n}: skip admission — merge queue reserved for pin-moving #{holder}")
                 continue
@@ -805,13 +830,13 @@ def main():
                 continue
         print(f"#{n} ({head[:7]}): {action} — {reason}")
         if action == "enqueue":
-            failures += not enqueue(n, v["id"], head)
+            failures += not api_budget.check_result(enqueue(n, v["id"], head))
             if not DRY_RUN:
-                failures += not recheck_after_enqueue(n, v["id"], head, merge_base)
+                failures += not api_budget.check_result(recheck_after_enqueue(n, v["id"], head, merge_base))
         elif action == "update_branch":
-            failures += not recover_branch(n, head, v.get("isCrossRepository"), comments)
+            failures += not api_budget.check_result(recover_branch(n, head, v.get("isCrossRepository"), comments))
         elif action == "flag":
-            failures += not flag(n, head, comments, worker=False)
+            failures += not api_budget.check_result(flag(n, head, comments, worker=False))
 
     if failures:
         print(f"merge-sweep: {failures} action(s) failed", file=sys.stderr)
@@ -824,8 +849,7 @@ if __name__ == "__main__":
         api_budget.configure(FOCUSED)
         sys.exit(main())
     except api_budget.Exhausted as e:
-        print(f"merge-sweep: deferred: {e}", file=sys.stderr)
-        sys.exit(0)
+        sys.exit(api_budget.defer(e))
     except RuntimeError as e:
         print(f"merge-sweep: {e}", file=sys.stderr)
         sys.exit(1)
@@ -833,4 +857,5 @@ if __name__ == "__main__":
         print(json.dumps({"schema": "tauceti-merge.api-usage/v1", "focused": FOCUSED,
                           "gh_invocations": api_budget.calls,
                           "invocation_limit": api_budget.limit,
+                          "action_failures": api_budget.failures,
                           "rate_limited": api_budget.rate_limited}))
