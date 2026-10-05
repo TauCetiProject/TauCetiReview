@@ -10,13 +10,15 @@ import os
 import subprocess
 import urllib.request
 
+import api_budget
+
 BORS_URL = "https://bors.taucetiproject.org/repositories/1/active-batches?base=main"
 ACTIVE = {"waiting", "running"}
 
 
 def gh_json(args):
     try:
-        r = subprocess.run(["gh", *args], text=True, capture_output=True, timeout=30)
+        r = api_budget.run(["gh", *args], text=True, capture_output=True, timeout=30)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError("GitHub observation/mutation timed out") from e
     if r.returncode:
@@ -122,6 +124,8 @@ def allow(repo, expected):
         log(**setting, expected=expected, outgoing_count=len(other), admitted=ok,
             reason="drained" if ok else "outgoing_not_drained")
         return ok
+    except api_budget.Exhausted:
+        raise
     except Exception as e:
         log(expected=expected, admitted=False, reason="observation_unavailable", error=str(e))
         return False

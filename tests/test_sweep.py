@@ -622,6 +622,7 @@ def test_main_hands_off_once_then_waits_until_push():
             patch.object(sweep, "queue_entries", return_value=[]), \
             patch.object(sweep.backend, "selected", return_value={"backend": "queue"}), \
             patch.object(sweep.backend, "allow", return_value=True), \
+            patch.object(sweep, "bors_approved_prs", return_value=set()), \
             patch.object(sweep, "open_prs", return_value=[{"number": 1, "isDraft": False, "labels": labels if "labels" in locals() else []}]), \
             patch.object(sweep, "gh_json", gh_json), patch.object(sweep, "gh_jsonl", gh_jsonl), \
             patch.object(sweep, "gh", gh), patch.object(sweep, "pr_diff", return_value=["TauCeti/X.lean"]), \
@@ -668,6 +669,7 @@ def test_merge_base_is_rechecked_right_before_enqueue():
                 patch.object(sweep, "queue_entries", return_value=[]), \
             patch.object(sweep.backend, "selected", return_value={"backend": "queue"}), \
             patch.object(sweep.backend, "allow", return_value=True), \
+            patch.object(sweep, "bors_approved_prs", return_value=set()), \
             patch.object(sweep, "open_prs", return_value=[{"number": 1, "isDraft": False, "labels": labels if "labels" in locals() else []}]), \
                 patch.object(sweep, "gh_json", gh_json), \
                 patch.object(sweep, "gh_jsonl", return_value=[]), \
