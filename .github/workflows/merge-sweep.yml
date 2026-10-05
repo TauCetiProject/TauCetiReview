@@ -17,6 +17,10 @@ on:
         description: "List actions without enqueuing / updating / flagging"
         type: boolean
         default: false
+      focused:
+        description: "Inspect approvals and ready/recovery hints; hourly scans inspect other PRs too"
+        type: boolean
+        default: false
       review_ref:
         description: "TauCetiReview ref to check out for the runner. Omit it: the default is this workflow file's own commit (job.workflow_sha). Set it only to test a different policy commit."
         type: string
@@ -80,4 +84,5 @@ jobs:
           GH_TOKEN: ${{ steps.merge_token.outputs.token }}
           REPO: TauCetiProject/TauCeti
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          FOCUSED: ${{ inputs.focused && '1' || '' }}
         run: python3 runner/sweep.py
