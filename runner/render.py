@@ -55,10 +55,22 @@ def meta_block(kind, **payload):
 
 
 
+def linkable_rubrics_sha(prov):
+    """The rubrics commit to pin links to, or None when there is none or GitHub lacks it (a local
+    commit would only produce dead links)."""
+    prov = prov or {}
+    return None if prov.get("rubrics_published") is False else prov.get("rubrics_sha")
+
+
+DRIFT_WARNING = ("⚠️ This review ran from a rubrics checkout that differs from the published "
+                 "rubrics (out of date, pinned, or locally edited), so its findings may reflect "
+                 "different rules.")
+
+
 def rubric_url(prov, rubric=None):
     """Link to the rubrics pinned at the exact commit reviewed from, falling back to main."""
     repo = (prov or {}).get("rubrics_repo", "TauCetiProject/TauCetiReview")
-    sha = (prov or {}).get("rubrics_sha")
+    sha = linkable_rubrics_sha(prov)
     if rubric:
         return f"https://github.com/{repo}/blob/{sha or 'main'}/rubrics/{rubric}.md"
     return f"https://github.com/{repo}/tree/{sha or 'main'}/rubrics"
@@ -117,7 +129,11 @@ def render_thread(cf, prov=None):
         sub.append(f"{fmt_tok(u.get('input_tokens'))} in / {fmt_tok(u.get('output_tokens'))} out tokens")
     if diff_url(prov):
         sub.append(f"reviewing [this diff]({diff_url(prov)})")
-    sub.append(f"[rubric]({rubric_url(prov, cf['rubric'])})")
+    # Linked to main when the commit that ran is not on GitHub, so say it is the published text.
+    label = "published rubric" if (prov or {}).get("rubrics_published") is False else "rubric"
+    sub.append(f"[{label}]({rubric_url(prov, cf['rubric'])})")
+    if (prov or {}).get("rubrics_drift"):
+        sub.append("⚠️ rubrics checkout differs from published main")
     lines += ["", f"<sub>{' · '.join(sub)}</sub>", "",
               meta_block("thread", rubric=cf["rubric"], **thread_meta(cf, prov))]
     return "\n".join(lines)
@@ -161,14 +177,16 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
     lines = ["<!--tauceti-scoreboard-->", f"## AI review — {overall}", "",
              "Each rubric is judged independently by multiple review agents; the PR merges only once "
              "**every** rubric is green — any rubric that is not green (changes requested, blocked, "
-             f"errored, stale, or not yet run) blocks the merge. See the [rubrics]({rubric_url(prov)}).", "",
-             "| | rubric | state | judge | summary |", "|---|---|---|---|---|"]
+             f"errored, stale, or not yet run) blocks the merge. See the [rubrics]({rubric_url(prov)}).", ""]
+    if (prov or {}).get("rubrics_drift"):
+        lines += [f"> {DRIFT_WARNING}", ""]
+    lines += ["| | rubric | state | judge | summary |", "|---|---|---|---|---|"]
     for r in candidates:
         cf = state_map.get(r) or {}
         s = state_of(cf, head_sha)
         judge = f"{cf.get('provider')}/{cf.get('model')}" if cf.get("provider") else "—"
         summ = sanitize(cf.get("summary") or "").replace("\n", " ").replace("|", "\\|")
-        name = f"[{r}]({rubric_url(prov, r)})" if (prov or {}).get("rubrics_sha") else r
+        name = f"[{r}]({rubric_url(prov, r)})" if linkable_rubrics_sha(prov) else r
         state = word[s]
         if s == "green" and cf.get("carried_from_sha"):
             state += f" (carried from `{cf['carried_from_sha'][:7]}`, patch unchanged)"
@@ -183,9 +201,10 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
     sub = []
     if diff_url(prov):
         sub.append(f"Reviewing [this diff]({diff_url(prov)}) at head `{head_sha[:7]}`")
-    if (prov or {}).get("rubrics_sha"):
-        sha = prov["rubrics_sha"]
-        sub.append(f"rubrics @ [`{sha[:7]}`]({rubric_url(prov)})")
+    if linkable_rubrics_sha(prov):
+        sub.append(f"rubrics @ [`{prov['rubrics_sha'][:7]}`]({rubric_url(prov)})")
+    elif (prov or {}).get("rubrics_sha"):
+        sub.append(f"rubrics @ `{prov['rubrics_sha'][:7]}` (not on GitHub)")
     if (prov or {}).get("cli_sha"):
         sub.append(f"CLI @ `{prov['cli_sha'][:7]}`" + (" (modified)" if prov.get("cli_dirty") else ""))
     if cost_line:
