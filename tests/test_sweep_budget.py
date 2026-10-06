@@ -77,7 +77,18 @@ class SweepBudgetTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(sweep.main(), 0)
             self.assertEqual(set(withdrawn), {1, 2, 3}, mode)
-            self.assertEqual(set(withdrawn[:2]), {1, 2}, mode)
+            self.assertIn(withdrawn[0], {1, 2}, mode)
+            self.assertEqual(withdrawn[1], 3, mode)
+
+    def test_a_long_queue_does_not_starve_labelled_prs_awaiting_admission(self):
+        prs = [{'number': n, 'isDraft': False, 'labels': []} for n in range(1, 71)]
+        for p in prs[-2:]:
+            p['labels'] = [{'name': 'ready-to-merge'}]
+        with patch.object(sweep, 'FOCUSED', True):
+            order = [p['number'] for p in sweep.candidates(prs, set(range(1, 61)), {61, 62})]
+        self.assertEqual(len(order), 64)
+        self.assertLessEqual(order[0], 62)
+        self.assertEqual(set(order[1:4:2]), {69, 70})
 
     def test_budget_deferral_is_not_swallowed_by_admission_or_revocation(self):
         with patch.object(backend, 'selected', side_effect=api_budget.Exhausted('limited')):
