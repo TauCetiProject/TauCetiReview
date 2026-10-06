@@ -247,6 +247,58 @@ def test_checkout_dirty_when_status_unreadable():
         assert cli.checkout_dirty(d)  # not a repository at all
 
 
+def test_rubric_blobs_match_git_and_cover_only_reviewed_files():
+    import subprocess
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        (root / "references").mkdir()
+        (root / "a.md").write_text("alpha\n")
+        (root / "references" / "r.md").write_text("ref\n")
+        (root / "notes.txt").write_text("not a rubric")
+        blobs = cli.rubric_blobs(root)
+        assert set(blobs) == {"rubrics/a.md", "rubrics/references/r.md"}, blobs
+        want = subprocess.run(["git", "hash-object", str(root / "a.md")], capture_output=True,
+                              text=True, check=True).stdout.strip()
+        assert blobs["rubrics/a.md"] == want
+
+
+def _publication(listing, commit, local):
+    """rubrics_publication against canned `gh api` answers: `listing`/`commit` are (rc, stdout,
+    stderr) for the tree listing and the commit lookup."""
+    def fake_run(cmd, **kwargs):
+        rc, out, err = listing if "/git/trees/" in cmd[2] else commit
+        return types.SimpleNamespace(returncode=rc, stdout=out, stderr=err)
+
+    with tempfile.TemporaryDirectory() as d, patch.object(cli, "run", fake_run):
+        for name, text in local.items():
+            (pathlib.Path(d) / name).write_text(text)
+        return cli.rubrics_publication(d, "s" * 40)
+
+
+def test_rubrics_publication_detects_drift_and_unpublished_commits():
+    with tempfile.TemporaryDirectory() as d:
+        (pathlib.Path(d) / "a.md").write_text("alpha\n")
+        blob = cli.rubric_blobs(d)["rubrics/a.md"]
+    tree = lambda sha: (0, json.dumps({"truncated": False, "tree": [
+        {"path": "rubrics/a.md", "type": "blob", "sha": sha},
+        {"path": "runner/cli.py", "type": "blob", "sha": "ignored"}]}), "")
+    found = (0, "s" * 40 + "\n", "")
+    missing = (1, "", "gh: No commit found for SHA: sss (HTTP 422)")
+    assert _publication(tree(blob), found, {"a.md": "alpha\n"}) == (False, True)
+    assert _publication(tree("0" * 40), found, {"a.md": "alpha\n"}) == (True, True)
+    # A rubric added locally (or deleted on main) is drift too.
+    assert _publication(tree(blob), found, {"a.md": "alpha\n", "b.md": "new\n"}) == (True, True)
+    assert _publication(tree(blob), missing, {"a.md": "alpha\n"}) == (False, False)
+
+
+def test_rubrics_publication_unknown_when_github_is_unreachable():
+    down = (1, "", "error connecting to api.github.com")
+    truncated = (0, json.dumps({"truncated": True, "tree": []}), "")
+    assert _publication(down, down, {"a.md": "x"}) == (None, None)
+    assert _publication(truncated, down, {"a.md": "x"}) == (None, None)
+    assert _publication((0, "not json", ""), down, {"a.md": "x"}) == (None, None)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

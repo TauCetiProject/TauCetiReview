@@ -23,6 +23,7 @@ two you have available.
 """
 import argparse
 import atexit
+import hashlib
 import json
 import os
 import pathlib
@@ -210,6 +211,58 @@ def rubrics_repo_sha(repo_dir):
     r = run(["gh", "api", f"/repos/{REVIEW_REPO}/git/refs/heads/main",
              "--jq", ".object.sha"], capture=True, quiet=True, allow_fail=True)
     return (r.stdout.strip() if r.returncode == 0 else ""), True
+
+
+def rubric_blobs(rubrics_dir):
+    """{path: git blob SHA-1} for the rubric text a review reads: the same `*.md` and
+    `references/*.md` files render.rubrics_fingerprint hashes. Hashed from the files on disk rather
+    than asked of git, so uncommitted edits, untracked rubrics and non-git trees all count."""
+    d = pathlib.Path(rubrics_dir)
+    out = {}
+    for p in sorted(d.glob("*.md")) + sorted(d.glob("references/*.md")):
+        data = p.read_bytes()
+        out[f"rubrics/{p.relative_to(d).as_posix()}"] = hashlib.sha1(
+            b"blob %d\0" % len(data) + data).hexdigest()
+    return out
+
+
+def published_rubric_blobs():
+    """The same map for TauCetiReview's published main, from one tree listing; None when it cannot
+    be read (no network, a repo-scoped proxy, a truncated listing)."""
+    r = run(["gh", "api", f"/repos/{REVIEW_REPO}/git/trees/main?recursive=1"],
+            capture=True, quiet=True, allow_fail=True)
+    try:
+        tree = json.loads(r.stdout) if r.returncode == 0 else None
+    except ValueError:
+        tree = None
+    if not tree or tree.get("truncated"):
+        return None
+    return {e["path"]: e["sha"] for e in tree.get("tree", [])
+            if e.get("type") == "blob" and re.fullmatch(r"rubrics/(references/)?[^/]+\.md", e["path"])}
+
+
+def rubrics_publication(rubrics_dir, sha):
+    """(drift, published) for the rubrics a review is about to run with. `drift`: their text differs
+    from TauCetiReview's published main (a stale or pinned checkout, or local edits), which a PR
+    author contesting a finding cannot see from the review alone. `published`: `sha` exists on
+    GitHub, so links pinned to it resolve. Each is None when it could not be checked; neither check
+    ever aborts a review."""
+    main_blobs = published_rubric_blobs()
+    drift = None if main_blobs is None else rubric_blobs(rubrics_dir) != main_blobs
+    published = None
+    if sha:
+        r = run(["gh", "api", f"/repos/{REVIEW_REPO}/commits/{sha}", "--jq", ".sha"],
+                capture=True, quiet=True, allow_fail=True)
+        if r.returncode == 0:
+            published = r.stdout.strip() == sha
+        elif "No commit found" in (r.stderr or "") or "HTTP 422" in (r.stderr or ""):
+            published = False
+    return drift, published
+
+
+def tristate(flag):
+    """True/False/None as the "1"/"0"/"" environment encoding the engine reads back."""
+    return "" if flag is None else "1" if flag else "0"
 
 
 def cli_sha():
@@ -816,7 +869,17 @@ def main():
     # By environment rather than a flag, so a --rubrics-sha pin to an engine predating it still runs.
     # Only the engine's environment: an embedding caller's os.environ must not carry it onward.
     sha, dirty = cli_sha()
-    engine_env = {**os.environ, "TAUCETI_CLI_SHA": sha, "TAUCETI_CLI_DIRTY": "1" if dirty else "0"}
+    drift, published = rubrics_publication(repo_dir / "rubrics", rub_sha)
+    if drift:
+        print(f"tauceti-review: WARNING: the rubrics in {repo_dir} differ from {REVIEW_REPO}'s "
+              "published main. This review applies them anyway and the scoreboard will say so; "
+              "update the checkout unless you are testing a rubric change.", file=sys.stderr)
+    if published is False:
+        print(f"tauceti-review: WARNING: rubrics commit {rub_sha[:12]} is not on GitHub, so the "
+              "review will not link to it.", file=sys.stderr)
+    engine_env = {**os.environ, "TAUCETI_CLI_SHA": sha, "TAUCETI_CLI_DIRTY": "1" if dirty else "0",
+                  "TAUCETI_RUBRICS_DRIFT": tristate(drift),
+                  "TAUCETI_RUBRICS_PUBLISHED": tristate(published)}
     # Shadow outbox lives under the PERSISTENT store, not the throwaway scratch one: if the
     # sync at the end fails, the records must survive the workspace cleanup for a later sync.
     outbox_store = (CACHE_DIR / "store" / a.repo.replace("/", "__")) if a.shadow else store

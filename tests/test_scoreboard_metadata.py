@@ -65,6 +65,38 @@ def test_round_archive_records_cli_sha():
             assert rec["cli_sha"] == "c" * 40 and rec["cli_dirty"] is dirty
 
 
+def test_drifted_rubrics_warn_on_scoreboard_and_threads():
+    prov = {"repo": "r", "pr": 1, "rubrics_sha": "f" * 40, "rubrics_drift": True,
+            "rubrics_published": True}
+    body = render.render_scoreboard(["naming"], {}, "a" * 40, "approved", "", prov=prov)
+    assert render.DRIFT_WARNING in body
+    assert json.loads(META_RE.findall(body)[-1])["rubrics_drift"] is True
+    thread = render.render_thread({"rubric": "naming", "verdict": "request_changes"}, prov)
+    assert "rubrics differ from published main" in thread
+
+
+def test_current_or_unchecked_rubrics_do_not_warn():
+    for drift in (False, None):
+        prov = {"repo": "r", "pr": 1, "rubrics_sha": "f" * 40, "rubrics_drift": drift}
+        body = render.render_scoreboard(["naming"], {}, "a" * 40, "approved", "", prov=prov)
+        thread = render.render_thread({"rubric": "naming", "verdict": "request_changes"}, prov)
+        assert "⚠️ This review" not in body and "differ from published" not in thread
+
+
+def test_unpublished_rubrics_commit_is_not_linked():
+    sha = "f" * 40
+    prov = {"repo": "r", "pr": 1, "rubrics_sha": sha, "rubrics_published": False}
+    body = render.render_scoreboard(["naming"], {}, "a" * 40, "approved", "", prov=prov)
+    assert f"/tree/{sha}" not in body and f"/blob/{sha}" not in body
+    assert "rubrics @ `fffffff` (not on GitHub)" in body
+    assert "| naming |" in body  # rubric name shown unlinked
+    thread = render.render_thread({"rubric": "naming", "verdict": "request_changes"}, prov)
+    assert "/blob/main/rubrics/naming.md" in thread and f"/blob/{sha}/" not in thread
+    published = render.render_scoreboard(["naming"], {}, "a" * 40, "approved", "",
+                                         prov={**prov, "rubrics_published": True})
+    assert f"/blob/{sha}/rubrics/naming.md" in published
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items())
              if name.startswith("test_") and callable(value)]
