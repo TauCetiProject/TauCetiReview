@@ -14,8 +14,9 @@ def rubrics_fingerprint(rubrics_dir):
     rubric's prompt (reviewers.RUBRIC_REFERENCES) — recorded as `rubrics_version` provenance on
     every run and round record, in run ids and dedupe keys, and in the rendered meta blocks, so
     a rubric or reference edit is distinguishable in the archive. It does NOT feed approval
-    staleness: verdict.state_of binds approvals to the PR head SHA only (issue #95 tracks
-    binding carried-forward approvals to this fingerprint)."""
+    staleness at a given head: verdict.state_of binds approvals to the PR head SHA only, by
+    policy, so a rubric edit never forces re-review of open PRs. Carrying an approval to a new
+    head with an unchanged patch (casefile.carry_forward) does require the same fingerprint."""
     d = pathlib.Path(rubrics_dir)
     for rubric, paths in reviewers.RUBRIC_REFERENCES.items():
         if not (d / f"{rubric}.md").is_file():
