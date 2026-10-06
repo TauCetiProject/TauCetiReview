@@ -213,10 +213,11 @@ def rubrics_repo_sha(repo_dir):
 
 
 def cli_sha():
-    """The commit this CLI itself was installed from. It decides what the engine is told (e.g.
-    whether to seed another reviewer's approvals), yet a `uv tool install` keeps it frozen while
-    the engine tracks main, so the scoreboard records it separately from the engine's commit.
-    Purely informational: anything doubtful yields "" (shown as nothing) rather than a wrong SHA."""
+    """(sha, dirty): the commit this CLI itself was installed from. It decides what the engine is
+    told (e.g. whether to seed another reviewer's approvals), yet a `uv tool install` keeps it frozen
+    while the engine tracks main, so the scoreboard records it separately from the engine's commit.
+    Purely informational: anything doubtful yields "" (shown as nothing) rather than a wrong SHA.
+    `dirty` marks a source checkout with uncommitted edits; a git+https install never has them."""
     here = pathlib.Path(__file__).resolve()
     try:  # an install from git+https records its commit in PEP 610 direct_url.json
         import importlib.metadata
@@ -227,7 +228,7 @@ def cli_sha():
             vcs = direct.get("vcs_info") or {}
             sha = vcs.get("commit_id")
             if vcs.get("vcs") == "git" and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha):
-                return sha
+                return sha, False
     except Exception:
         pass
     root = here.parent.parent
@@ -237,8 +238,19 @@ def cli_sha():
                 capture=True, quiet=True, allow_fail=True)
         sha = r.stdout.strip() if r.returncode == 0 else ""
         if re.fullmatch(r"[0-9a-f]{40}", sha):
-            return sha
-    return ""
+            return sha, checkout_dirty(root)
+    return "", False
+
+
+def checkout_dirty(root):
+    """Whether a checkout has uncommitted changes to tracked files, so its HEAD is not quite the code
+    that ran. An unreadable status counts as dirty: the claim "exactly HEAD" needs positive evidence."""
+    try:  # bytes: a tracked path need not be valid UTF-8, and this check must never abort a review
+        r = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+                           capture_output=True)
+    except OSError:
+        return True
+    return r.returncode != 0 or bool(r.stdout.strip())
 
 
 def fetch_thread_replies(repo, pr):
@@ -802,7 +814,9 @@ def main():
 
     rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
     # By environment rather than a flag, so a --rubrics-sha pin to an engine predating it still runs.
-    os.environ["TAUCETI_CLI_SHA"] = cli_sha()
+    # Only the engine's environment: an embedding caller's os.environ must not carry it onward.
+    sha, dirty = cli_sha()
+    engine_env = {**os.environ, "TAUCETI_CLI_SHA": sha, "TAUCETI_CLI_DIRTY": "1" if dirty else "0"}
     # Shadow outbox lives under the PERSISTENT store, not the throwaway scratch one: if the
     # sync at the end fails, the records must survive the workspace cleanup for a later sync.
     outbox_store = (CACHE_DIR / "store" / a.repo.replace("/", "__")) if a.shadow else store
@@ -834,7 +848,7 @@ def main():
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
           file=sys.stderr)
-    r = run(cmd, allow_fail=True)
+    r = run(cmd, allow_fail=True, env=engine_env)
     # The engine aborts with PROVIDER_DOWN_EXIT when consecutive rubrics failed because the provider
     # itself is unusable (expired credential, exhausted subscription window). It has already said
     # which, and it deliberately wrote no scoreboard: an outage is not a review verdict and must not

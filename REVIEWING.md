@@ -40,6 +40,11 @@ uv tool install git+https://github.com/TauCetiProject/TauCetiReview
 tauceti-review 42
 ```
 
+An installed command stays at the version you installed (`uv tool upgrade tauceti-review` to update).
+Scoreboards you post show its commit as `CLI @ abc1234` in the footer, so you can check it. This
+needs a `git+https` install or a git checkout (where uncommitted changes to tracked files add
+`(modified)`); a `pip install .` copy has no commit to show.
+
 Or from a checkout (also how to hack on it):
 
 ```bash

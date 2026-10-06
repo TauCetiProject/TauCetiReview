@@ -227,6 +227,26 @@ def test_build_hint_never_uses_another_head_or_unverified_success():
         assert reviewers.ci_status_block(status, "reviewed-head") == "", meta
 
 
+def test_checkout_dirty_ignores_untracked_files_only():
+    import subprocess
+    with tempfile.TemporaryDirectory() as d:
+        git = ["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(["git", "init", "-q", d], check=True)
+        (pathlib.Path(d) / "f").write_text("a")
+        subprocess.run(git + ["add", "f"], check=True)
+        subprocess.run(git + ["commit", "-qm", "c"], check=True)
+        assert not cli.checkout_dirty(d)
+        (pathlib.Path(d) / "untracked").write_text("x")
+        assert not cli.checkout_dirty(d)
+        (pathlib.Path(d) / "f").write_text("b")
+        assert cli.checkout_dirty(d)
+
+
+def test_checkout_dirty_when_status_unreadable():
+    with tempfile.TemporaryDirectory() as d:
+        assert cli.checkout_dirty(d)  # not a repository at all
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

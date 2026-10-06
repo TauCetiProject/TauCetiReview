@@ -33,12 +33,36 @@ def test_cli_sha_is_recorded_and_shown():
     body = render.render_scoreboard([], {}, "a" * 40, "approved", "",
                                     prov={"repo": "r", "pr": 1, "cli_sha": "c" * 40})
     assert json.loads(META_RE.findall(body)[-1])["cli_sha"] == "c" * 40
-    assert "CLI @ `ccccccc`" in body
+    assert "CLI @ `ccccccc`" in body and "(modified)" not in body
+
+
+def test_dirty_cli_is_marked_modified():
+    body = render.render_scoreboard([], {}, "a" * 40, "approved", "",
+                                    prov={"repo": "r", "pr": 1, "cli_sha": "c" * 40,
+                                          "cli_dirty": True})
+    assert json.loads(META_RE.findall(body)[-1])["cli_dirty"] is True
+    assert "CLI @ `ccccccc` (modified)" in body
 
 
 def test_missing_cli_sha_is_omitted():
     body = render.render_scoreboard([], {}, "a" * 40, "approved", "", prov={"repo": "r", "pr": 1})
     assert "CLI @" not in body and "cli_sha" not in body
+
+
+def test_round_archive_records_cli_sha():
+    import argparse
+    import tempfile
+    import review
+    with tempfile.TemporaryDirectory() as outbox:
+        a = argparse.Namespace(archive_dir=outbox, dry_run=False, arm="production", pr=1, repo="r",
+                               mode="commit", submitted_by=None, base_sha=None, merge_base_sha=None,
+                               rubrics_sha=None)
+        for pr, dirty in ((1, True), (2, False)):  # a verified-clean CLI is recorded, not omitted
+            a.pr = pr
+            prov = {"round": 1, "cli_sha": "c" * 40, "cli_dirty": dirty}
+            review.emit_round_archive(a, prov, "a" * 40, [], [], {}, "approved", None, 0, "", "v")
+            rec = json.loads(next(pathlib.Path(outbox).rglob(f"{pr}-1.json")).read_text())
+            assert rec["cli_sha"] == "c" * 40 and rec["cli_dirty"] is dirty
 
 
 if __name__ == "__main__":

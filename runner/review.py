@@ -205,6 +205,7 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
             "head_sha": head, "base_ref_oid": a.base_sha or None,
             "merge_base_sha": a.merge_base_sha or None,
             "rubrics_sha": a.rubrics_sha or None, "rubrics_version": rubrics_version,
+            "cli_sha": prov.get("cli_sha"), "cli_dirty": prov.get("cli_dirty"),
             "diff_sha256": prov.get("diff_sha256"), "ran": ran,
             "run_ids": run_ids, "states": states,
             "overall": overall, "cost": round_cost, "halted_at": halted,
@@ -479,6 +480,7 @@ def run_rubric(ctx, rubric):
             "rubrics_sha": a.rubrics_sha or None,
             "rubrics_sha_approx": a.rubrics_sha_approx or None,
             "rubrics_version": rubrics_version,
+            "cli_sha": prov.get("cli_sha"), "cli_dirty": prov.get("cli_dirty"),
             "provider": provider, "model": model, "mode": a.mode, "auth": a.auth,
             "ci": bool(os.environ.get("GITHUB_ACTIONS")) or None,
             "prompt_sha256": res["prompt_sha256"],
@@ -791,7 +793,11 @@ def main():
             "rubrics_sha_approx": a.rubrics_sha_approx or None,
             "rubrics_version": rubrics_version,
             # The driving CLI's commit (set by runner/cli.py), which can lag this engine's.
-            "cli_sha": os.environ.get("TAUCETI_CLI_SHA") or None}
+            "cli_sha": os.environ.get("TAUCETI_CLI_SHA") or None,
+            # True/False when the CLI checked; None (omitted) for an unknown SHA or a CLI that predates
+            # the check, so a verified-clean CLI stays distinguishable from an unchecked one.
+            "cli_dirty": ({"1": True, "0": False}.get(os.environ.get("TAUCETI_CLI_DIRTY", ""))
+                          if os.environ.get("TAUCETI_CLI_SHA") else None)}
     pr_state = ledger["prs"].setdefault(str(a.pr), {})
     pr_state.setdefault("rounds", [])
     pr_state.setdefault("state", {})            # per-rubric case files (= scoreboard/staleness)
