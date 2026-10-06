@@ -186,6 +186,8 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
     if (prov or {}).get("rubrics_sha"):
         sha = prov["rubrics_sha"]
         sub.append(f"rubrics @ [`{sha[:7]}`]({rubric_url(prov)})")
+    if (prov or {}).get("cli_sha"):
+        sub.append(f"CLI @ `{prov['cli_sha'][:7]}`")
     if cost_line:
         sub.append(cost_line)
     if sub:
