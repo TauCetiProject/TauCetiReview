@@ -62,9 +62,9 @@ def linkable_rubrics_sha(prov):
     return None if prov.get("rubrics_published") is False else prov.get("rubrics_sha")
 
 
-DRIFT_WARNING = ("⚠️ This review ran with rubric text that differs from the published rubrics: "
-                 "a stale or pinned checkout, or local edits. Its findings may apply rules that "
-                 "have since changed.")
+DRIFT_WARNING = ("⚠️ This review ran from a rubrics checkout that differs from the published "
+                 "rubrics (out of date, pinned, or locally edited), so its findings may reflect "
+                 "different rules.")
 
 
 def rubric_url(prov, rubric=None):
@@ -129,9 +129,11 @@ def render_thread(cf, prov=None):
         sub.append(f"{fmt_tok(u.get('input_tokens'))} in / {fmt_tok(u.get('output_tokens'))} out tokens")
     if diff_url(prov):
         sub.append(f"reviewing [this diff]({diff_url(prov)})")
-    sub.append(f"[rubric]({rubric_url(prov, cf['rubric'])})")
+    # Linked to main when the commit that ran is not on GitHub, so say it is the published text.
+    label = "published rubric" if (prov or {}).get("rubrics_published") is False else "rubric"
+    sub.append(f"[{label}]({rubric_url(prov, cf['rubric'])})")
     if (prov or {}).get("rubrics_drift"):
-        sub.append("⚠️ rubrics differ from published main")
+        sub.append("⚠️ rubrics checkout differs from published main")
     lines += ["", f"<sub>{' · '.join(sub)}</sub>", "",
               meta_block("thread", rubric=cf["rubric"], **thread_meta(cf, prov))]
     return "\n".join(lines)

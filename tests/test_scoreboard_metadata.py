@@ -72,7 +72,7 @@ def test_drifted_rubrics_warn_on_scoreboard_and_threads():
     assert render.DRIFT_WARNING in body
     assert json.loads(META_RE.findall(body)[-1])["rubrics_drift"] is True
     thread = render.render_thread({"rubric": "naming", "verdict": "request_changes"}, prov)
-    assert "rubrics differ from published main" in thread
+    assert "rubrics checkout differs from published main" in thread
 
 
 def test_current_or_unchecked_rubrics_do_not_warn():
@@ -80,7 +80,7 @@ def test_current_or_unchecked_rubrics_do_not_warn():
         prov = {"repo": "r", "pr": 1, "rubrics_sha": "f" * 40, "rubrics_drift": drift}
         body = render.render_scoreboard(["naming"], {}, "a" * 40, "approved", "", prov=prov)
         thread = render.render_thread({"rubric": "naming", "verdict": "request_changes"}, prov)
-        assert "⚠️ This review" not in body and "differ from published" not in thread
+        assert "⚠️ This review" not in body and "differs from published" not in thread
 
 
 def test_unpublished_rubrics_commit_is_not_linked():
@@ -91,7 +91,8 @@ def test_unpublished_rubrics_commit_is_not_linked():
     assert "rubrics @ `fffffff` (not on GitHub)" in body
     assert "| naming |" in body  # rubric name shown unlinked
     thread = render.render_thread({"rubric": "naming", "verdict": "request_changes"}, prov)
-    assert "/blob/main/rubrics/naming.md" in thread and f"/blob/{sha}/" not in thread
+    assert "[published rubric](" in thread and "/blob/main/rubrics/naming.md" in thread
+    assert f"/blob/{sha}/" not in thread
     published = render.render_scoreboard(["naming"], {}, "a" * 40, "approved", "",
                                          prov={**prov, "rubrics_published": True})
     assert f"/blob/{sha}/rubrics/naming.md" in published

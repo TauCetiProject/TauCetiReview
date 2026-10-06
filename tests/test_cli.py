@@ -299,6 +299,42 @@ def test_rubrics_publication_unknown_when_github_is_unreachable():
     assert _publication((0, "not json", ""), down, {"a.md": "x"}) == (None, None)
 
 
+def test_rubric_blobs_ignore_crlf_and_refuse_symlinks():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        (root / "a.md").write_bytes(b"one\ntwo\n")
+        lf = cli.rubric_blobs(root)
+        (root / "a.md").write_bytes(b"one\r\ntwo\r\n")
+        assert cli.rubric_blobs(root) == lf
+        (root / "b.md").symlink_to(root / "a.md")
+        assert cli.rubric_blobs(root) is None
+
+
+def test_other_422s_leave_publication_unknown():
+    with tempfile.TemporaryDirectory() as d:
+        (pathlib.Path(d) / "a.md").write_text("alpha\n")
+        blob = cli.rubric_blobs(d)["rubrics/a.md"]
+    tree = (0, json.dumps({"tree": [{"path": "rubrics/a.md", "type": "blob", "sha": blob}]}), "")
+    spam = (1, "", "gh: Validation Failed (HTTP 422)")
+    assert _publication(tree, spam, {"a.md": "alpha\n"}) == (False, None)
+
+
+def test_drift_warning_matches_engine_and_is_added_once():
+    import render
+    assert cli.DRIFT_WARNING == render.DRIFT_WARNING
+    with tempfile.TemporaryDirectory() as d:
+        sb = pathlib.Path(d) / "scoreboard.md"
+        sb.write_text("<!--tauceti-scoreboard-->\n## AI review\n\nintro\n\n| | rubric |\n|---|---|\n")
+        cli.ensure_drift_warning(sb)
+        text = sb.read_text()
+        assert text.index(cli.DRIFT_WARNING) < text.index("| | rubric |")
+        cli.ensure_drift_warning(sb)  # an engine that already rendered it is left alone
+        assert sb.read_text().count(cli.DRIFT_WARNING) == 1
+        sb.write_text("## AI review\nno table\n")
+        cli.ensure_drift_warning(sb)
+        assert sb.read_text().split("\n")[1] == f"> {cli.DRIFT_WARNING}"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

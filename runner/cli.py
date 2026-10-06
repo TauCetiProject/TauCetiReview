@@ -216,11 +216,15 @@ def rubrics_repo_sha(repo_dir):
 def rubric_blobs(rubrics_dir):
     """{path: git blob SHA-1} for the rubric text a review reads: the same `*.md` and
     `references/*.md` files render.rubrics_fingerprint hashes. Hashed from the files on disk rather
-    than asked of git, so uncommitted edits, untracked rubrics and non-git trees all count."""
+    than asked of git, so uncommitted edits, untracked rubrics and non-git trees all count. CRLF is
+    hashed as LF, as the prompt builder reads it and as the repository stores it, so a Windows
+    checkout is not drift. None for a symlinked rubric, which git would hash as a link target."""
     d = pathlib.Path(rubrics_dir)
     out = {}
     for p in sorted(d.glob("*.md")) + sorted(d.glob("references/*.md")):
-        data = p.read_bytes()
+        if p.is_symlink():
+            return None
+        data = p.read_bytes().replace(b"\r\n", b"\n")
         out[f"rubrics/{p.relative_to(d).as_posix()}"] = hashlib.sha1(
             b"blob %d\0" % len(data) + data).hexdigest()
     return out
@@ -248,16 +252,39 @@ def rubrics_publication(rubrics_dir, sha):
     GitHub, so links pinned to it resolve. Each is None when it could not be checked; neither check
     ever aborts a review."""
     main_blobs = published_rubric_blobs()
-    drift = None if main_blobs is None else rubric_blobs(rubrics_dir) != main_blobs
+    local_blobs = rubric_blobs(rubrics_dir)
+    drift = None if main_blobs is None or local_blobs is None else local_blobs != main_blobs
     published = None
     if sha:
         r = run(["gh", "api", f"/repos/{REVIEW_REPO}/commits/{sha}", "--jq", ".sha"],
                 capture=True, quiet=True, allow_fail=True)
         if r.returncode == 0:
             published = r.stdout.strip() == sha
-        elif "No commit found" in (r.stderr or "") or "HTTP 422" in (r.stderr or ""):
+        elif "No commit found" in (r.stderr or ""):  # not throttling or another 422
             published = False
     return drift, published
+
+
+# Duplicated from render.DRIFT_WARNING for the same reason as PROVIDER_DOWN_EXIT; tests/test_cli.py
+# pins the two together.
+DRIFT_WARNING = ("⚠️ This review ran from a rubrics checkout that differs from the published "
+                 "rubrics (out of date, pinned, or locally edited), so its findings may reflect "
+                 "different rules.")
+
+
+def ensure_drift_warning(scoreboard):
+    """Put DRIFT_WARNING on a scoreboard an engine wrote without it: an engine predating the
+    TAUCETI_RUBRICS_DRIFT flag (a stale --repo-dir is exactly the case being flagged) ignores it.
+    Inserted above the rubric table, or after the heading if there is none."""
+    path = pathlib.Path(scoreboard)
+    lines = path.read_text().split("\n")
+    if any(DRIFT_WARNING in line for line in lines):
+        return
+    at = next((i for i, line in enumerate(lines) if line.startswith("| |")), None)
+    if at is None:
+        at = next((i + 1 for i, line in enumerate(lines) if line.startswith("## ")), 0)
+    lines[at:at] = [f"> {DRIFT_WARNING}", ""]
+    path.write_text("\n".join(lines))
 
 
 def tristate(flag):
@@ -875,8 +902,8 @@ def main():
               "published main. This review applies them anyway and the scoreboard will say so; "
               "update the checkout unless you are testing a rubric change.", file=sys.stderr)
     if published is False:
-        print(f"tauceti-review: WARNING: rubrics commit {rub_sha[:12]} is not on GitHub, so the "
-              "review will not link to it.", file=sys.stderr)
+        print(f"tauceti-review: WARNING: rubrics commit {rub_sha[:12]} is not on GitHub, so PR "
+              "authors cannot read the rubric text this review used.", file=sys.stderr)
     engine_env = {**os.environ, "TAUCETI_CLI_SHA": sha, "TAUCETI_CLI_DIRTY": "1" if dirty else "0",
                   "TAUCETI_RUBRICS_DRIFT": tristate(drift),
                   "TAUCETI_RUBRICS_PUBLISHED": tristate(published)}
@@ -929,6 +956,8 @@ def main():
     sb = (work / "scoreboard.md")
     if not sb.is_file():
         die(f"review step exited cleanly but produced no scoreboard ({sb}); the engine did not run.")
+    if drift:
+        ensure_drift_warning(sb)
     print("\n" + "=" * 72)
     print(sb.read_text())
     threads = sorted((work / "threads").glob("*.md")) if (work / "threads").is_dir() else []
