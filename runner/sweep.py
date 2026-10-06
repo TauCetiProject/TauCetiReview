@@ -280,9 +280,9 @@ def decide_action(*, merge_ok, in_queue, evictions_at_head, behind, escalate=EVI
 def pr_paths(pr):
     """Every path a PR changes, via the paginated REST endpoint.
 
-    NOT the GraphQL `files` connection: it caps at 100 per page, and a bump is precisely the PR that
-    exceeds that (the v4.34.0-rc1 bump changed 143 files), so reading pin-moving-ness from one page
-    would either truncate or, with a fail-closed check, abort the sweep on the one PR it exists for.
+    The fallback for a queue entry whose paths one page of the GraphQL `files` connection (100)
+    cannot hold. A bump is precisely the PR that exceeds that (the v4.34.0-rc1 bump changed 143
+    files), so reading pin-moving-ness from one page would truncate on the one PR it exists for.
     """
     rows = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/pulls/{pr}/files?per_page=100",
                      "--jq", ".[] | {filename}"])
@@ -295,11 +295,15 @@ def queue_entries():
     FAILS CLOSED. A truncated connection or a partial GraphQL response would otherwise read as "the
     queue is empty" — which, for the reservation, means "no bump is holding it" and lets everything
     merge under a bump. So `hasNextPage` on the entries connection, or any top-level `errors`, raises.
+
+    The queue read itself carries each entry's paths, so a long queue costs one call, not one per
+    entry; merge-only reads it on every enqueue and the sweep on every run, under the same quota.
     """
-    out = backend.github_entries(REPO)
+    out = backend.github_entries(REPO, paths=True)
     for entry in out:
-        api_budget.begin_pr()
-        entry["paths"] = pr_paths(entry["number"])
+        if entry["paths"] is None:
+            api_budget.begin_pr()
+            entry["paths"] = pr_paths(entry["number"])
     return out
 
 
