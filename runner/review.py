@@ -789,7 +789,9 @@ def main():
             "head_sha": head, "base_sha": a.base_sha, "merge_base_sha": a.merge_base_sha,
             "rubrics_repo": a.rubrics_repo, "rubrics_sha": a.rubrics_sha,
             "rubrics_sha_approx": a.rubrics_sha_approx or None,
-            "rubrics_version": rubrics_version}
+            "rubrics_version": rubrics_version,
+            # The driving CLI's commit (set by runner/cli.py), which can lag this engine's.
+            "cli_sha": os.environ.get("TAUCETI_CLI_SHA") or None}
     pr_state = ledger["prs"].setdefault(str(a.pr), {})
     pr_state.setdefault("rounds", [])
     pr_state.setdefault("state", {})            # per-rubric case files (= scoreboard/staleness)

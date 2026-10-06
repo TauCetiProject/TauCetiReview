@@ -29,6 +29,18 @@ def test_empty_submitted_by_is_omitted():
     assert "submitted_by" not in scoreboard_meta("")
 
 
+def test_cli_sha_is_recorded_and_shown():
+    body = render.render_scoreboard([], {}, "a" * 40, "approved", "",
+                                    prov={"repo": "r", "pr": 1, "cli_sha": "c" * 40})
+    assert json.loads(META_RE.findall(body)[-1])["cli_sha"] == "c" * 40
+    assert "CLI @ `ccccccc`" in body
+
+
+def test_missing_cli_sha_is_omitted():
+    body = render.render_scoreboard([], {}, "a" * 40, "approved", "", prov={"repo": "r", "pr": 1})
+    assert "CLI @" not in body and "cli_sha" not in body
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items())
              if name.startswith("test_") and callable(value)]

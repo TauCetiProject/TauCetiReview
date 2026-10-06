@@ -212,6 +212,35 @@ def rubrics_repo_sha(repo_dir):
     return (r.stdout.strip() if r.returncode == 0 else ""), True
 
 
+def cli_sha():
+    """The commit this CLI itself was installed from. It decides what the engine is told (e.g.
+    whether to seed another reviewer's approvals), yet a `uv tool install` keeps it frozen while
+    the engine tracks main, so the scoreboard records it separately from the engine's commit.
+    Purely informational: anything doubtful yields "" (shown as nothing) rather than a wrong SHA."""
+    here = pathlib.Path(__file__).resolve()
+    try:  # an install from git+https records its commit in PEP 610 direct_url.json
+        import importlib.metadata
+        dist = importlib.metadata.distribution("tauceti-review")
+        # Lookup is by name, so only trust metadata that actually owns this file.
+        if pathlib.Path(dist.locate_file("runner/cli.py")).resolve() == here:
+            direct = json.loads(dist.read_text("direct_url.json") or "{}")
+            vcs = direct.get("vcs_info") or {}
+            sha = vcs.get("commit_id")
+            if vcs.get("vcs") == "git" and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha):
+                return sha
+    except Exception:
+        pass
+    root = here.parent.parent
+    # Only this tree's own .git: an installed package can sit inside some unrelated repository.
+    if (root / ".git").exists():
+        r = run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                capture=True, quiet=True, allow_fail=True)
+        sha = r.stdout.strip() if r.returncode == 0 else ""
+        if re.fullmatch(r"[0-9a-f]{40}", sha):
+            return sha
+    return ""
+
+
 def fetch_thread_replies(repo, pr):
     """Gather author replies on the per-rubric review threads from GitHub, keyed by rubric, so a
     re-review audits the author's contest rather than re-judging the diff blind. A thread root
@@ -772,6 +801,8 @@ def main():
               + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
 
     rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
+    # By environment rather than a flag, so a --rubrics-sha pin to an engine predating it still runs.
+    os.environ["TAUCETI_CLI_SHA"] = cli_sha()
     # Shadow outbox lives under the PERSISTENT store, not the throwaway scratch one: if the
     # sync at the end fails, the records must survive the workspace cleanup for a later sync.
     outbox_store = (CACHE_DIR / "store" / a.repo.replace("/", "__")) if a.shadow else store
