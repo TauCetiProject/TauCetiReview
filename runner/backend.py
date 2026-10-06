@@ -56,12 +56,26 @@ def selected(repo):
     return {"backend": found[0]["value"], "updated_at": found[0].get("updated_at")}
 
 
-def github_entries(repo):
+def _complete_paths(pr):
+    """The PR's changed paths when one GraphQL page holds all of them, else None."""
+    try:
+        files = pr["files"]
+        if files["pageInfo"]["hasNextPage"] is not False or len(files["nodes"]) != pr["changedFiles"]:
+            return None
+        return [f["path"] for f in files["nodes"]]
+    except (KeyError, TypeError):
+        return None
+
+
+def github_entries(repo, paths=False):
+    """With `paths`, each entry also carries `paths`: the PR's changed paths, or None when one page
+    of the `files` connection does not hold them all. Callers read those from REST instead."""
     owner, name = repo.split("/")
+    files = " changedFiles files(first:100){pageInfo{hasNextPage} nodes{path}}" if paths else ""
     query = '''query($owner:String!,$name:String!,$cursor:String){
       repository(owner:$owner,name:$name){mergeQueue(branch:"main"){
         entries(first:100,after:$cursor){pageInfo{hasNextPage endCursor}
-          nodes{enqueuedAt pullRequest{number id headRefOid}}}}}}'''
+          nodes{enqueuedAt pullRequest{number id headRefOid''' + files + '''}}}}}}'''
     result, cursor, seen = [], None, set()
     while True:
         args = ["api", "graphql", "-f", "query=" + query,
@@ -76,8 +90,11 @@ def github_entries(repo):
                 raise ValueError()
             for node in nodes:
                 pr = node["pullRequest"]
-                result.append({"number": pr["number"], "node_id": pr["id"],
-                               "head_sha": pr["headRefOid"], "enqueued_at": node["enqueuedAt"]})
+                entry = {"number": pr["number"], "node_id": pr["id"],
+                         "head_sha": pr["headRefOid"], "enqueued_at": node["enqueuedAt"]}
+                if paths:
+                    entry["paths"] = _complete_paths(pr)
+                result.append(entry)
             if not page["hasNextPage"]:
                 return result
             cursor = page["endCursor"]

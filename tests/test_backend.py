@@ -49,6 +49,26 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 backend.github_entries("o/r")
 
+    def test_paths_come_from_the_queue_read_only_when_one_page_holds_them(self):
+        def pr(n, paths, more=False, count=None):
+            return {"enqueuedAt": "now", "pullRequest": {
+                "number": n, "id": str(n), "headRefOid": "a" * 40,
+                "changedFiles": len(paths) if count is None else count,
+                "files": {"pageInfo": {"hasNextPage": more}, "nodes": [{"path": p} for p in paths]}}}
+        nodes = [pr(1, ["TauCeti/A.lean"]), pr(2, ["TauCeti/B.lean"], more=True),
+                 pr(3, ["TauCeti/C.lean"], count=101), {"enqueuedAt": "now", "pullRequest": {
+                     "number": 4, "id": "4", "headRefOid": "a" * 40, "files": None}}]
+        data = {"data": {"repository": {"mergeQueue": {"entries": {
+            "nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}}
+        with patch.object(backend, "gh_json", return_value=data) as gh:
+            entries = backend.github_entries("o/r", paths=True)
+        self.assertIn("files(first:100)", gh.call_args.args[0][3])
+        self.assertEqual([e["paths"] for e in entries], [["TauCeti/A.lean"], None, None, None])
+        with patch.object(backend, "gh_json", return_value=data) as gh:
+            entries = backend.github_entries("o/r")
+        self.assertNotIn("files", gh.call_args.args[0][3])
+        self.assertNotIn("paths", entries[0])
+
     def test_head_bound_membership_and_terminal_failure(self):
         head = "a" * 40
         d = {"batches": [], "held": [], "outcomes": [{"pr": 1, "head_sha": head, "state": "error"}]}
