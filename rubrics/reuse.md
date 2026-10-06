@@ -30,6 +30,17 @@ Run each of these searches. Choose relevant search terms and grep (under
   shims, and duplicate theorem names as unnecessary duplication. The canonical replacement is
   the located existing API; require the compatibility artifact's deletion.
 
+## Open pull requests
+
+The PR head you can read does not contain other open pull requests. When your prompt lists them
+(gathered by the runner, with the declarations each adds), check every declaration this PR adds
+against theirs. If an open PR opened before this one already adds the same declaration, an
+equivalent one, or the general form this one specialises, request changes: name that PR and the
+overlapping declarations, and ask that this PR build on it (wait for it to merge, or coordinate
+with its author) rather than add a second copy. If this PR is the earlier one, mention the overlap
+but do not hold this PR for it. You see names only: where a name does not settle whether two
+declarations coincide, say so and name the PR rather than asserting a duplicate.
+
 ## Rejecting it
 
 Every finding must name the located replacement and say exactly how to use it.
