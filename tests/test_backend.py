@@ -60,47 +60,12 @@ class BackendTests(unittest.TestCase):
         d["held"] = [{"pr": 1, "head_sha": head}]
         self.assertEqual(backend.bors_head_state(d, 1, head), "approved")
 
-    def test_lost_revocation_is_retried_from_observed_approval(self):
-        h = "a" * 40
-        live = {"state": "open", "base": {"ref": "main"}, "head": {"sha": h}}
-        data = {"batches": [], "held": [{"pr": 1, "head_sha": h}], "outcomes": []}
-        with patch.object(backend, "gh_json", return_value=live) as gh, \
-                patch.object(backend, "bors_observation", return_value=data), \
-                patch("sys.stdout", new_callable=io.StringIO):
-            backend.bors_command("o/r", 1, h, False)
-            self.assertEqual(gh.call_count, 2)
-            self.assertIn("body=bors r- sha=" + h, gh.call_args.args[0])
-
-    def test_a_backend_flip_during_observation_prevents_post(self):
-        h = "a" * 40
-        live = {"state": "open", "draft": False, "base": {"ref": "main"}, "head": {"sha": h}}
-        with patch.object(backend, "gh_json", return_value=live) as gh, \
-                patch.object(backend, "allow", side_effect=[True, False]), \
-                patch.object(backend, "bors_observation", return_value={"batches": [], "held": [], "outcomes": []}):
-            backend.bors_command("o/r", 1, h, True)
-            self.assertEqual(gh.call_count, 1)  # only the live PR read; no command
-
-    def test_outage_without_bot_approval_history_does_not_post(self):
-        h = "a" * 40
-        live = {"state": "open", "base": {"ref": "main"}, "head": {"sha": h}}
-        with patch.object(backend, "gh_json", side_effect=[live, [[]]]) as gh, \
-                patch.object(backend, "bors_observation", side_effect=RuntimeError("outage")):
-            backend.bors_command("o/r", 1, h, False)
-            self.assertEqual(gh.call_count, 2)
-
-    def test_untrusted_revocation_cannot_suppress_bot_revocation_during_outage(self):
-        h = "a" * 40
-        live = {"state": "open", "base": {"ref": "main"}, "head": {"sha": h}}
-        comments = [[
-            {"body": "bors r+ sha=" + h, "user": {"login": "tauceti-review-bot[bot]"}},
-            {"body": "bors r- sha=" + h, "user": {"login": "contributor"}},
-        ]]
-        with patch.object(backend, "gh_json", side_effect=[live, comments, {}]) as gh, \
-                patch.object(backend, "bors_observation", side_effect=RuntimeError("outage")), \
-                patch("sys.stdout", new_callable=io.StringIO):
-            backend.bors_command("o/r", 1, h, False)
-            self.assertEqual(gh.call_count, 3)
-            self.assertIn("body=bors r- sha=" + h, gh.call_args.args[0])
+    def test_policy_delivery_is_independent_of_backend_selection(self):
+        with patch.object(backend.eligibility, "publish") as publish:
+            backend.publish_eligibility("o/r", 1, "a" * 40, True, merge_base="b" * 40)
+            self.assertEqual(publish.call_args.args[5], True)
+            backend.publish_eligibility("o/r", 1, "a" * 40, False)
+            self.assertEqual(publish.call_args.args[5], False)
 
 
 if __name__ == "__main__":

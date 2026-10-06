@@ -614,7 +614,7 @@ def withdraw_both(pr, node_id, head):
         quota_error, ok = e, False
         api_budget.check_result(False)
     try:
-        backend.bors_command(REPO, pr, head, False, dry_run=DRY_RUN)
+        backend.publish_eligibility(REPO, pr, head, False, dry_run=DRY_RUN)
     except api_budget.Exhausted as e:
         quota_error = e
         api_budget.check_result(False)
@@ -651,11 +651,14 @@ def sweep_bors(prs, admit=True):
                 failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
             elif decision.get("merge") is True:
                 eligible += 1
-                if not admit or p.get("isDraft") or has_keep_label(p):
-                    continue
-                backend.bors_command(REPO, n, head, True, is_pin_moving(paths), DRY_RUN, mb)
+                approve = True if not p.get("isDraft") and not has_keep_label(p) else None
+                backend.publish_eligibility(REPO, n, head, approve, is_pin_moving(paths), DRY_RUN, mb,
+                                     reason=decision.get("reason", ""))
                 if not DRY_RUN and merge_base_now(n, head) != mb:
                     failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
+            else:
+                backend.publish_eligibility(REPO, n, head, None, is_pin_moving(paths), DRY_RUN, mb,
+                                     reason=decision.get("reason", ""))
         except api_budget.Exhausted:
             raise
         except Exception as e:
@@ -783,6 +786,8 @@ def main():
             if decision.get("review_safe", True) is not True:
                 failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
                 continue
+            backend.publish_eligibility(REPO, n, head, True if decision.get("merge") and not paused else None,
+                                 is_pin_moving(paths), DRY_RUN, merge_base, reason=decision.get("reason", ""))
             if paused:
                 continue
             if active_approval:
