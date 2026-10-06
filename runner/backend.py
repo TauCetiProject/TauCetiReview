@@ -11,14 +11,16 @@ import subprocess
 import urllib.request
 
 import api_budget
+import eligibility
 
 BORS_URL = "https://bors.taucetiproject.org/repositories/1/active-batches?base=main"
 ACTIVE = {"waiting", "running"}
 
 
-def gh_json(args):
+def gh_json(args, payload=None):
     try:
-        r = api_budget.run(["gh", *args], text=True, capture_output=True, timeout=30)
+        r = api_budget.run(["gh", *args], text=True, capture_output=True, timeout=30,
+                           **({"input": json.dumps(payload)} if payload is not None else {}))
     except subprocess.TimeoutExpired as e:
         raise RuntimeError("GitHub observation/mutation timed out") from e
     if r.returncode:
@@ -146,65 +148,19 @@ def bors_head_state(data, pr, head):
     return "absent"
 
 
-def bors_command(repo, pr, head, approve, single=False, dry_run=False, merge_base=None):
-    live = gh_json(["api", f"repos/{repo}/pulls/{pr}"])
-    if live.get("state") != "open" or live.get("base", {}).get("ref") != "main" or (approve and live.get("head", {}).get("sha") != head):
-        log(pr=pr, head_sha=head, reason="head_or_base_moved", admitted=False)
-        return
-    if approve:
-        if live.get("draft") or not allow(repo, "bors"):
-            return
-        state = bors_head_state(bors_observation(), pr, head)
-        if state != "absent":
-            log(pr=pr, head_sha=head, reason="bors_" + state, admitted=False)
-            return
-        if merge_base:
-            cmp = gh_json(["api", f"repos/{repo}/compare/{live['base']['sha']}...{head}?per_page=1"])
-            if cmp.get("merge_base_commit", {}).get("sha") != merge_base:
-                log(pr=pr, head_sha=head, reason="merge_base_moved", admitted=False)
-                return
-    else:
-        head = live["head"]["sha"]
-        approved = None
-        try:
-            data = bors_observation()
-            approved = (any(m.get("pr") == pr for b in data["batches"] for m in b["members"])
-                        or any(m.get("pr") == pr for m in data["held"]))
-        except Exception:
-            pass
-        # Revoke even when the other queue is selected or observations fail.
-        # A lost r- delivery is retried while real approval is still present.
-        if approved is not True:
-            pages = gh_json(["api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr}/comments?per_page=100"])
-            commands = [c.get("body") for page in pages for c in page
-                        if ((c.get("performed_via_github_app") or {}).get("id") == 3947238
-                            or (c.get("user") or {}).get("login") == "tauceti-review-bot[bot]")
-                        and (c.get("body") or "").startswith("bors r")]
-            if commands and commands[-1] == f"bors r- sha={head}":
-                return
-            if not commands:
-                return
-    body = f"bors {'r+ single' if single else 'r+'} sha={head}" if approve else f"bors r- sha={head}"
-    if dry_run:
-        log(pr=pr, head_sha=head, dry_run=True, command=body)
-        return
-    # Read again after all potentially slow observations.
-    if approve and not allow(repo, "bors"):
-        return
-    if approve and merge_base:
-        live = gh_json(["api", f"repos/{repo}/pulls/{pr}"])
-        if live.get("head", {}).get("sha") != head or live.get("base", {}).get("ref") != "main":
-            return
-        cmp = gh_json(["api", f"repos/{repo}/compare/{live['base']['sha']}...{head}?per_page=1"])
-        if cmp.get("merge_base_commit", {}).get("sha") != merge_base:
-            return
-    gh_json(["api", "-X", "POST", f"repos/{repo}/issues/{pr}/comments", "-f", "body=" + body])
-    log(pr=pr, head_sha=head, command=body)
+def publish_eligibility(repo, pr, head, approve, single=False, dry_run=False, merge_base=None, reason=""):
+    """Deliver the existing policy result without a command comment.
+
+    True = eligible, None = wait without withdrawing, False = unsafe review.
+    Admission is enforced by bors against the live backend and outgoing queue.
+    """
+    return eligibility.publish(gh_json, log, repo, pr, head, approve, single,
+                               dry_run, merge_base, reason)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("command", choices=("selected", "allow", "bors"))
+    ap.add_argument("command", choices=("selected", "allow", "eligibility"))
     ap.add_argument("--expected", choices=("queue", "bors"))
     ap.add_argument("--decision", default="merge.json")
     args = ap.parse_args()
@@ -225,12 +181,14 @@ def main():
     with open(args.decision) as f:
         decision = json.load(f)
     if decision.get("review_safe") is not True:
-        bors_command(repo, int(os.environ["PR"]), os.environ["HEAD_SHA"], False)
-    elif decision.get("merge") is True:
+        publish_eligibility(repo, int(os.environ["PR"]), os.environ["HEAD_SHA"], False,
+                            reason=decision.get("reason", ""))
+    else:
         with open("paths.z", "rb") as f:
             single = bool({b"lake-manifest.json", b"lean-toolchain"} & set(f.read().split(b"\0")))
-        bors_command(repo, int(os.environ["PR"]), os.environ["HEAD_SHA"], True, single,
-                     merge_base=os.environ["MERGE_BASE"])
+        publish_eligibility(repo, int(os.environ["PR"]), os.environ["HEAD_SHA"],
+                     True if decision.get("merge") is True else None, single,
+                     merge_base=os.environ["MERGE_BASE"], reason=decision.get("reason", ""))
     return 0
 
 

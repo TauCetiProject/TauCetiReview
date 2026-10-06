@@ -74,6 +74,7 @@ jobs:
           repositories: TauCeti
           permission-contents: write
           permission-pull-requests: write
+          permission-checks: write
           permission-issues: write  # create recovery/reservation labels when absent
           permission-workflows: write
         env:

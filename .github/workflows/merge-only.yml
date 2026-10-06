@@ -140,6 +140,7 @@ jobs:
           repositories: TauCeti
           permission-contents: write
           permission-pull-requests: write
+          permission-checks: write
           permission-issues: write
         env:
           # This pinned action discovers permission inputs from the environment.
@@ -152,12 +153,12 @@ jobs:
           REPO: TauCetiProject/TauCeti
         run: python3 runner/backend.py selected
 
-      - name: Reconcile the bors approval
+      - name: Publish merge eligibility
         # Unsafe review revocations run for BOTH engines, even if this step fails.
         env:
           GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
           REPO: TauCetiProject/TauCeti
-        run: python3 runner/backend.py bors
+        run: python3 runner/backend.py eligibility
 
       - name: Reconcile the merge queue
         if: ${{ always() && steps.merge_token.outcome == 'success' }}

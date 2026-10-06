@@ -20,6 +20,10 @@ class SweepBudgetTests(unittest.TestCase):
         api_budget.rate_limited = False
         api_budget.failures = 0
 
+    def setUp(self):
+        self.publisher = patch.object(backend, 'publish_eligibility').start()
+        self.addCleanup(patch.stopall)
+
     def test_quota_headroom_and_allowance_to_finish_a_pr(self):
         quota = {'resources': {'core': {'remaining': 1050}, 'graphql': {'remaining': 5000}}}
         with patch.object(api_budget.subprocess, 'run', return_value=subprocess.CompletedProcess('gh', 0, json.dumps(quota), '')), \
@@ -80,7 +84,7 @@ class SweepBudgetTests(unittest.TestCase):
             with self.assertRaises(api_budget.Exhausted):
                 backend.allow('o/r', 'bors')
         with patch.object(sweep, 'dequeue', return_value=True), \
-                patch.object(backend, 'bors_command', side_effect=api_budget.Exhausted('limited')):
+                patch.object(backend, 'publish_eligibility', side_effect=api_budget.Exhausted('limited')):
             with self.assertRaises(api_budget.Exhausted):
                 sweep.withdraw_both(1, 'PR1', 'a' * 40)
 
@@ -171,7 +175,7 @@ class SweepBudgetTests(unittest.TestCase):
 
     def test_timeout_in_native_withdrawal_still_attempts_bors_revocation(self):
         with patch.object(api_budget.subprocess, 'run', side_effect=subprocess.TimeoutExpired('gh', 30)), \
-                patch.object(backend, 'bors_command') as revoke, \
+                patch.object(backend, 'publish_eligibility') as revoke, \
                 patch.object(sweep, 'DRY_RUN', False), \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertFalse(sweep.withdraw_both(1, 'PR1', 'a' * 40))
