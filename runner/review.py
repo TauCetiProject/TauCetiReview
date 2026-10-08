@@ -61,6 +61,7 @@ def public_record(value):
 # otherwise was raw provider text nobody may print. A named kind carries the diagnosis without the
 # payload. Ordered: the first pattern to match wins, so the specific precede `unknown`.
 _ERROR_KINDS = (
+    ("local_admission", re.compile(r"^tauceti-local-admission:", re.M)),
     ("not_authenticated", re.compile(r"not logged in|/login|invalid authentication|unauthorized|401"
                                      r"|token has been revoked|failed to authenticate", re.I)),
     # The subscription CLIs report an exhausted plan as prose, with no status code anywhere:
@@ -77,7 +78,7 @@ _ERROR_KINDS = (
 
 # Kinds that mean "the provider could not serve ANY rubric right now", as opposed to "this rubric's
 # call went wrong". Every one of them will hit the next rubric identically, so the round is over.
-PROVIDER_DOWN_KINDS = frozenset({"not_authenticated", "quota_exhausted", "rate_limited"})
+PROVIDER_DOWN_KINDS = frozenset({"not_authenticated", "quota_exhausted", "rate_limited", "local_admission"})
 
 # How many consecutive provider-down rubrics end the round. Two, not one: a single 401 can be a
 # token rotating under a long round, and the retry inside run_rubric already covers the blip. Two in
@@ -90,6 +91,7 @@ PROVIDER_DOWN_EXIT = 3
 # How the abort names each cause on its final log line. Plain operator English rather than the token,
 # because that line is what a driving worker reads to classify the failure.
 _PROVIDER_DOWN_PHRASE = {
+    "local_admission": "local Claude admission is unavailable",
     "not_authenticated": "reviewer authentication failed",
     "quota_exhausted": "the provider's subscription window is exhausted",
     "rate_limited": "the provider is rate limiting this account",
