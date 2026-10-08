@@ -32,20 +32,20 @@ def _rate_reason(message):
     return None
 
 
-def _error_fields(stdout, graphql):
-    """Read API error envelopes, never search ordinary PR/comment data."""
+def _graphql_error_types(stdout):
+    """Read GraphQL error types, never search ordinary PR/comment data.
+
+    gh copies API error messages to stderr. REST response objects can also
+    contain user-written top-level messages, so do not inspect those at all.
+    """
     try:
         data = json.loads(stdout or "null")
     except (ValueError, TypeError):
         return []
     if not isinstance(data, dict):
         return []
-    if graphql:
-        errors = data.get("errors")
-        return [str(e.get("type", "")) + " " + str(e.get("message", ""))
-                for e in errors if isinstance(e, dict)] if isinstance(errors, list) else []
-    message = data.get("message")
-    return [message] if isinstance(message, str) else []
+    errors = data.get("errors")
+    return [e.get("type") for e in errors if isinstance(e, dict)] if isinstance(errors, list) else []
 
 
 def _request_label(args):
@@ -76,11 +76,14 @@ def run(args, **kwargs):
         raise RuntimeError("GitHub request timed out") from e
     stderr = result.stderr or ""
     graphql = _request_label(args) == "api graphql"
-    errors = _error_fields(result.stdout, graphql) if result.returncode or graphql else []
+    error_types = _graphql_error_types(result.stdout) if graphql else []
+    status = re.search(r"\bHTTP (\d{3})\b", stderr, re.IGNORECASE)
     reason = _rate_reason(stderr) if result.returncode else None
-    reason = reason or next((r for e in errors if (r := _rate_reason(e))), None)
+    if "RATE_LIMITED" in error_types and reason != "secondary":
+        reason = "graphql"
+    if result.returncode and not reason and status and status[1] == "429":
+        reason = "http_429"
     if result.returncode or reason:
-        status = re.search(r"\(HTTP (\d{3})\)", stderr, re.IGNORECASE)
         # Fixed labels retain the useful evidence without logging arbitrary
         # response text, PR bodies, query variables, headers or credentials.
         diagnostic = next((label for label in (
@@ -91,7 +94,7 @@ def run(args, **kwargs):
                           "request": _request_label(args), "gh_invocation": calls,
                           "returncode": result.returncode,
                           "http_status": int(status[1]) if status else None,
-                          "rate_limit_kind": reason, "diagnostic": diagnostic}))
+                          "rate_limit_kind": reason, "diagnostic": diagnostic}), flush=True)
     if reason:
         rate_limited = True
         raise Exhausted("GitHub installation rate limit reached; stopping this sweep")
