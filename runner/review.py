@@ -21,7 +21,7 @@ from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL,
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge, read_paths
-from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
+from reviewers import RUBRIC_CONTEXT, build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import (build_reactivation_block, carry_forward, normalize_finding_path, patch_digest,
                       pick_anchor, seed_stale_approvals, update_case_file)
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
@@ -323,6 +323,9 @@ class RunContext:
     # different outages, and neither says the other provider cannot serve. Read through
     # provider_is_down().
     provider_down_streak: dict = field(default_factory=dict)
+    # Per-rubric context appended after base_context (reviewers.RUBRIC_CONTEXT): the open-PR block
+    # for reuse. A rubric absent here gets the shared context only.
+    rubric_context: dict = field(default_factory=dict)
     provider_down_kind: dict = field(default_factory=dict)
 
     def note_provider_down(self, provider, kind, attempts):
@@ -353,6 +356,19 @@ class RunContext:
         return kinds.pop() if len(kinds) == 1 else "provider_unavailable"
 
 
+def load_rubric_context(open_prs_file):
+    """Per-rubric extra context from the trusted caller's files (reviewers.RUBRIC_CONTEXT). The
+    open-PR list is best-effort: a missing or malformed file gives no block, never a failed run."""
+    prs = []
+    if open_prs_file:
+        try:
+            prs = json.loads(pathlib.Path(open_prs_file).read_text()).get("prs") or []
+            prs = [e for e in prs if isinstance(e, dict) and isinstance(e.get("number"), int)]
+        except (OSError, ValueError, AttributeError):
+            prs = []
+    return {r: fn(prs) for r, fn in RUBRIC_CONTEXT.items()}
+
+
 def run_rubric(ctx, rubric):
     """Review one rubric: build the prompt, dispatch the (pinned or drawn) reviewer with one retry,
     parse the verdict from behind the one-time marker, archive + persist, and fold into the case
@@ -380,7 +396,8 @@ def run_rubric(ctx, rubric):
     marker = "TAUCETI-VERDICT-" + secrets.token_hex(12)  # one-time, unforgeable channel
     is_reply = (a.mode == "reply" and rubric == a.reply_rubric)
     reblock = build_reactivation_block(cf_prev, reply_text if is_reply else None)
-    prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context + reblock, marker)
+    prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric,
+                          base_context + ctx.rubric_context.get(rubric, "") + reblock, marker)
     # Pin the provider to whoever first reviewed this rubric, so a follow-up audits its own
     # prior finding (and an author can't shop for a softer model); else roll at random over
     # the available providers. A pinned provider that is no longer available is re-drawn.
@@ -600,6 +617,10 @@ def main():
     ap.add_argument("--pr-desc-file", default="",
                     help="file with the PR title+body; included in the reviewer context as the "
                          "author's stated intent (untrusted, like the diff)")
+    ap.add_argument("--open-prs-file", default="",
+                    help="JSON from runner/open_prs.py: the other open PRs changing this PR's files "
+                         "or Lean directories. Shown to the reuse rubric only, so a duplicate of a "
+                         "concurrent PR is caught; missing or unreadable means no block")
     ap.add_argument("--store", required=True, help="checkout of the reviews branch (ledger + logs)")
     ap.add_argument("--daily-budget", type=float, default=5.0)
     ap.add_argument("--max-call-cost", type=float, default=1.0,
@@ -1042,7 +1063,8 @@ def main():
                      head=head, providers=providers, runners=runners, keys=keys,
                      subscription=subscription, rubrics_version=rubrics_version, round_num=round_num,
                      prov=prov, diff_full=diff_full, outdir=outdir, day=day, ledger=led,
-                     spent_today=spent_today, codex_model_explicit=a.codex_model is not None)
+                     spent_today=spent_today, codex_model_explicit=a.codex_model is not None,
+                     rubric_context=load_rubric_context(a.open_prs_file))
 
     # Phase 1: the queued rubrics. Reserve before spending so a call can't breach the cap.
     # A `block` verdict halts the round: blocked code gets reworked or abandoned, and approvals

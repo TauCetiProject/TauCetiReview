@@ -146,6 +146,15 @@ def engine_at(sha):
     return dst
 
 
+def open_prs_args(repo_dir, path):
+    """`--open-prs-file` for the engine, when the list exists and the engine reads it: a
+    --rubrics-sha pin to an engine older than the flag would reject it, so ask its source."""
+    review = pathlib.Path(repo_dir) / "runner" / "review.py"
+    if not pathlib.Path(path).is_file() or "--open-prs-file" not in review.read_text():
+        return []
+    return ["--open-prs-file", str(path)]
+
+
 def gh_json(repo, pr, fields):
     r = run(["gh", "pr", "view", str(pr), "--repo", repo, "--json", fields],
             capture=True, quiet=True)
@@ -817,6 +826,13 @@ def main():
     meta = gh_json(a.repo, a.pr, "title,body")
     (work / "pr_desc.txt").write_text(
         f"# {meta.get('title','')}\n\n{meta.get('body','') or ''}\n")
+    # The other open PRs changing this PR's files or Lean directories, for the reuse prompt
+    # (runner/open_prs.py, shipped beside this file like pr_diff.py). Best-effort: the helper
+    # writes an empty list on failure, and the engine then adds no block.
+    subprocess.run(
+        [sys.executable, str(pathlib.Path(__file__).resolve().parent / "open_prs.py"),
+         "--repo", a.repo, "--pr", str(a.pr), "--paths-file", str(work / "paths.z"),
+         "--out", str(work / "open_prs.json")])
 
     # Reviewer workspace: PR source at head, roadmap, optional Mathlib source. No .git, no creds.
     run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.repo}",
@@ -920,6 +936,7 @@ def main():
            *mathlib_args,
            "--diff-file", str(work / "diff.txt"), "--paths-file", str(work / "paths.z"),
            "--pr-desc-file", str(work / "pr_desc.txt"),
+           *open_prs_args(repo_dir, work / "open_prs.json"),
            "--store", str(store), "--head-sha", head, "--base-sha", base,
            "--merge-base-sha", merge_base,
            "--rubrics-sha", rub_sha, *(["--rubrics-sha-approx"] if rub_approx else []),
