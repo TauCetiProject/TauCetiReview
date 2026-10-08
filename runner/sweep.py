@@ -45,6 +45,7 @@ import os
 import subprocess
 import sys
 import hashlib
+import itertools
 
 import backend
 import api_budget
@@ -569,7 +570,10 @@ def open_prs():
 
 
 def candidates(prs, queue_prs, bors_prs):
-    """Labels select work, never authorize it. Existing approvals take priority.
+    """Labels select work, never authorize it. Existing approvals go first, then alternate
+    with labelled PRs: a bounded run covers far fewer PRs than a busy queue holds, so the queue
+    placed wholly ahead would strand every green PR awaiting admission, including those refused
+    during a backend handoff.
 
     Hourly background ordering changes so a bounded run does not always strand the
     same old PRs. Both main queues are inspected under either backend selection.
@@ -594,7 +598,8 @@ def candidates(prs, queue_prs, bors_prs):
     for group in (priority, hinted):
         if group:
             group.sort(key=lambda p: hashlib.sha256(f"{slot}:{p['number']}".encode()).digest())
-    return priority + hinted + ([] if FOCUSED else background)
+    alternated = [p for pair in itertools.zip_longest(priority, hinted) for p in pair if p is not None]
+    return alternated + ([] if FOCUSED else background)
 
 
 def bors_approved_prs():
