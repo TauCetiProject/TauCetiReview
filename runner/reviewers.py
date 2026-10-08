@@ -117,7 +117,8 @@ def exact_kiro_model(model):
 def reject_retired_opus(model):
     """Reject the superseded Opus generation for both direct Claude and Kiro."""
     if (model or "").strip().lower() in {"claude-opus-4.8", "claude-opus-4-8"}:
-        raise ValueError("Claude Opus 4.8 is retired; use the exact claude-opus-5 model")
+        raise ValueError("Claude Opus 4.8 is retired; use a current exact Opus model "
+                         "(claude-opus-5-5 for Claude, claude-opus-5 on Kiro)")
 
 
 
