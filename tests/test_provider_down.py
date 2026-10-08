@@ -26,8 +26,12 @@ Exit 0 = all assertions hold; 1 = a mismatch.
 """
 
 import pathlib
+import os
 import re
 import sys
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import review  # noqa: E402
@@ -113,6 +117,31 @@ def main():
     one = ctx_for("claude")
     one.note_provider_down("claude", "quota_exhausted", 2)  # both attempts of one rubric
     check("one rubric's two attempts trip the breaker", one.provider_is_down())
+
+    # Run the real Claude adapter against a shim that refuses local admission. The engine must
+    # abort before producing a post plan or incrementing the PR's completed review rounds.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        shim = root / "claude"
+        shim.write_text("#!/usr/bin/env python3\nimport sys\nprint('tauceti-local-admission: waiting for funding', file=sys.stderr)\nsys.exit(75)\n")
+        shim.chmod(0o755)
+        local = ctx_for("claude")
+        local.a = SimpleNamespace(dry_run=False, pr=1)
+        local.ledger = SimpleNamespace(persist=lambda: None)
+        local.pr_state = {"pending_publication_head_sha": "deadbeef", "rounds": []}
+        for _ in range(2):
+            result = review.run_claude("review", root, "opus", {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]})
+            kind = review.error_kind(result)
+            check("a denying shim is local admission, not a PR error", kind == "local_admission")
+            local.note_provider_down("claude", kind, 1)
+        check("local denials trip the breaker", local.provider_is_down())
+        with patch.object(review, "render_scoreboard", side_effect=AssertionError("must not publish")):
+            try:
+                review.abort_provider_down(local)
+            except SystemExit as error:
+                check("local denial abort has the provider-down status", error.code == review.PROVIDER_DOWN_EXIT)
+        check("no publication survives a local denial", "pending_publication_head_sha" not in local.pr_state)
+        check("local denial does not complete a review round", not local.pr_state["rounds"])
 
     # A verdict resets that provider.
     ctx.note_provider_down("claude", None, 0)
