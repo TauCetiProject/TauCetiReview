@@ -90,6 +90,84 @@ class SweepBudgetTests(unittest.TestCase):
         self.assertLessEqual(order[0], 62)
         self.assertEqual(set(order[1:4:2]), {69, 70})
 
+    def test_large_queue_reaches_admission_and_withdrawal_within_focused_budget(self):
+        # Exercise the actual queue-path reader and candidate loop with more
+        # approvals than one sweep can inspect. Queued PRs are unsafe; waiting
+        # PRs are green. Both withdrawal and admission must make progress.
+        h, mb = 'a' * 40, 'b' * 40
+        prs = [{'number': n, 'isDraft': False, 'labels': [{'name': 'ready-to-merge'}]}
+               for n in range(1, 241)]
+        entries = [{'number': n, 'node_id': str(n), 'head_sha': h,
+                    'enqueued_at': '2026-10-08T00:00:00Z', 'paths': ['TauCeti/X.lean']}
+                   for n in range(1, 181)]
+        withdrawn, admitted = [], []
+        api_budget.limit = 120
+
+        def charge(count=1):
+            api_budget.calls += count
+
+        def read(args):
+            charge()
+            if args[:2] == ['pr', 'view']:
+                n = int(args[2])
+                return {'headRefOid': h, 'baseRefName': 'main', 'baseRefOid': mb,
+                        'id': str(n), 'labels': [], 'statusCheckRollup': [],
+                        'isCrossRepository': False}
+            if '/compare/' in args[1]:
+                return {'merge_base_commit': {'sha': mb}, 'behind_by': 0}
+            if '/commits/' in args[1]:
+                return {'commit': {'committer': {'date': '2026-10-08T00:00:00Z'}}}
+            raise AssertionError(args)
+
+        def decision(comments, head, *args, **kwargs):
+            queued = comments[0]['pr'] <= 180
+            return {'review_safe': not queued, 'merge': not queued}
+
+        def comments(args):
+            charge()
+            endpoint = next(a for a in args if '/issues/' in a)
+            if '/comments?' in endpoint:
+                return [{'pr': int(endpoint.split('/issues/')[1].split('/')[0])}]
+            return []
+
+        def withdraw(n, *args):
+            charge(5)
+            withdrawn.append(n)
+            return True
+
+        def enqueue(n, *args):
+            charge(3)
+            admitted.append(n)
+            return True
+
+        def publish(*args, **kwargs):
+            charge(3)
+
+        with patch.object(sweep, 'REPO', 'o/r'), patch.object(sweep, 'FOCUSED', True), \
+                patch.object(sweep, 'DRY_RUN', False), \
+                patch.object(backend, 'selected', return_value={'backend': 'queue'}), \
+                patch.object(backend, 'github_entries', return_value=entries), \
+                patch.object(sweep, 'pr_paths', side_effect=AssertionError('per-entry REST read')), \
+                patch.object(sweep, 'bors_approved_prs', return_value=set()), \
+                patch.object(sweep, 'open_prs', return_value=prs), \
+                patch.object(backend, 'allow', return_value=True), \
+                patch.object(sweep, 'gh_json', side_effect=read), \
+                patch.object(sweep, 'gh_jsonl', side_effect=comments), \
+                patch.object(sweep, 'merge_base_now', return_value=mb), \
+                patch.object(sweep, 'current_head', return_value=h), \
+                patch.object(sweep, 'pr_diff', return_value=['TauCeti/X.lean']), \
+                patch.object(sweep, 'decide_from_comments', side_effect=decision), \
+                patch.object(sweep, 'withdraw_both', side_effect=withdraw), \
+                patch.object(sweep, 'enqueue', side_effect=enqueue), \
+                patch.object(backend, 'publish_eligibility', side_effect=publish), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(api_budget.Exhausted):
+                sweep.main()
+        self.assertTrue(withdrawn)
+        self.assertTrue(admitted)
+        self.assertTrue(all(n > 180 for n in admitted))
+        self.assertLess(api_budget.calls, api_budget.limit)
+
     def test_budget_deferral_is_not_swallowed_by_admission_or_revocation(self):
         with patch.object(backend, 'selected', side_effect=api_budget.Exhausted('limited')):
             with self.assertRaises(api_budget.Exhausted):
