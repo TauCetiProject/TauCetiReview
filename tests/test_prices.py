@@ -10,6 +10,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import review  # noqa: E402  (runner/ on path; same import the engine uses)
+import pricing  # noqa: E402
 
 
 def test_every_dispatchable_model_is_priced():
@@ -17,6 +18,12 @@ def test_every_dispatchable_model_is_priced():
     assert not missing, (
         f"models the engine can dispatch but prices.json doesn't price: {missing}. "
         f"Add them to runner/prices.json (priced: {sorted(review.PRICES)})")
+
+
+def test_default_claude_is_opus_55_with_its_own_rates():
+    assert review.CLAUDE_MODEL == "claude-opus-5-5"
+    assert review.PRICES[review.CLAUDE_MODEL] == (4.0, 20.0)
+    assert pricing.CACHE_READ[review.CLAUDE_MODEL] == 0.2
 
 
 def test_price_windows_are_well_formed():
