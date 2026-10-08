@@ -225,6 +225,91 @@ class SweepBudgetTests(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(api_budget.defer(raised.exception), 1)
 
+    def test_pr_text_does_not_turn_other_failures_into_rate_limits(self):
+        for stdout in (
+            json.dumps([{'body': 'API rate limit exceeded; RATE_LIMITED'}]),
+            json.dumps({'message': 'API rate limit exceeded'}),
+            json.dumps({'data': {'repository': {'pullRequest': {
+                'body': 'secondary rate limit', 'message': 'RATE_LIMITED'}}}}),
+            '[{"body":"RATE_LIMITED"}]\n[{"body":"api rate limit exceeded"}]',
+        ):
+            result = subprocess.CompletedProcess('gh', 1, stdout, 'gh: Bad Gateway (HTTP 502)')
+            output = io.StringIO()
+            with patch.object(api_budget.subprocess, 'run', return_value=result), \
+                    contextlib.redirect_stdout(output):
+                self.assertIs(api_budget.run(['gh', 'api', 'graphql']), result)
+            self.assertFalse(api_budget.rate_limited)
+            evidence = json.loads(output.getvalue())
+            self.assertEqual(evidence['http_status'], 502)
+            self.assertEqual(evidence['diagnostic'], 'Bad Gateway')
+            self.assertIsNone(evidence['rate_limit_kind'])
+
+    def test_api_errors_stop_without_searching_partial_data(self):
+        for endpoint, code, response, stderr, kind in (
+            ('repos/o/r/pulls', 1, {'message': 'API rate limit exceeded'},
+             'gh: API rate limit exceeded (HTTP 403)', 'primary_or_unspecified'),
+            ('graphql', 1, {'errors': [{'type': 'RATE_LIMITED'}]},
+             'gh: API rate limit already exceeded for installation ID 1.', 'graphql'),
+            ('graphql', 0, {'data': {'repository': None},
+                            'errors': [{'type': 'RATE_LIMITED'}]}, '', 'graphql'),
+            ('graphql', 1, {'errors': [{'message': 'You have exceeded a secondary rate limit'}]},
+             'gh: You have exceeded a secondary rate limit (HTTP 403)', 'secondary'),
+        ):
+            with self.subTest(endpoint=endpoint, code=code):
+                result = subprocess.CompletedProcess('gh', code, json.dumps(response), stderr)
+                output = io.StringIO()
+                with patch.object(api_budget.subprocess, 'run', return_value=result), \
+                        contextlib.redirect_stdout(output), self.assertRaises(api_budget.Exhausted):
+                    api_budget.run(['gh', 'api', endpoint])
+                self.assertEqual(json.loads(output.getvalue())['rate_limit_kind'], kind)
+
+    def test_non_api_cli_http_errors_and_later_page_rate_limits(self):
+        for args, stdout, stderr, kind, status in (
+            (['gh', 'pr', 'comment', '1'], '',
+             'HTTP 429: Too Many Requests (https://api.github.com/repos/o/r/issues/1/comments)', 'http_429', 429),
+            (['gh', 'label', 'create', 'label'], '',
+             'HTTP 403: Resource not accessible by integration (https://api.github.com/repos/o/r/labels)', None, 403),
+            (['gh', 'api', '--paginate', 'repos/o/r/pulls'], '[{"body":"RATE_LIMITED"}]\n',
+             'gh: You have exceeded a secondary rate limit (HTTP 403)', 'secondary', 403),
+        ):
+            output = io.StringIO()
+            result = subprocess.CompletedProcess('gh', 1, stdout, stderr)
+            with patch.object(api_budget.subprocess, 'run', return_value=result), contextlib.redirect_stdout(output):
+                if kind:
+                    with self.assertRaises(api_budget.Exhausted):
+                        api_budget.run(args)
+                else:
+                    self.assertIs(api_budget.run(args), result)
+            evidence = json.loads(output.getvalue())
+            self.assertEqual(evidence['http_status'], status)
+            self.assertEqual(evidence['rate_limit_kind'], kind)
+
+    def test_error_diagnostics_omit_fields_headers_queries_and_response_text(self):
+        secret = 'SECRET_SENTINEL'
+        args = ['gh', 'api', '--method', 'POST', '--header', 'repos/secret/header',
+                '--header', 'Authorization: Bearer ' + secret, '--paginate', '--slurp',
+                '/repos/o/r/pulls?token=' + secret, '-f', 'body=' + secret]
+        result = subprocess.CompletedProcess('gh', 1,
+                    json.dumps({'message': 'secondary rate limit ' + secret}),
+                    'gh: secondary rate limit ' + secret + ' (HTTP 403)')
+        output = io.StringIO()
+        with patch.object(api_budget.subprocess, 'run', return_value=result), \
+                contextlib.redirect_stdout(output), self.assertRaises(api_budget.Exhausted):
+            api_budget.run(args)
+        self.assertNotIn(secret, output.getvalue())
+        evidence = json.loads(output.getvalue())
+        self.assertEqual(evidence['request'], 'api repos/o/r/pulls')
+        self.assertEqual(evidence['http_status'], 403)
+        self.assertEqual(evidence['rate_limit_kind'], 'secondary')
+
+    def test_successful_payload_with_rate_limit_words_is_unchanged_and_silent(self):
+        result = subprocess.CompletedProcess('gh', 0,
+            json.dumps({'message': 'API rate limit exceeded', 'body': 'RATE_LIMITED'}), '')
+        output = io.StringIO()
+        with patch.object(api_budget.subprocess, 'run', return_value=result), contextlib.redirect_stdout(output):
+            self.assertIs(api_budget.run(['gh', 'api', 'repos/o/r/issues/1']), result)
+        self.assertEqual(output.getvalue(), '')
+
     def test_active_unsafe_approval_is_withdrawn_before_rebase_wait_and_safe_paused_is_untouched(self):
         h, mb = 'a' * 40, 'b' * 40
         for unsafe, paused in ((True, False), (False, True)):
