@@ -5,7 +5,7 @@ Run as a script (runner/ on sys.path), so imports are flat siblings, not package
 import datetime, hashlib, json, pathlib, re
 
 import reviewers
-from pricing import fmt_tok
+from pricing import fmt_tok, usage_totals
 from verdict import newest_reply_id, state_of
 
 
@@ -90,10 +90,11 @@ def diff_url(prov):
 
 def run_meta(res):
     """The per-run slice of the meta block: runner-verified execution facts, no model text."""
-    u = res.get("usage") or {}
+    u = usage_totals(res.get("provider"), res.get("usage"))
     tok = {k: v for k, v in
            (("in", u.get("input_tokens")),
-            ("cin", u.get("cached_input_tokens") or u.get("cache_read_input_tokens")),
+            ("cin", u.get("cached_input_tokens")),
+            ("win", u.get("cache_creation_input_tokens")),
             ("out", u.get("output_tokens"))) if v}
     v = res.get("verdict_obj") or {}
     return {k: val for k, val in
@@ -125,9 +126,15 @@ def render_thread(cf, prov=None):
     sub = [f"`{cf.get('provider')}/{cf.get('model')}`"]
     if cf.get("duration_s"):
         sub.append(f"{cf['duration_s']:.0f}s")
-    u = cf.get("usage") or {}
+    u = usage_totals(cf.get("provider"), cf.get("usage"))
     if u.get("input_tokens") or u.get("output_tokens"):
-        sub.append(f"{fmt_tok(u.get('input_tokens'))} in / {fmt_tok(u.get('output_tokens'))} out tokens")
+        cache = []
+        if u["cached_input_tokens"]:
+            cache.append(f"{fmt_tok(u['cached_input_tokens'])} cache read")
+        if u["cache_creation_input_tokens"]:
+            cache.append(f"{fmt_tok(u['cache_creation_input_tokens'])} cache write")
+        detail = f" ({', '.join(cache)})" if cache else ""
+        sub.append(f"{fmt_tok(u['input_tokens'])} in{detail} / {fmt_tok(u['output_tokens'])} out tokens")
     if diff_url(prov):
         sub.append(f"reviewing [this diff]({diff_url(prov)})")
     # Linked to main when the commit that ran is not on GitHub, so say it is the published text.
