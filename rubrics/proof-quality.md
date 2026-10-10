@@ -9,7 +9,8 @@ the correctness agent owns meaning). Uses `request_changes`.
 - `change` and `show` are a code smell: flag any used without a comment documenting why the
   goal cannot be reached otherwise. Prefer a rewrite to `rfl` or `convert` where one is
   available, and flag reliance on accidental definitional equality across wrappers or
-  coercions; ask for an explicit lemma instead.
+  coercions; ask for an explicit lemma instead. Term-mode `show T from e` and `show T by ...`
+  expressions are fine; this rule concerns the `show` tactic.
 - Watch for short-but-brittle proofs: a `simpa` that closes a non-obvious goal through
   unfolding-heavy context is fragile even though it is terse.
 - Factor substantial or repeated reasoning into reusable lemmas; inline genuine one-offs. Flag
