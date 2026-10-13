@@ -26,6 +26,12 @@ def test_default_claude_is_opus_55_with_its_own_rates():
     assert pricing.CACHE_READ[review.CLAUDE_MODEL] == 0.2
 
 
+def test_default_codex_is_sol_61_with_its_own_rates():
+    assert review.CODEX_MODEL == "gpt-6.1-sol"
+    assert review.PRICES[review.CODEX_MODEL] == (2.0, 10.0)
+    assert pricing.CACHE_READ[review.CODEX_MODEL] == 0.1
+
+
 def test_price_windows_are_well_formed():
     bad = []
     for model, windows in review._PRICE_WINDOWS.items():

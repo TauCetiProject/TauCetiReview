@@ -7,7 +7,7 @@ import hashlib, json, os, pathlib
 
 CLAUDE_MODEL = "claude-opus-5-5"
 
-CODEX_MODEL = "gpt-5.6-sol"
+CODEX_MODEL = "gpt-6.1-sol"
 
 # When the default codex model isn't available to the account, run_one downgrades to this one mid-run
 # rather than failing every codex rubric: Sol needs a paid ChatGPT tier, while Free/Go subscriptions
