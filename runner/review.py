@@ -15,7 +15,7 @@ import archive
 from dataclasses import dataclass, field
 
 from ledger import Ledger
-from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, require_priced, sum_usage
+from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, sum_usage, warn_unpriced
 # Re-exported for merge_from_scoreboard (changed_paths/decide_merge/DEFAULT_RUBRICS) and the price
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
@@ -404,7 +404,7 @@ def run_rubric(ctx, rubric):
         # (TauCetiReview#105). It is a closed vocabulary, so unlike the stderr it derives from, it is
         # safe in a record that gets committed and pushed.
         attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
-                                           "usage", "session_id", "parse_error")
+                                           "price_inherited", "usage", "session_id", "parse_error")
                          if r.get(k) is not None}
                         | {"model": model, "secs": round(time.monotonic() - t, 1)}
                         | ({} if has_verdict(r) else {"error_kind": error_kind(r)}))
@@ -443,8 +443,8 @@ def run_rubric(ctx, rubric):
     # skip the now-known-dead Sol call — but ONLY once the fallback has actually produced a verdict. With
     # the reconfirm above, that means: rejected twice on the default AND the fallback then worked. Runs
     # dispatch rubrics sequentially, so the mutation races nothing; the registry is rebuilt from
-    # CODEX_MODEL every run, so Sol is re-probed next run. (require_priced covers the fallback, so this
-    # never routes to an unpriced model.)
+    # CODEX_MODEL every run, so Sol is re-probed next run. (dispatch_models lists the fallback and a
+    # test enforces its price, so this routes to a priced model.)
     if downgraded and has_verdict(res):
         print(f"[{rubric}] codex model {requested} unavailable to this account — using {model} for "
               f"the rest of this run", file=sys.stderr)
@@ -503,6 +503,9 @@ def run_rubric(ctx, rubric):
             "attempts": public_record(attempts),
             "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
             "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,
+            # Set only when prices.json had no row for this model, naming the model whose rates
+            # were used, so an inherited rate is visible beside the sha of the table it came from.
+            "price_inherited": res.get("price_inherited"),
             "verdict": vo.get("verdict") or "error",
             "summary": vo.get("summary"), "findings": vo.get("findings") or [],
             "fidelity": "exact",
@@ -1035,7 +1038,7 @@ def main():
     dispatchable = {runners[p][1] for p in providers if p != "kiro"}
     if "codex" in providers:
         dispatchable.add(CODEX_FALLBACK_MODEL)
-    require_priced(dispatchable)
+    warn_unpriced(dispatchable)
     stopped, halted = None, None
     ctx = RunContext(a=a, state_map=state_map, pr_state=pr_state,
                      reply_text=reply_text, base_context=base_context,

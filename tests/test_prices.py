@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """prices.json must stay in sync with the model registry.
 
-Every model the engine can dispatch needs a price, or its review silently mis-charges the daily
-budget (require_priced() now fails fast at runtime; this catches it at PR time, before merge).
+Every model the engine can dispatch needs a price, or its review mis-charges the daily budget.
+An absent row no longer stops the run (warn_unpriced() inherits the newest rate on the model's
+line), so this is the check that keeps the defaults billed exactly rather than approximately.
 Dependency-free — run with `python tests/test_prices.py` or under pytest.
 """
 import sys
@@ -53,12 +54,43 @@ def test_price_windows_are_well_formed():
     assert not bad, f"malformed price windows: {bad}"
 
 
-def test_require_priced_rejects_unknown_model():
-    try:
-        review.require_priced({"definitely-not-a-real-model"})
-    except SystemExit:
-        return
-    raise AssertionError("require_priced() should SystemExit on an unpriced model")
+def test_warn_unpriced_does_not_stop_the_run():
+    """An out-of-date table must not be an outage: it is what kept the codex default pinned to a
+    superseded model, because the model could not be bumped before its prices landed."""
+    pricing.warn_unpriced({"definitely-not-a-real-model"})
+
+
+def test_model_line_groups_successive_releases():
+    for a, b in (("gpt-6.1-sol", "gpt-5.6-sol"),
+                 ("claude-opus-5-6", "claude-opus-5-5"),
+                 ("x-ai/grok-5", "x-ai/grok-4.3")):
+        assert pricing.model_line(a) == pricing.model_line(b), f"{a} and {b} should share a line"
+    for a, b in (("gpt-6.1-sol", "gpt-6-luna"),
+                 ("gpt-5.6-sol", "gpt-5.6-terra"),
+                 ("claude-opus-5-5", "claude-sonnet-4-6")):
+        assert pricing.model_line(a) != pricing.model_line(b), f"{a} and {b} are different lines"
+
+
+def test_unpriced_model_inherits_the_newest_rate_on_its_line():
+    """A Sol newer than the table bills at the newest Sol it knows, not at the generic default."""
+    newest_sol = max((w["effective"], m) for m, w in pricing._PRICES_NOW.items()
+                     if pricing.model_line(m) == pricing.model_line("gpt-6.1-sol"))[1]
+    pin, pout, pcache, inherited = pricing.rates("gpt-7-sol")
+    assert inherited == newest_sol
+    assert (pin, pout) == review.PRICES[newest_sol]
+    assert pcache == pricing.CACHE_READ[newest_sol]
+
+
+def test_unpriced_model_with_no_priced_sibling_falls_back_to_the_default():
+    pin, pout, pcache, inherited = pricing.rates("nothing-like-this-exists")
+    assert inherited == pricing.DEFAULT_PRICE_SOURCE
+    assert (pin, pout) == pricing.DEFAULT_PRICE
+    assert pcache == pricing.DEFAULT_PRICE[0]
+
+
+def test_priced_model_reports_no_inheritance():
+    assert pricing.rates(review.CODEX_MODEL)[3] is None
+    assert pricing.rates(review.CLAUDE_MODEL)[3] is None
 
 
 if __name__ == "__main__":
