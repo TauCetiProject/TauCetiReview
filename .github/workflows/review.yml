@@ -110,6 +110,11 @@ jobs:
           gh pr view "$PR" --repo TauCetiProject/TauCeti --json title,body \
             --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
           echo "pr_desc bytes: $(wc -c < pr_desc.txt)"
+          # The other open PRs changing this PR's files or Lean directories, with the declarations
+          # they add (runner/open_prs.py): the reuse rubric cannot otherwise see a concurrent PR.
+          # Best-effort; it writes an empty list on failure.
+          python3 runner/open_prs.py --repo TauCetiProject/TauCeti --pr "$PR" \
+            --paths-file paths.z --out open_prs.json
           # Reply flow: fetch the author's reply body (untrusted) so the re-run can address it.
           : > reply.txt
           if [ -n "${{ inputs.reply_comment_id }}" ]; then
@@ -223,7 +228,8 @@ jobs:
             --repo TauCetiProject/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
             --rubrics-dir rubrics --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
-            --diff-file diff.txt --paths-file paths.z --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
+            --diff-file diff.txt --paths-file paths.z --pr-desc-file pr_desc.txt \
+            --open-prs-file open_prs.json --store store --daily-budget 50 \
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
             --rubrics-sha "$RUBRICS_SHA" --archive-dir store/outbox \
             --ci-build "$CI_BUILD" --bump-guard "$BUMP_GUARD" --scope "$SCOPE" $AM --merge-decision-file "$PWD/merge.json" \
