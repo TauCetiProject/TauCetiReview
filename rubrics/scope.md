@@ -25,10 +25,9 @@ node or heading; read it (in the roadmap checkout) to confirm.
   infrastructure. Reject material on no path to any target, or justified only as interesting;
   if it is off-roadmap but plausibly worthwhile, `block` and say a human must add it to the
   roadmap first.
-- Read the path in the roadmap's own order. When the cited target presupposes an earlier stage
-  or layer of the same roadmap, confirm that stage exists on `main` or in an open PR. Material
-  built for a later stage while its stated prerequisite stage is absent is speculative, however
-  proximate the citation reads: `request_changes`, naming the missing stage.
+- Check actual dependencies, not roadmap stage numbers. A PR may supply prerequisites itself;
+  it need not wait for an entire earlier stage to be complete. Later-stage material must still
+  have a real, proximate path to a named target.
 - Weigh advancement, not just membership. Skim what has recently merged citing the same target.
   If the target's own statement is no closer while satellites accumulate around it, do not keep
   approving on citation alone: `request_changes`, asking for the target itself or for what makes
@@ -43,12 +42,14 @@ prerequisite material bundled with new work, or several unrelated targets at onc
 refactor that is itself the topic is fine, as are the file moves `placement.md` requires
 alongside a new file.
 
+Different stages of one roadmap are not different topics by themselves. Judge mathematical
+coherence; do not require a split solely because a PR spans stages.
+
 ## Verdict
 
 - `block` when new material has no real path to a roadmap target, or the PR is not a single
   topic.
 - `request_changes` when new material's path is genuine but the description fails to state it,
-  when the PR builds for a stage whose stated prerequisite stage is absent, or when it adds
-  periphery around a target that is not getting closer.
+  or when it adds periphery around a target that is not getting closer.
 - `approve` when the PR reworks already-merged material as a single topic, or advances one
   target or one target's genuine prerequisite, as one unit.
