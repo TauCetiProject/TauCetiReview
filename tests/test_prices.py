@@ -71,14 +71,60 @@ def test_model_line_groups_successive_releases():
         assert pricing.model_line(a) != pricing.model_line(b), f"{a} and {b} are different lines"
 
 
-def test_unpriced_model_inherits_the_newest_rate_on_its_line():
-    """A Sol newer than the table bills at the newest Sol it knows, not at the generic default."""
-    newest_sol = max((w["effective"], m) for m, w in pricing._PRICES_NOW.items()
-                     if pricing.model_line(m) == pricing.model_line("gpt-6.1-sol"))[1]
-    pin, pout, pcache, inherited = pricing.rates("gpt-7-sol")
-    assert inherited == newest_sol
-    assert (pin, pout) == review.PRICES[newest_sol]
-    assert pcache == pricing.CACHE_READ[newest_sol]
+def test_unpriced_model_inherits_from_the_newest_model_on_its_line():
+    """Literal expectations on purpose. Deriving them with the implementation's own ranking rule
+    would only assert that the code agrees with itself, which passes for a wrong rule too. Update
+    these when a newer Sol or Opus is priced."""
+    assert pricing.rates("gpt-99-sol")[3] == "gpt-6.1-sol"
+    assert pricing.rates("gpt-99-sol")[:3] == (2.0, 10.0, 0.1)
+    assert pricing.rates("claude-opus-9-9")[3] == "claude-opus-5-5"
+    assert pricing.rates("claude-opus-9-9")[:3] == (4.0, 20.0, 0.2)
+
+
+def test_newest_sibling_prefers_the_newest_release_not_the_newest_reprice():
+    """A legacy-tier discount on a retired model must not capture its line. Ranking by date alone
+    bills a newer Sol at the retired model's rate, and under-billing is the dangerous direction:
+    the daily budget guard is driven off this number."""
+    windows = {"gpt-5.6-sol": {"effective": "2026-11-01", "input": 1.0, "output": 6.0},
+               "gpt-6.1-sol": {"effective": "2026-09-29", "input": 2.0, "output": 10.0}}
+    source, window = pricing.newest_sibling("gpt-7-sol", windows)
+    assert source == "gpt-6.1-sol", f"inherited from the repriced retired model: {source}"
+    assert window["input"] == 2.0
+
+
+def test_newest_sibling_orders_versions_numerically_not_as_strings():
+    windows = {"gpt-9-sol": {"effective": "2026-12-01", "input": 1.0, "output": 5.0},
+               "gpt-10-sol": {"effective": "2026-12-01", "input": 20.0, "output": 100.0}}
+    source, _ = pricing.newest_sibling("gpt-11-sol", windows)
+    assert source == "gpt-10-sol", f"ASCII order picks gpt-9-sol; got {source}"
+
+
+def test_current_window_ignores_windows_not_yet_in_effect():
+    """A rate change can be landed ahead of its date the way providers announce it, so a future
+    window must not bill early."""
+    live = {"effective": "2026-01-01", "input": 2.0, "output": 10.0}
+    future = {"effective": "2099-01-01", "input": 99.0, "output": 99.0}
+    assert pricing._current_window([live, future])["input"] == 2.0
+    # ... but a model priced only from a future date still has to yield some price
+    assert pricing._current_window([future])["input"] == 99.0
+
+
+def test_model_line_treats_a_differently_suffixed_tier_as_its_own_line():
+    """A tier suffix is not a version, so a `-mini` variant does not inherit the full tier's rates
+    and falls to DEFAULT_PRICE. That over-bills rather than under-bills, which is the safe
+    direction, but it is a real limit of grouping by naming convention."""
+    assert pricing.model_line("gpt-6.1-sol-mini") != pricing.model_line("gpt-6.1-sol")
+    assert pricing.rates("gpt-6.1-sol-mini")[3] == pricing.DEFAULT_PRICE_SOURCE
+
+
+def test_rates_is_total():
+    """`PRICES.get(model, DEFAULT_PRICE)` could not raise, and rates() replaced it on every
+    billing path, so it must not become the thing that throws."""
+    for bad in (None, 5, 3.5, True, b"x", (), [], {}):
+        pin, pout, pcache, inherited = pricing.rates(bad)
+        assert (pin, pout) == pricing.DEFAULT_PRICE, f"rates({bad!r})"
+        assert inherited == pricing.DEFAULT_PRICE_SOURCE
+    pricing.warn_unpriced({None, "gpt-99-sol"})
 
 
 def test_unpriced_model_with_no_priced_sibling_falls_back_to_the_default():
