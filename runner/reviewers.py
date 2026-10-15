@@ -6,7 +6,7 @@ import json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
 from contextlib import closing
 from urllib.parse import quote
 
-from pricing import CACHE_READ, DEFAULT_PRICE, OPENROUTER_MODELS, PRICES
+from pricing import OPENROUTER_MODELS, rates
 
 
 # A pi reviewer's tools: read + grep + ls only — never bash/edit/write. This keeps the review
@@ -571,14 +571,16 @@ def run_codex(prompt, cwd, model, env):
     if r.returncode != 0 or not text:
         out.update(event_types=events, error_events=errors[:5], raw_stdout=r.stdout[-3000:])
     if usage:
-        pin, pout = PRICES.get(model, DEFAULT_PRICE)
+        pin, pout, pcache, inherited = rates(model)
         # cached_input_tokens is a subset of input_tokens billed at the cache-read rate (~10%);
         # charging it at full input rate over-counts (most of an agentic review is cache reads).
         inp = usage.get("input_tokens", 0)
         cached = usage.get("cached_input_tokens", 0)
-        out["cost_usd"] = round(((inp - cached) * pin + cached * CACHE_READ.get(model, pin)
+        out["cost_usd"] = round(((inp - cached) * pin + cached * pcache
                                  + usage.get("output_tokens", 0) * pout) / 1e6, 6)
         out["cost_estimated"] = True
+        if inherited is not None:
+            out["price_inherited"] = inherited
     return out
 
 
@@ -666,12 +668,14 @@ def run_pi(prompt, cwd, model, env):
     # actual rate). pi's `input` is fresh (non-cached) input with cacheRead alongside, so add them:
     # fresh input + cached reads (at the cache rate) + output. Token counts are reliable; the price
     # table is authoritative. pi's figure is kept as provider_cost_usd for cross-check.
-    pin, pout = PRICES.get(model, DEFAULT_PRICE)
-    computed = (in_tok * pin + cached * CACHE_READ.get(model, pin) + out_tok * pout) / 1e6
+    pin, pout, pcache, inherited = rates(model)
+    computed = (in_tok * pin + cached * pcache + out_tok * pout) / 1e6
     out.update(text=text,
                usage={"input_tokens": in_tok, "cached_input_tokens": cached, "output_tokens": out_tok},
                cost_usd=round(computed, 6), cost_estimated=True,
                provider_cost_usd=round(cost, 6), session_id=None)
+    if inherited is not None:
+        out["price_inherited"] = inherited
     # Surface why pi produced no usable answer (pi returns 0 even when the model errored, so
     # an empty text or a captured errorMessage is the real failure signal — keep it diagnosable).
     if r.returncode != 0 or not text:

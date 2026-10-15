@@ -2,7 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 
-import hashlib, json, os, pathlib
+import datetime, hashlib, json, os, pathlib, re, sys
 
 
 CLAUDE_MODEL = "claude-opus-5-5"
@@ -56,8 +56,16 @@ _PRICE_WINDOWS = load_price_windows()
 
 
 
-def _current_window(windows):
-    return max(windows, key=lambda w: w["effective"])
+def _current_window(windows, today=None):
+    """The window in force now: the latest one that has actually taken effect.
+
+    Windows dated in the future must not bill early, so a rate change can be landed ahead of time
+    the way the provider announces it. If every window is still in the future the earliest one is
+    used, because a table that prices a model only from next month is a mistake to surface as a
+    price, not a reason to have no price at all."""
+    today = today or datetime.date.today().isoformat()
+    live = [w for w in windows if w["effective"] <= today]
+    return max(live, key=lambda w: w["effective"]) if live else min(windows, key=lambda w: w["effective"])
 
 
 
@@ -67,7 +75,10 @@ PRICES = {m: (p["input"], p["output"]) for m, p in _PRICES_NOW.items()}
 
 CACHE_READ = {m: p.get("cache_read", p["input"]) for m, p in _PRICES_NOW.items()}
 
-DEFAULT_PRICE = (3.0, 15.0)  # last-resort fallback; require_priced() makes it unreachable in practice
+DEFAULT_PRICE = (3.0, 15.0)  # last resort: an unpriced model with no priced sibling on its line
+# Recorded as `price_inherited` when no sibling on the model's line is priced either, so the
+# ledger distinguishes "billed at last month's Sol rate" from "billed at a generic guess".
+DEFAULT_PRICE_SOURCE = "(default)"
 
 # The exact prices.json that produced this run's costs — stamped onto every archived run so a
 # stored cost_usd is auditable and its staleness is detectable (rates change; the tokens don't).
@@ -92,14 +103,84 @@ def dispatch_models(claude_model=CLAUDE_MODEL, codex_model=CODEX_MODEL):
 
 
 
-def require_priced(models):
-    """Fail fast (before spending any tokens) if a model the run will dispatch has no price —
-    an unpriced model silently mis-charges the daily budget. prices.json must stay in sync with
-    the model registry (a CI test enforces it for the defaults)."""
-    missing = sorted(m for m in models if m not in PRICES)
-    if missing:
-        raise SystemExit(f"unpriced model(s) {missing}: add them to prices.json "
-                         f"(known: {sorted(PRICES)})")
+def model_line(model):
+    """The alphabetic skeleton of a model id, with version numbers dropped: the key under which
+    `gpt-6.1-sol` and `gpt-5.6-sol`, or `claude-opus-5-6` and `claude-opus-5-5`, are successive
+    releases of one model line. It groups by naming convention and nothing more, which is all the
+    rate inheritance below needs."""
+    parts = (re.sub(r"\d", "", part) for part in re.split(r"[-/.]", model.lower()))
+    return tuple(part for part in parts if part)
+
+
+def model_version(model):
+    """The version numbers in a model id, in order, as a comparable tuple: `gpt-6.1-sol` is
+    `(6, 1)` and `claude-opus-5-5` is `(5, 5)`. Ordering by this rather than by the id as a string
+    is what makes `gpt-10-sol` newer than `gpt-9-sol`, which ASCII order gets backwards."""
+    return tuple(int(n) for n in re.findall(r"\d+", model))
+
+
+def newest_sibling(model, windows_by_model):
+    """`(source_model, window)` for `model`: the newest *release* on its line among
+    `windows_by_model`, or None when that line holds nothing else.
+
+    Ranked by version first and date second, deliberately. Ranking by date alone picks whichever
+    sibling was repriced most recently, which is not the newest model: a legacy-tier discount on a
+    retired `gpt-5.6-sol` would otherwise capture the whole Sol line and bill a newer Sol at the
+    retired model's rate."""
+    line = model_line(model)
+    kin = [(model_version(m), w["effective"], m, w) for m, w in windows_by_model.items()
+           if m != model and model_line(m) == line and w]
+    if not kin:
+        return None
+    *_, source, window = max(kin)
+    return source, window
+
+
+def inherited_window(model):
+    """`(source_model, window)` for an unpriced `model`, at the rates in force now.
+
+    This is the "use the last available prices" rule. A Sol or Opus newer than the table bills at
+    the rate of the newest one the table knows, which is the right order of magnitude and lets the
+    run proceed. A rate that is wrong by one revision is a far smaller problem than a review that
+    refuses to start, which is what the old hard failure produced."""
+    return newest_sibling(model, _PRICES_NOW)
+
+
+def rates(model):
+    """`(input, output, cache_read, inherited_from)` for `model`, per million tokens.
+
+    `inherited_from` is None when prices.json prices the model outright, the id whose rates were
+    borrowed when it does not, and DEFAULT_PRICE_SOURCE when nothing on its line is priced and the
+    flat default applies. Callers record it, so a borrowed rate is auditable rather than silent."""
+    if not isinstance(model, str):
+        # Total by construction, as the plain `PRICES.get(model, DEFAULT_PRICE)` this replaced was:
+        # rates() is now on every billing path, so it must not be the thing that raises.
+        pin, pout = DEFAULT_PRICE
+        return pin, pout, pin, DEFAULT_PRICE_SOURCE
+    window = _PRICES_NOW.get(model)
+    if window is None:
+        borrowed = inherited_window(model)
+        if borrowed is None:
+            pin, pout = DEFAULT_PRICE
+            return pin, pout, pin, DEFAULT_PRICE_SOURCE
+        source, window = borrowed
+        return window["input"], window["output"], window.get("cache_read", window["input"]), source
+    return window["input"], window["output"], window.get("cache_read", window["input"]), None
+
+
+def warn_unpriced(models):
+    """Report the models prices.json does not list, naming the rates each one will inherit.
+
+    This deliberately does not stop the run. A missing price row used to raise SystemExit, which
+    turned "the table is a few days out of date" into "no review can run at all", and is why the
+    engine stayed pinned to a superseded model: nobody could bump the default until its prices
+    landed first. Spend stays auditable through `price_inherited` on every run record instead."""
+    for model in sorted((m for m in models if m not in PRICES), key=str):
+        *_, source = rates(model)
+        where = (f"billing at the default {DEFAULT_PRICE[0]}/{DEFAULT_PRICE[1]} per Mtok"
+                 if source == DEFAULT_PRICE_SOURCE else f"billing at {source}'s rates")
+        print(f"warning: {model} is absent from prices.json; {where}. "
+              f"Add a row there to bill it exactly.", file=sys.stderr)
 
 
 

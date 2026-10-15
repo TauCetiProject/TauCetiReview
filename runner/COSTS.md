@@ -72,9 +72,14 @@ is wrong. The rates come from [`prices.json`](prices.json), which is a single
 **dated** table (the *same* file the engine bills from): each model maps to windows
 with an `effective` date. A genuine provider price change *adds* a dated window (old
 runs keep the old rate); a correction of a wrong past table *edits* the window
-covering the affected dates. The engine bills at the newest window; the analysis
-prices each run at the window covering its run date. Because there is only one file,
-there is nothing to drift against.
+covering the affected dates. The engine bills at the newest window that has taken
+effect; the analysis prices each run at the window covering its run date. Because there
+is only one file, there is nothing to drift against.
+
+A model the table has no row for at all is priced from its own model line: the newest
+release sharing its name with the version numbers stripped, so a Sol newer than the table
+bills at the newest Sol in it. The engine and this report apply that same rule, so the
+faithful lens still reproduces what was billed, and both name the borrowed model.
 
 Three lenses, all derived, never stored as authoritative:
 
@@ -84,9 +89,10 @@ Three lenses, all derived, never stored as authoritative:
 | **forecast** (`cost_today`) | the newest window | "what would this cost today?" |
 | **as-recorded** (`cost_recorded`) | whatever the engine wrote then | "what did the budget gate see?" |
 
-The report prints all three totals so drift between them is explicit, and warns on
-stderr if a record's model is missing from `prices.json` (it falls back to
-`DEFAULT_PRICE`). **Tokens are measured; dollars are imputed** — ~89% of rounds are
+The report prints all three totals so drift between them is explicit. A record whose
+model is missing from `prices.json` is noted on stderr, naming the model whose rates it
+inherited, and warns only when nothing on its line is priced either and the flat
+`DEFAULT_PRICE` applies. **Tokens are measured; dollars are imputed** — ~89% of rounds are
 derived from the price table, and ~70% of input tokens are cache hits, so the
 figure sits far below tokens×list-price.
 

@@ -71,6 +71,6 @@ counts at the rate in effect on each run's date. See [runner/COSTS.md](runner/CO
 - `rubrics/` — the per-angle prompts (live).
 - `runner/` — the review engine (`review.py` + `post.py`) and the `tauceti-review` CLI (live).
 - `runner/costs.py` — the `tauceti-review-costs` analytics CLI (live).
-- `runner/prices.json` — model rates; every dispatchable model must be priced (CI-enforced in `tests/`, and the engine fails fast on an unpriced model). Each archived run is stamped with a `prices_sha` so its cost is auditable.
+- `runner/prices.json` — model rates; every dispatchable model must be priced (CI-enforced in `tests/`). A model the table has not caught up with does not stop a review: it bills at the rates of the newest release on its own model line (`gpt-7-sol` at `gpt-6.1-sol`'s rates) and the run records `price_inherited`. `tauceti-review-costs` applies the same rule, so the reported cost matches what was billed. Each archived run is stamped with a `prices_sha` so its cost is auditable.
 - The GitHub Actions workflows — reusable review and merge helpers plus `tests` (price coverage) —
   live. Tau Ceti's caller currently disables metered review generation, as described above.

@@ -56,7 +56,7 @@ from pathlib import Path
 # Read the dated price table through the engine's pricing module — one source of truth for the
 # prices.json path and its load, so the analytics price runs from exactly the file the engine bills
 # from. (costs runs as `runner.costs` / `python3 -m runner.costs`, so this package import resolves.)
-from runner.pricing import load_price_windows as load_history, usage_totals
+from runner.pricing import load_price_windows as load_history, newest_sibling, usage_totals
 
 CACHE = Path.home() / ".cache" / "tauceti-review"
 DEFAULT_DB = CACHE / "review-costs.db"
@@ -71,6 +71,18 @@ SCHEMA_VERSION = 5
 # file the engine bills from) — there is no separate history file to drift against. Real
 # provider-billed costs (cost_estimated=false) are kept as recorded.
 DEFAULT_PRICE = {"input": 3.0, "output": 15.0, "cache_read": 3.0}  # review.py's unpriced fallback
+
+
+def inherited_price_window(history: dict, model: str, date: str) -> tuple[str, dict] | None:
+    """`(source_model, window)` for a model absent from prices.json: the newest release on its own
+    line, priced as of `date`.
+
+    This mirrors what the engine billed (`pricing.rates`), which is the whole point. Without it the
+    engine charges a newer Sol at the newest Sol's rate while this report charges it the flat
+    DEFAULT_PRICE, so the faithful lens would contradict the recorded cost for exactly the runs an
+    out-of-date table produces."""
+    as_of = {m: price_window(history, m, date) for m in history}
+    return newest_sibling(model, as_of)
 
 
 def price_window(history: dict, model: str, date: str) -> dict | None:
@@ -171,8 +183,8 @@ def _usage_tokens(u: dict, provider: str | None) -> tuple[int, int, int, int]:
             totals["output_tokens"], totals["reasoning_output_tokens"])
 
 
-def _add_run(con, agg, history, today, unpriced, *, run_key, pr, rd, rubric, provider, model,
-             it, ct, ot, rt, recorded, est, verdict, ts):
+def _add_run(con, agg, history, today, unpriced, inherited, *, run_key, pr, rd, rubric, provider,
+             model, it, ct, ot, rt, recorded, est, verdict, ts):
     """Derive the three cost lenses for one rubric run, persist it, and fold into the round agg.
     Estimated (codex/pi) costs are recomputed from tokens — faithfully at the run's own date, and
     at today's prices for the forecast; real provider-billed costs are kept as recorded."""
@@ -180,8 +192,16 @@ def _add_run(con, agg, history, today, unpriced, *, run_key, pr, rd, rubric, pro
         win = price_window(history, model, ts[:10])
         now = price_window(history, model, today)
         if win is None:
-            win = now = {**DEFAULT_PRICE}
-            unpriced[model] = unpriced.get(model, 0) + 1
+            # The model is not in the table: inherit from its own line, as the engine did.
+            borrowed = inherited_price_window(history, model, ts[:10])
+            borrowed_now = inherited_price_window(history, model, today)
+            if borrowed:
+                source, win = borrowed
+                now = borrowed_now[1] if borrowed_now else win
+                inherited[model] = (source, inherited.get(model, (source, 0))[1] + 1)
+            else:
+                win = now = {**DEFAULT_PRICE}
+                unpriced[model] = unpriced.get(model, 0) + 1
         cost = cost_from_window(win, it, ct, ot)
         cost_today = cost_from_window(now, it, ct, ot)
     else:
@@ -211,12 +231,17 @@ def _flush_rounds(con, agg, source):
              a["est"] / a["n"] if a["n"] else None))
 
 
-def _warn_unpriced(unpriced):
+def _warn_unpriced(unpriced, inherited=None):
+    if inherited:
+        borrowed = ", ".join(f"{m or '?'}×{n} at {src}'s rates"
+                             for m, (src, n) in sorted(inherited.items()))
+        print(f"  note: {sum(n for _, n in inherited.values())} rubric run(s) used a model absent "
+              f"from prices.json, priced from its own model line: {borrowed}", file=sys.stderr)
     if unpriced:
         miss = ", ".join(f"{m or '?'}×{n}" for m, n in sorted(unpriced.items()))
         print(f"  warning: {sum(unpriced.values())} rubric run(s) used a model absent from "
-              f"prices.json (fell back to {DEFAULT_PRICE['input']}/{DEFAULT_PRICE['output']}"
-              f"): {miss}", file=sys.stderr)
+              f"prices.json with nothing priced on its line (fell back to "
+              f"{DEFAULT_PRICE['input']}/{DEFAULT_PRICE['output']}): {miss}", file=sys.stderr)
 
 
 def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
@@ -235,6 +260,7 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
     history = load_history()
     today = datetime.now().strftime("%Y-%m-%d")
     unpriced: dict[str, int] = {}
+    inherited: dict[str, tuple[str, int]] = {}
     agg: dict[tuple[int, int], dict] = {}
     nrub = 0
     for f in sorted(reviews.glob("*/*/*.json")):
@@ -254,7 +280,7 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
         raw_ts = ts_map.get((pr, rd))
         ts = (_norm_ts(raw_ts) if raw_ts
               else datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"))
-        _add_run(con, agg, history, today, unpriced, run_key=f"{pr}:{rd}:{f.stem}",
+        _add_run(con, agg, history, today, unpriced, inherited, run_key=f"{pr}:{rd}:{f.stem}",
                  pr=pr, rd=rd, rubric=f.stem,
                  provider=d.get("provider"), model=d.get("model"), it=it, ct=ct, ot=ot, rt=rt,
                  recorded=d.get("cost_usd", 0) or 0, est=1 if d.get("cost_estimated") else 0,
@@ -262,7 +288,7 @@ def ingest_store(con: sqlite3.Connection, store: Path) -> tuple[int, int]:
         nrub += 1
     _flush_rounds(con, agg, "store")
     con.commit()
-    _warn_unpriced(unpriced)
+    _warn_unpriced(unpriced, inherited)
     return len(agg), nrub
 
 
@@ -279,6 +305,7 @@ def ingest_data(con: sqlite3.Connection, data_dir: Path, include_shadows: bool =
     history = load_history()
     today = datetime.now().strftime("%Y-%m-%d")
     unpriced: dict[str, int] = {}
+    inherited: dict[str, tuple[str, int]] = {}
     agg: dict[tuple[int, int], dict] = {}
     seen: set[str] = set()
     nrub = skipped_shadow = skipped_dup = 0
@@ -305,7 +332,7 @@ def ingest_data(con: sqlite3.Connection, data_dir: Path, include_shadows: bool =
         except (KeyError, ValueError, TypeError):
             continue
         it, ct, ot, rt = _usage_tokens(d.get("usage") or {}, d.get("provider"))
-        _add_run(con, agg, history, today, unpriced, run_key=run_key, pr=pr, rd=rd,
+        _add_run(con, agg, history, today, unpriced, inherited, run_key=run_key, pr=pr, rd=rd,
                  rubric=d.get("rubric"), provider=d.get("provider"), model=d.get("model"),
                  it=it, ct=ct, ot=ot, rt=rt, recorded=d.get("cost_usd", 0) or 0,
                  est=1 if d.get("cost_estimated") else 0,
@@ -313,7 +340,7 @@ def ingest_data(con: sqlite3.Connection, data_dir: Path, include_shadows: bool =
         nrub += 1
     _flush_rounds(con, agg, "data")
     con.commit()
-    _warn_unpriced(unpriced)
+    _warn_unpriced(unpriced, inherited)
     if skipped_shadow:
         print(f"  ({skipped_shadow} shadow-arm runs excluded; --include-shadows to count them)",
               file=sys.stderr)
