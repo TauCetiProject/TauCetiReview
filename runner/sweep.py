@@ -96,9 +96,9 @@ REBASE_COMMENT = (
 
 
 def rebase_request_heads(comments, *, stalled=False):
-    """Only the sweep App can issue a head-bound handoff to contributor workers."""
+    """Only trusted sweep/Bors Apps can issue head-bound handoffs to contributor workers."""
     marker = STALLED_MARKER_RE if stalled else REBASE_MARKER_RE
-    return {head for c in comments if c.get("author") == "tauceti-review-bot[bot]"
+    return {head for c in comments if c.get("author") in {"tauceti-review-bot[bot]", "tau-ceti-bors[bot]"}
             and (c.get("body") or "").startswith("Merge-queue recovery for head `")
             for head in marker.findall(c.get("body") or "")}
 
@@ -663,16 +663,24 @@ def sweep_bors(prs, admit=True):
                 continue
             if decision.get("review_safe") is not True:
                 failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
-            elif decision.get("merge") is True:
-                eligible += 1
-                approve = True if not p.get("isDraft") and not has_keep_label(p) else None
-                backend.publish_eligibility(REPO, n, head, approve, is_pin_moving(paths), DRY_RUN, mb,
-                                     reason=decision.get("reason", ""))
-                if not DRY_RUN and merge_base_now(n, head) != mb:
-                    failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
             else:
-                backend.publish_eligibility(REPO, n, head, None, is_pin_moving(paths), DRY_RUN, mb,
-                                     reason=decision.get("reason", ""))
+                paused = p.get("isDraft") or has_keep_label(p) or has_keep_label(v)
+                if not paused:
+                    handoff = reconcile_rebase_request(n, head, v.get("labels") or [], comments)
+                    if handoff != "ready":
+                        api_budget.check_result(handoff != "error")
+                        failures += handoff == "error"
+                        continue
+                if decision.get("merge") is True:
+                    eligible += 1
+                    backend.publish_eligibility(REPO, n, head, None if paused else True,
+                                                is_pin_moving(paths), DRY_RUN, mb,
+                                                reason=decision.get("reason", ""))
+                    if not DRY_RUN and merge_base_now(n, head) != mb:
+                        failures += not api_budget.check_result(withdraw_both(n, v["id"], head))
+                else:
+                    backend.publish_eligibility(REPO, n, head, None, is_pin_moving(paths), DRY_RUN, mb,
+                                                reason=decision.get("reason", ""))
         except api_budget.Exhausted:
             raise
         except Exception as e:

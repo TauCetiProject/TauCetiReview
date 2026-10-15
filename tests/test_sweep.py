@@ -542,6 +542,8 @@ def _request(head, author="tauceti-review-bot[bot]"):
 def test_handoff_trust_and_head_binding():
     head = "a" * 40
     assert sweep.rebase_request_heads([_request(head)]) == {head}
+    assert sweep.rebase_request_heads([_request(head, "tau-ceti-bors[bot]")]) == {head}
+    assert sweep.rebase_request_heads([_request(head, "tau-ceti-bors")]) == set()
     assert sweep.rebase_request_heads([_request(head, "contributor"), _request("bad")]) == set()
 
 
@@ -590,6 +592,53 @@ def test_handoff_new_head_cleanup_and_races():
             assert sweep.reconcile_rebase_request(1, head, labels, [_request(old)]) == "ready"
             assert sweep.recover_branch(1, head, True, [])
             gh.assert_not_called()
+
+
+def test_bors_sweep_reconciles_owned_handoffs_without_masking_withdrawals():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    old, head = "a" * 40, "b" * 40
+    cases = [
+        # Current request repairs its label without reposting or admitting.
+        (head, [], [head], True, None, "--add-label"),
+        # A changed head clears only an owned stale projection, then uses normal eligibility.
+        (old, [{"name": "needs-rebase"}], [head, head], True, True, "--remove-label"),
+        # Movement during label cleanup cannot clear or admit the new head.
+        (old, [{"name": "needs-rebase"}], [head, "c" * 40], True, None, None),
+        # A held PR retains its projection and receives no positive eligibility.
+        (old, [{"name": "needs-rebase"}, {"name": "hold"}], [head], True, None, None),
+        # Unsafe review withdrawal runs even when a repair request is pending.
+        (head, [{"name": "needs-rebase"}], [head], False, None, None),
+    ]
+    for requested, labels, heads, safe, approval, mutation in cases:
+        view = {"headRefOid": head, "baseRefName": "main", "baseRefOid": MB, "id": "PR_1",
+                "labels": labels, "statusCheckRollup": []}
+        with patch.object(sweep, "DRY_RUN", False), \
+                patch.object(sweep, "gh_json", return_value=view), \
+                patch.object(sweep, "gh_jsonl", return_value=[_request(requested, "tau-ceti-bors[bot]")]), \
+                patch.object(sweep, "merge_base_now", return_value=MB), \
+                patch.object(sweep, "current_head", side_effect=heads), \
+                patch.object(sweep, "pr_diff", return_value=["TauCeti/A.lean"]), \
+                patch.object(sweep, "decide_from_comments", return_value={"review_safe": safe, "merge": True}), \
+                patch.object(sweep, "gh", return_value=SimpleNamespace(returncode=0)) as gh, \
+                patch.object(sweep, "withdraw_both", return_value=True) as withdraw, \
+                patch.object(sweep.backend, "publish_eligibility") as publish, \
+                patch.object(sweep.api_budget, "begin_pr"), \
+                patch.object(sweep.api_budget, "check_result", side_effect=lambda ok: ok):
+            assert sweep.sweep_bors([{"number": 1, "isDraft": False, "labels": labels}]) == 0
+            if mutation:
+                gh.assert_called_once()
+                assert mutation in gh.call_args.args[0]
+                assert gh.call_args.args[0][:2] == ["pr", "edit"]
+            else:
+                gh.assert_not_called()
+            if approval is True:
+                assert publish.call_args.args[3] is True
+            elif any(l["name"] == "hold" for l in labels):
+                assert publish.call_args.args[3] is None
+            else:
+                publish.assert_not_called()
+            assert withdraw.call_count == int(not safe)
 
 
 def test_main_hands_off_once_then_waits_until_push():
