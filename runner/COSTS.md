@@ -73,8 +73,21 @@ is wrong. The rates come from [`prices.json`](prices.json), which is a single
 with an `effective` date. A genuine provider price change *adds* a dated window (old
 runs keep the old rate); a correction of a wrong past table *edits* the window
 covering the affected dates. The engine bills at the newest window that has taken
-effect; the analysis prices each run at the window covering its run date. Because there
-is only one file, there is nothing to drift against.
+effect; the analysis prices each run at the window covering its run date. Because the
+engine and this report read the same file, there is nothing here to drift against.
+Correcting a window does make the faithful lens diverge from `cost_recorded` for the runs
+it covers, which is the reason both lenses are kept.
+
+A window carries `input`, `output` and `cache_read`, plus the prompt-cache *write* rates
+the model's provider bills: `cache_write_5m` and `cache_write_1h` for Claude, which prices
+writes by cache TTL, and a single `cache_write` for the OpenAI models. The optional
+`long_context` block repeats the same fields for requests over its `threshold`.
+This engine bills no cache writes at all: the codex path leaves written tokens inside
+`input_tokens` and charges them at the input rate, and Claude runs take the CLI's own
+figure rather than a rate from this table. TauCetiWorker's cost model does bill them, by
+TTL, which is why the rates live here: it vendors this file byte-identically as
+`tauceti_worker/prices.json` and its CI fails when the copy drifts. Rates are still
+edited here only.
 
 A model the table has no row for at all is priced from its own model line: the newest
 release sharing its name with the version numbers stripped, so a Sol newer than the table
