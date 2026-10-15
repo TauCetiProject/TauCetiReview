@@ -169,21 +169,23 @@ def main():
     check("repair plans current run", (plan["threads"][0]["run_id"],
                                         plan["threads"][0]["comment_id"]), ("r-new", 41))
 
-    # --- E: the daily cap prevents spend, not publication repair.
-    print("E. daily cap still publishes persisted blockers")
+    # --- E: a long-running repair remains reviewable after twelve rounds in one UTC day.
+    print("E. reviews continue beyond the former daily round cap")
+    _VERDICTS.clear(); _VERDICTS.update(correctness="approve")
     d, rd, store = _workspace(["correctness"])
     _seed(store, {"correctness": {
         "rubric": "correctness", "provider": "claude", "model": "m",
-        "verdict": "block", "summary": "must be contestable", "findings": [],
-        "reviewed_sha": HEAD, "run_id": "r-cap", "thread": None,
+        "verdict": "request_changes", "summary": "earlier head needs repair", "findings": [],
+        "reviewed_sha": "b" * 40, "run_id": "r-old", "thread": None,
         "author_replies": []}},
-        rounds=[{"round": 1, "mode": "commit", "ts": today() + "T00:00:00Z", "cost": 1}])
-    plan_path = d / "plan.json"
+        rounds=[{"round": i + 1, "mode": "commit", "ts": today() + "T00:00:00Z", "cost": 1}
+                for i in range(12)])
     led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
-               extra=["--max-rounds-per-day", "1", "--post-plan-file", str(plan_path)])
-    plan = json.loads(plan_path.read_text())
-    check("cap adds no round", len(led["prs"]["1"]["rounds"]), 1)
-    check("cap plan carries blocker", [t["rubric"] for t in plan["threads"]], ["correctness"])
+               extra=["--max-rounds-per-day", "1"])
+    pr = led["prs"]["1"]
+    check("thirteenth round recorded despite legacy cap flag", len(pr["rounds"]), 13)
+    check("reviewer actually ran", pr["rounds"][-1]["ran"], ["correctness"])
+    check("new head approved", pr["state"]["correctness"]["approved_sha"], HEAD)
 
     # --- F: all-green scoreboard recovery uses the PR marker and errors never create threads.
     print("F. scoreboard marker repairs green state; errors stay threadless")

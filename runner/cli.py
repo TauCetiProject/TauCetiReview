@@ -666,10 +666,8 @@ def main():
                          "another reviewer is already running on the same head — so a fleet doesn't "
                          "pay twice for identical work. Pass this to review without touching the PR "
                          "(e.g. a private read-only pass), at the cost of possible duplicate spend.")
-    ap.add_argument("--max-rounds-per-day", type=int, default=12,
-                    help="per-PR daily round cap (UTC day); past this the run refuses without spending. "
-                         "Forwarded to review.py. Exposing it here lets a caller (e.g. the worker, whose "
-                         "survey prefilters capped PRs) drive the prefilter and the engine from one value.")
+    # Older workers pass this flag. Accept it during rolling upgrades without limiting reviews.
+    ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
     a = ap.parse_args()
 
     a.kiro_model = (a.kiro_model or "").strip()
@@ -928,7 +926,6 @@ def main():
            "--ci-build", ci_build or "", "--auth", a.auth,
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
            "--kiro-model", a.kiro_model,
-           "--max-rounds-per-day", str(a.max_rounds_per_day),
            "--scoreboard-file", str(work / "scoreboard.md"),
            "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
            "--replies-json", str(replies_path), "--prior-scoreboard-json", str(prior_board_path)]

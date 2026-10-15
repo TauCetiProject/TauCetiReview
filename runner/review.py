@@ -608,8 +608,8 @@ def main():
     ap.add_argument("--max-call-cost", type=float, default=1.0,
                     help="reservation per rubric: skip a rubric if spend so far plus this would "
                          "exceed the daily budget (a hard-ish per-call ceiling, not post-spend)")
-    ap.add_argument("--max-rounds-per-day", type=int, default=12,
-                    help="per-PR cap on paid review rounds in a single UTC day (abuse limit)")
+    # Accept the retired flag from older callers; it no longer limits review rounds.
+    ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--head-sha", default="",
                     help="PR head commit; approvals are bound to it, so a new commit re-runs all "
                          "blocking rubrics instead of carrying forward stale approvals")
@@ -909,37 +909,6 @@ def main():
                  "all_green": all_green, "stopped": False, "budget": a.review_budget,
                  "head_sha": head}))
         print(f"[merge] {merge_ok}: {reason}")
-        return
-
-    # Per-PR daily round cap: bound how often one PR can spend (rapid commits or repeated
-    # /review); the global daily budget still applies on top. Checked after init. Persisted adverse
-    # results are still published here without a model call: a spend cap must never strand a
-    # scoreboard-only blocker that the author cannot contest.
-    todays_rounds = sum(1 for r in pr_state["rounds"] if (r.get("ts") or "").startswith(today()))
-    if todays_rounds >= a.max_rounds_per_day:
-        outdir = store / "reviews" / str(a.pr) / str(round_num)
-        outdir.mkdir(parents=True, exist_ok=True)
-        overall = (f"paused (daily round cap reached, {todays_rounds}/{a.max_rounds_per_day}; "
-                   "reviews resume next UTC day)")
-        sb = render_scoreboard(candidates, state_map, head, overall, "", prov=prov)
-        sb_path = pathlib.Path(a.scoreboard_file) if a.scoreboard_file else (outdir / "scoreboard.md")
-        sb_path.write_text(sb)
-        (outdir / "scoreboard.md").write_text(sb)
-        diff_full = pathlib.Path(a.diff_file).read_text()
-        threads_dir = pathlib.Path(a.threads_dir) if a.threads_dir else (outdir / "threads")
-        thread_actions = render_thread_plan(
-            candidates, [], state_map, head, prov, changed_file_paths(a, diff_full), threads_dir,
-            a.merge_path_prefix, repairs_only=True)
-        if a.post_plan_file:
-            pathlib.Path(a.post_plan_file).write_text(json.dumps(
-                {"head_sha": head, "round": round_num,
-                 "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
-                 "scoreboard_body": str(sb_path), "threads": thread_actions}, indent=2))
-        if a.merge_decision_file:
-            pathlib.Path(a.merge_decision_file).write_text(json.dumps(
-                {"merge": False, "reason": "per-PR daily round cap reached", "head_sha": head}))
-        print(f"per-PR daily round cap reached for #{a.pr} "
-              f"({todays_rounds}/{a.max_rounds_per_day}); skipping without spending.")
         return
 
     reply_text = ""

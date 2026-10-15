@@ -146,5 +146,5 @@ under `TauCeti/`. (Replaces "all approve across this sha's rounds".)
   append-only audit log; add the new per-rubric `state` map alongside; treat missing state as
   "never run".
 - Round/budget accounting now spans a variable number of rubric runs per invocation (blocking +
-  sweep). The daily cap + per-PR daily round cap still bound spend; a halted sweep just leaves
+  sweep). The daily spending budget still bounds spend; a halted sweep just leaves
   rubrics stale (correctly not mergeable).
