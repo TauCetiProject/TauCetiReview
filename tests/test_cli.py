@@ -66,7 +66,7 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
         with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
             argv = ["tauceti-review", "1", "--reviewer", "claude", "--no-archive",
                     "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
-                    "--submitted-by", "test-reviewer", *flags]
+                    "--submitted-by", "test-reviewer", "--max-rounds-per-day", "1", *flags]
             stack.enter_context(patch.object(sys, "argv", argv))
             stack.enter_context(patch.dict(os.environ, {"TAUCETI_CLAUDE_MODEL": env_model}))
             stack.enter_context(patch.object(cli, "run", fake_run))
@@ -89,6 +89,7 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
                 cmd = call.cmd
             else:
                 raise AssertionError("CLI did not invoke the review engine")
+            assert "--max-rounds-per-day" not in cmd, cmd
             actual = cmd[cmd.index("--claude-model") + 1] if "--claude-model" in cmd else None
             assert actual == expected, (env_model, flags, cmd)
 

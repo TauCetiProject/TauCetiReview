@@ -180,10 +180,9 @@ def main():
         "author_replies": []}},
         rounds=[{"round": i + 1, "mode": "commit", "ts": today() + "T00:00:00Z", "cost": 1}
                 for i in range(12)])
-    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
-               extra=["--max-rounds-per-day", "1"])
+    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"])
     pr = led["prs"]["1"]
-    check("thirteenth round recorded despite legacy cap flag", len(pr["rounds"]), 13)
+    check("thirteenth round recorded", len(pr["rounds"]), 13)
     check("reviewer actually ran", pr["rounds"][-1]["ran"], ["correctness"])
     check("new head approved", pr["state"]["correctness"]["approved_sha"], HEAD)
 

@@ -63,7 +63,7 @@ Mode is derived from the trigger:
   1. Run all **blocking** rubrics on HEAD (manual = run *all* rubrics).
   2. Recompute. If nothing is blocking but some are **stale**, run the **freshness sweep**:
      re-run the stale ones on HEAD.
-  3. Repeat until nothing is blocking-or-stale, or the budget/round cap halts it.
+  3. Repeat until nothing is blocking-or-stale, or the spending budget halts it.
 - **reply** (Stage 2 — a reply in a rubric's thread): run **only that rubric**, with the
   thread in context; then, if that clears the last blocker, run the freshness sweep.
 

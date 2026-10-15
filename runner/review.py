@@ -242,14 +242,12 @@ def thread_action_rubrics(candidates, ran, state_map, head):
 
 
 def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_dir,
-                       merge_path_prefix, had_contest=None, repairs_only=False):
+                       merge_path_prefix, had_contest=None):
     """Render the thread half of a trusted post plan.
 
     Required adverse upserts are the review-publication transaction: the final scoreboard may not
     land until they do.  Close notes and direct contest answers remain best-effort UI actions.
-    `repairs_only` is used by the daily-cap path, where no model may run but persisted findings must
-    still be made contestable. `paths` are the PR's changed paths (`changed_file_paths`), the only
-    files a thread may anchor to.
+    `paths` are the PR's changed paths (`changed_file_paths`), the only files a thread may anchor to.
     """
     had_contest = had_contest or {}
     paths_sorted = sorted(paths)
@@ -257,8 +255,7 @@ def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_di
                          paths_sorted[0] if paths_sorted else "")
     threads_dir.mkdir(parents=True, exist_ok=True)
     actions = []
-    for rubric in thread_action_rubrics(candidates, [] if repairs_only else ran,
-                                        state_map, head):
+    for rubric in thread_action_rubrics(candidates, ran, state_map, head):
         cf = state_map.get(rubric) or {}
         s = state_of(cf, head)
         thread = cf.get("thread")
@@ -270,7 +267,7 @@ def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_di
                  "run_id": cf.get("run_id"), "body": str(bpath),
                  "comment_id": (thread or {}).get("comment_id"),
                  "path": pick_anchor(cf, fallback_path, set(paths_sorted))})
-        elif not repairs_only and s in ("green", "stale") and thread:
+        elif s in ("green", "stale") and thread:
             bpath.write_text(f"<!--tauceti-rubric:{rubric}-->\n### ✅ {rubric} — now passing on "
                              f"`{head[:7]}`.\n\n"
                              + meta_block("thread", rubric=rubric, **thread_meta(cf, prov)))
@@ -278,8 +275,7 @@ def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_di
                 {"rubric": rubric, "action": "close", "required": False,
                  "body": str(bpath), "comment_id": thread.get("comment_id"),
                  "node_id": thread.get("node_id")})
-        if (not repairs_only and rubric in had_contest
-                and (thread or {}).get("comment_id") and s != "error"):
+        if (rubric in had_contest and (thread or {}).get("comment_id") and s != "error"):
             rpath = threads_dir / f"{rubric}.reply.md"
             rpath.write_text(render_contest_reply(cf, head, prov,
                                                   answered_id=had_contest[rubric]))
@@ -608,8 +604,6 @@ def main():
     ap.add_argument("--max-call-cost", type=float, default=1.0,
                     help="reservation per rubric: skip a rubric if spend so far plus this would "
                          "exceed the daily budget (a hard-ish per-call ceiling, not post-spend)")
-    # Accept the retired flag from older callers; it no longer limits review rounds.
-    ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--head-sha", default="",
                     help="PR head commit; approvals are bound to it, so a new commit re-runs all "
                          "blocking rubrics instead of carrying forward stale approvals")
@@ -1139,7 +1133,7 @@ def main():
 
     # Budget signal: a PR that has been through its full review budget without going green is "spent".
     # A separate trusted step turns this into the review-budget-spent label, and the library's
-    # housekeeping CI closes spent PRs. Written on real review rounds only (init / daily-cap returned
+    # housekeeping CI closes spent PRs. Written on real review rounds only (init returned
     # earlier), so the label reconciles to current review state every time a PR is actually reviewed.
     # Count only full review passes: a reply re-runs a single contested rubric, so an author's back-
     # and-forth must not burn the budget, and a round cut short by the daily dollar budget (`stopped`)
