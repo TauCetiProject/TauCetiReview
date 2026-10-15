@@ -75,13 +75,17 @@ runs keep the old rate); a correction of a wrong past table *edits* the window
 covering the affected dates. The engine bills at the newest window that has taken
 effect; the analysis prices each run at the window covering its run date. Because the
 engine and this report read the same file, there is nothing here to drift against.
+Correcting a window does make the faithful lens diverge from `cost_recorded` for the runs
+it covers, which is the reason both lenses are kept.
 
 A window carries `input`, `output` and `cache_read`, plus the prompt-cache *write* rates
 the model's provider bills: `cache_write_5m` and `cache_write_1h` for Claude, which prices
 writes by cache TTL, and a single `cache_write` for the OpenAI models. The optional
 `long_context` block repeats the same fields for requests over its `threshold`.
-TauCetiWorker's cost model reads the write rates, which this engine does not bill
-(reviews make no 1-hour caches), so it vendors this file byte-identically as
+This engine bills no cache writes at all: the codex path leaves written tokens inside
+`input_tokens` and charges them at the input rate, and Claude runs take the CLI's own
+figure rather than a rate from this table. TauCetiWorker's cost model does bill them, by
+TTL, which is why the rates live here: it vendors this file byte-identically as
 `tauceti_worker/prices.json` and its CI fails when the copy drifts. Rates are still
 edited here only.
 
