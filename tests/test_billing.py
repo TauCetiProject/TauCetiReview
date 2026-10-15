@@ -107,7 +107,10 @@ def main():
     print("A. manual, all approve")
     _VERDICTS.clear(); _VERDICTS.update(correctness="approve", reuse="approve")
     d, rd, store = _workspace(["correctness", "reuse"])
-    led = _run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness", "reuse"])
+    plan_path = d / "plan.json"
+    led = _run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness", "reuse"],
+               extra=["--post-plan-file", str(plan_path)])
+    check("clean review signals no error", json.loads(plan_path.read_text())["review_error"], False)
     pr = led["prs"]["1"]
     check("spend = 2*COST", round(led["days"][today()], 6), round(2 * COST, 6))
     check("one round recorded", len(pr["rounds"]), 1)
