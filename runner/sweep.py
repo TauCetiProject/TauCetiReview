@@ -98,7 +98,7 @@ REBASE_COMMENT = (
 def rebase_request_heads(comments, *, stalled=False):
     """Only the sweep App can issue a head-bound handoff to contributor workers."""
     marker = STALLED_MARKER_RE if stalled else REBASE_MARKER_RE
-    return {head for c in comments if c.get("author") == "tauceti-review-bot[bot]"
+    return {head for c in comments if c.get("author") in {"tauceti-review-bot[bot]", "tau-ceti-bors[bot]"}
             and (c.get("body") or "").startswith("Merge-queue recovery for head `")
             for head in marker.findall(c.get("body") or "")}
 

@@ -542,6 +542,8 @@ def _request(head, author="tauceti-review-bot[bot]"):
 def test_handoff_trust_and_head_binding():
     head = "a" * 40
     assert sweep.rebase_request_heads([_request(head)]) == {head}
+    assert sweep.rebase_request_heads([_request(head, "tau-ceti-bors[bot]")]) == {head}
+    assert sweep.rebase_request_heads([_request(head, "tau-ceti-bors")]) == set()
     assert sweep.rebase_request_heads([_request(head, "contributor"), _request("bad")]) == set()
 
 
