@@ -63,7 +63,7 @@ Mode is derived from the trigger:
   1. Run all **blocking** rubrics on HEAD (manual = run *all* rubrics).
   2. Recompute. If nothing is blocking but some are **stale**, run the **freshness sweep**:
      re-run the stale ones on HEAD.
-  3. Repeat until nothing is blocking-or-stale, or the budget/round cap halts it.
+  3. Repeat until nothing is blocking-or-stale, or the spending budget halts it.
 - **reply** (Stage 2 — a reply in a rubric's thread): run **only that rubric**, with the
   thread in context; then, if that clears the last blocker, run the freshness sweep.
 
@@ -146,5 +146,5 @@ under `TauCeti/`. (Replaces "all approve across this sha's rounds".)
   append-only audit log; add the new per-rubric `state` map alongside; treat missing state as
   "never run".
 - Round/budget accounting now spans a variable number of rubric runs per invocation (blocking +
-  sweep). The daily cap + per-PR daily round cap still bound spend; a halted sweep just leaves
+  sweep). The daily spending budget still bounds spend; a halted sweep just leaves
   rubrics stale (correctly not mergeable).

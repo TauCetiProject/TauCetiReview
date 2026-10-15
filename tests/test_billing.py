@@ -35,7 +35,8 @@ def _fake_runner(prompt, cwd, model, env):
     vo = {"verdict": verdict, "summary": f"{rubric} says {verdict}",
           "findings": ([{"file": f"code/{rubric}.lean", "what": "x"}]
                        if verdict != "approve" else [])}
-    text = f"analysis for {rubric}\n{marker}\n{json.dumps(vo)}"
+    text = ("unparseable reviewer output" if verdict == "error"
+            else f"analysis for {rubric}\n{marker}\n{json.dumps(vo)}")
     return {"returncode": 0, "text": text, "cost_usd": COST,
             "usage": {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 50}}
 
@@ -106,7 +107,10 @@ def main():
     print("A. manual, all approve")
     _VERDICTS.clear(); _VERDICTS.update(correctness="approve", reuse="approve")
     d, rd, store = _workspace(["correctness", "reuse"])
-    led = _run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness", "reuse"])
+    plan_path = d / "plan.json"
+    led = _run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness", "reuse"],
+               extra=["--post-plan-file", str(plan_path)])
+    check("clean review signals no error", json.loads(plan_path.read_text())["review_error"], False)
     pr = led["prs"]["1"]
     check("spend = 2*COST", round(led["days"][today()], 6), round(2 * COST, 6))
     check("one round recorded", len(pr["rounds"]), 1)
@@ -169,21 +173,22 @@ def main():
     check("repair plans current run", (plan["threads"][0]["run_id"],
                                         plan["threads"][0]["comment_id"]), ("r-new", 41))
 
-    # --- E: the daily cap prevents spend, not publication repair.
-    print("E. daily cap still publishes persisted blockers")
+    # --- E: a long-running repair remains reviewable after twelve rounds in one UTC day.
+    print("E. reviews continue beyond the former daily round cap")
+    _VERDICTS.clear(); _VERDICTS.update(correctness="approve")
     d, rd, store = _workspace(["correctness"])
     _seed(store, {"correctness": {
         "rubric": "correctness", "provider": "claude", "model": "m",
-        "verdict": "block", "summary": "must be contestable", "findings": [],
-        "reviewed_sha": HEAD, "run_id": "r-cap", "thread": None,
+        "verdict": "request_changes", "summary": "earlier head needs repair", "findings": [],
+        "reviewed_sha": "b" * 40, "run_id": "r-old", "thread": None,
         "author_replies": []}},
-        rounds=[{"round": 1, "mode": "commit", "ts": today() + "T00:00:00Z", "cost": 1}])
-    plan_path = d / "plan.json"
-    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
-               extra=["--max-rounds-per-day", "1", "--post-plan-file", str(plan_path)])
-    plan = json.loads(plan_path.read_text())
-    check("cap adds no round", len(led["prs"]["1"]["rounds"]), 1)
-    check("cap plan carries blocker", [t["rubric"] for t in plan["threads"]], ["correctness"])
+        rounds=[{"round": i + 1, "mode": "commit", "ts": today() + "T00:00:00Z", "cost": 1}
+                for i in range(12)])
+    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"])
+    pr = led["prs"]["1"]
+    check("thirteenth round recorded", len(pr["rounds"]), 13)
+    check("reviewer actually ran", pr["rounds"][-1]["ran"], ["correctness"])
+    check("new head approved", pr["state"]["correctness"]["approved_sha"], HEAD)
 
     # --- F: all-green scoreboard recovery uses the PR marker and errors never create threads.
     print("F. scoreboard marker repairs green state; errors stay threadless")
@@ -214,6 +219,16 @@ def main():
     pr = led["prs"]["1"]
     check("only one rubric ran (reserved)", pr["rounds"][0]["ran"], ["correctness"])
     check("spend = 1*COST", round(led["days"][today()], 6), round(COST, 6))
+
+    # --- H: report errors from this actual review invocation in the trusted post plan.
+    print("H. unparseable reviewer output signals a failed review after publication")
+    _VERDICTS.clear(); _VERDICTS.update(correctness="error")
+    d, rd, store = _workspace(["correctness"])
+    plan_path = d / "plan.json"
+    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
+               extra=["--post-plan-file", str(plan_path)])
+    check("error verdict retained", led["prs"]["1"]["state"]["correctness"]["verdict"], "error")
+    check("post plan signals review error", json.loads(plan_path.read_text())["review_error"], True)
 
     print(f"\n{'PASS' if not fails else 'FAIL'}: {fails} failure(s)")
     return 1 if fails else 0

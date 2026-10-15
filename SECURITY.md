@@ -47,7 +47,9 @@ so safety rests entirely on breaking links 1–2: removing the reviewer's *acces
   `shell_environment_policy.inherit=none`.
 - **I3** — the App token is split into two narrowly-scoped tokens (TauCeti `pull-requests:write`
   to comment; TauCetiReview `contents:write` to persist), minted only *after* reviewers finish.
-- **I4** — `/review` requires an exact command line (not a substring); per-PR daily round cap.
+- **I4** — `/review` requires an exact command line (not a substring). Review rounds are not limited
+  per PR per day. CI uses the configured spending budget (I5); subscription workers rely on
+  provider quotas and pacing.
 - **I5** — reserve-before-spend: skip a rubric if spend-so-far plus a per-call ceiling would
   breach the daily budget; count every attempt; persist spend incrementally.
 - **I6** — the verdict is parsed only from after a one-time random marker the runner injects per

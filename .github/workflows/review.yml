@@ -255,7 +255,7 @@ jobs:
             python3 runner/post.py --repo TauCetiProject/TauCeti --pr "$PR" \
               --plan "$PWD/post_plan.json" --store store --archive-dir store/outbox
           else
-            echo "no post plan (runner did not run, e.g. round cap); nothing to post"
+            echo "no post plan (runner did not run); nothing to post"
           fi
 
       - name: Reconcile review-budget-spent label
@@ -263,7 +263,7 @@ jobs:
         # budget without going green it gets the `review-budget-spent` label; otherwise the label is
         # cleared (a later round that fixes the PR removes it). The library's housekeeping CI closes
         # labelled PRs, so this is a server-side signal it can query without re-reading every
-        # scoreboard. No budget.json (init / daily-cap) means the label is left untouched.
+        # scoreboard. No budget.json (init) means the label is left untouched.
         if: always()
         env:
           GH_TOKEN: ${{ steps.comment_token.outputs.token }}

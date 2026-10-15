@@ -66,7 +66,7 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
         with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
             argv = ["tauceti-review", "1", "--reviewer", "claude", "--no-archive",
                     "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
-                    "--submitted-by", "test-reviewer", *flags]
+                    "--submitted-by", "test-reviewer", "--max-rounds-per-day", "1", *flags]
             stack.enter_context(patch.object(sys, "argv", argv))
             stack.enter_context(patch.dict(os.environ, {"TAUCETI_CLAUDE_MODEL": env_model}))
             stack.enter_context(patch.object(cli, "run", fake_run))
@@ -89,6 +89,7 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
                 cmd = call.cmd
             else:
                 raise AssertionError("CLI did not invoke the review engine")
+            assert "--max-rounds-per-day" not in cmd, cmd
             actual = cmd[cmd.index("--claude-model") + 1] if "--claude-model" in cmd else None
             assert actual == expected, (env_model, flags, cmd)
 
@@ -333,6 +334,48 @@ def test_drift_warning_matches_engine_and_is_added_once():
         sb.write_text("## AI review\nno table\n")
         cli.ensure_drift_warning(sb)
         assert sb.read_text().split("\n")[1] == f"> {cli.DRIFT_WARNING}"
+
+
+def test_review_error_exits_after_posting_and_coordination_skip_stays_successful():
+    for review_error, skipped in [(False, False), (True, False), (True, True)]:
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            events = []
+            def fake_run(cmd, **kwargs):
+                if len(cmd) > 1 and pathlib.Path(cmd[1]).name == "review.py":
+                    events.append("review")
+                    pathlib.Path(tmp, "scoreboard.md").write_text("test scoreboard")
+                    pathlib.Path(tmp, "post_plan.json").write_text(json.dumps({
+                        "review_error": review_error}))
+                if len(cmd) > 1 and pathlib.Path(cmd[1]).name == "post.py":
+                    events.append("post")
+                return types.SimpleNamespace(returncode=0, stdout="test-token", stderr="")
+            argv = ["tauceti-review", "1", "--reviewer", "claude", "--no-archive", "--post",
+                    "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
+                    "--submitted-by", "test-reviewer"]
+            stack.enter_context(patch.object(sys, "argv", argv))
+            stack.enter_context(patch.object(cli, "run", fake_run))
+            stack.enter_context(patch.object(cli, "need"))
+            stack.enter_context(patch.object(cli, "coordinate", return_value=[] if skipped else ["claude"]))
+            stack.enter_context(patch.object(cli.shutil, "which",
+                                            side_effect=lambda n: "/bin/claude" if n == "claude" else None))
+            stack.enter_context(patch.object(cli.subprocess, "run", return_value=types.SimpleNamespace(
+                returncode=0, stdout=b"diff --git a/x.lean b/x.lean\n+x\n", stderr=b"")))
+            stack.enter_context(patch.object(cli, "resolve_repo_dir",
+                                            return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
+            stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
+            stack.enter_context(patch.object(cli, "gh_json", return_value={}))
+            stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
+            stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
+            stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            status = 0
+            try:
+                cli.main()
+            except SystemExit as e:
+                status = e.code
+            assert status == (1 if review_error and not skipped else 0), (review_error, skipped, status)
+            assert events == ([] if skipped else ["review", "post"]), events
 
 
 if __name__ == "__main__":
