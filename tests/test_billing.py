@@ -35,7 +35,8 @@ def _fake_runner(prompt, cwd, model, env):
     vo = {"verdict": verdict, "summary": f"{rubric} says {verdict}",
           "findings": ([{"file": f"code/{rubric}.lean", "what": "x"}]
                        if verdict != "approve" else [])}
-    text = f"analysis for {rubric}\n{marker}\n{json.dumps(vo)}"
+    text = ("unparseable reviewer output" if verdict == "error"
+            else f"analysis for {rubric}\n{marker}\n{json.dumps(vo)}")
     return {"returncode": 0, "text": text, "cost_usd": COST,
             "usage": {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 50}}
 
@@ -215,6 +216,16 @@ def main():
     pr = led["prs"]["1"]
     check("only one rubric ran (reserved)", pr["rounds"][0]["ran"], ["correctness"])
     check("spend = 1*COST", round(led["days"][today()], 6), round(COST, 6))
+
+    # --- H: report errors from this actual review invocation in the trusted post plan.
+    print("H. unparseable reviewer output signals a failed review after publication")
+    _VERDICTS.clear(); _VERDICTS.update(correctness="error")
+    d, rd, store = _workspace(["correctness"])
+    plan_path = d / "plan.json"
+    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
+               extra=["--post-plan-file", str(plan_path)])
+    check("error verdict retained", led["prs"]["1"]["state"]["correctness"]["verdict"], "error")
+    check("post plan signals review error", json.loads(plan_path.read_text())["review_error"], True)
 
     print(f"\n{'PASS' if not fails else 'FAIL'}: {fails} failure(s)")
     return 1 if fails else 0

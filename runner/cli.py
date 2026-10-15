@@ -953,6 +953,7 @@ def main():
     sb = (work / "scoreboard.md")
     if not sb.is_file():
         die(f"review step exited cleanly but produced no scoreboard ({sb}); the engine did not run.")
+    review_error = plan.is_file() and json.loads(plan.read_text()).get("review_error", False)
     if drift:
         ensure_drift_warning(sb)
     print("\n" + "=" * 72)
@@ -998,6 +999,9 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
     elif a.keep:
         print(f"workspace kept at {work}", file=sys.stderr)
+
+    if review_error:
+        die("review completed with rubric errors; see the scoreboard")
 
 
 if __name__ == "__main__":

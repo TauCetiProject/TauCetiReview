@@ -1112,6 +1112,7 @@ def main():
         return
     threads_dir = pathlib.Path(a.threads_dir) if a.threads_dir else (outdir / "threads")
     plan = {"head_sha": head, "round": round_num,
+            "review_error": any(states[r] == "error" for r in ran),
             "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
             "scoreboard_body": str(sb_path),
             "threads": render_thread_plan(
