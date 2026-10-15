@@ -45,13 +45,60 @@ def test_price_windows_are_well_formed():
             for field in ("input", "output"):
                 if not isinstance(w.get(field), (int, float)):
                     bad.append(f"{model}@{w.get('effective')}.{field}")
-            if "cache_read" in w and not isinstance(w["cache_read"], (int, float)):
-                bad.append(f"{model}@{w.get('effective')}.cache_read")
+            for field in ("cache_read", "cache_write", "cache_write_5m", "cache_write_1h"):
+                if field in w and not isinstance(w[field], (int, float)):
+                    bad.append(f"{model}@{w.get('effective')}.{field}")
+            lc = w.get("long_context")
+            if lc is not None:
+                if not isinstance(lc.get("threshold"), int):
+                    bad.append(f"{model}@{w.get('effective')}.long_context.threshold")
+                for field in ("input", "output"):
+                    if not isinstance(lc.get(field), (int, float)):
+                        bad.append(f"{model}@{w.get('effective')}.long_context.{field}")
+                for field in ("cache_read", "cache_write"):
+                    if field in lc and not isinstance(lc[field], (int, float)):
+                        bad.append(f"{model}@{w.get('effective')}.long_context.{field}")
         # windows must be in chronological order so "newest" / "as-of-date" resolution is correct
         effs = [w.get("effective") for w in windows]
         if effs != sorted(effs):
             bad.append(f"{model}: windows not sorted by effective date {effs}")
     assert not bad, f"malformed price windows: {bad}"
+
+
+def test_every_window_carries_the_write_rates_its_family_is_billed_at():
+    """The worker vendors this table and prices prompt-cache writes from it, so a window missing
+    its family's write rate is a KeyError there rather than a visible gap here. Anthropic bills
+    writes by TTL (two rates), OpenAI bills one, and the OpenRouter route reports no writes at
+    all."""
+    missing = []
+    for model, windows in review._PRICE_WINDOWS.items():
+        if "/" in model:  # OpenRouter-routed: cache reads only
+            continue
+        needed = ("cache_write_5m", "cache_write_1h") if model.startswith("claude-") else ("cache_write",)
+        for w in windows:
+            missing += [f"{model}@{w['effective']}.{f}" for f in needed if f not in w]
+            lc = w.get("long_context")
+            if lc is not None and "cache_write" not in lc:
+                missing.append(f"{model}@{w['effective']}.long_context.cache_write")
+    assert not missing, f"windows missing a write rate their family is billed at: {missing}"
+
+
+def test_cache_rates_bracket_the_input_rate():
+    """A cache read is cheaper than fresh input and a cache write dearer, for every provider here.
+    A rate that falls outside that bracket is a transcription error, not a tariff."""
+    bad = []
+    for model, windows in review._PRICE_WINDOWS.items():
+        for w in windows:
+            for rates, where in ((w, model), (w.get("long_context") or {}, f"{model}.long_context")):
+                pin = rates.get("input")
+                if pin is None:
+                    continue
+                if rates.get("cache_read", pin) > pin:
+                    bad.append(f"{where}@{w['effective']}: cache_read {rates['cache_read']} > input {pin}")
+                for field in ("cache_write", "cache_write_5m", "cache_write_1h"):
+                    if field in rates and rates[field] < pin:
+                        bad.append(f"{where}@{w['effective']}: {field} {rates[field]} < input {pin}")
+    assert not bad, f"cache rates outside the read <= input <= write bracket: {bad}"
 
 
 def test_warn_unpriced_does_not_stop_the_run():
