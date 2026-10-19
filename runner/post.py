@@ -219,7 +219,7 @@ def current_login():
 
 
 def find_scoreboard_comments(repo, pr):
-    """Return every marked scoreboard as {id, login, updated_at}, newest first.
+    """Return every marked scoreboard as {id, login, updated_at, body}, newest first.
 
     This is the ownership proof before `upsert_scoreboard` mutates a known comment, so it deliberately
     includes outside contributors: author association does not change whether a comment is ours.
@@ -229,7 +229,7 @@ def find_scoreboard_comments(repo, pr):
     r = subprocess.run(
         ["gh", "api", "--paginate", f"/repos/{repo}/issues/{pr}/comments?per_page=100", "--jq",
          '.[] | select((.body // "") | contains("' + SCOREBOARD_MARKER + '")) '
-         '| {id, login: (.user.login // ""), updated_at: (.updated_at // "")} | @json'],
+         '| {id, login: (.user.login // ""), updated_at: (.updated_at // ""), body} | @json'],
         text=True, capture_output=True)
     if r.returncode != 0:
         print(f"scoreboard lookup failed: {r.stderr[-300:]}", file=sys.stderr)
@@ -260,7 +260,10 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
     scoreboard. A foreign or missing known id is never PATCHed, and a new scoreboard is posted only
     when this identity has none to reuse. Discovery is required: on failure, mutate nothing and let
     the publication retry. A failed edit of our own comment is likewise a real error, never silently
-    re-posted. Returns (sb_id, ok). `mine` overrides the actor login."""
+    re-posted. Identical text needs no PATCH only when this comment is strictly
+    newest: updated_at determines which scoreboard supersedes others. Our
+    obsolete duplicates are still removed. Returns (sb_id, ok). `mine` overrides
+    the actor login."""
     me = mine if mine is not None else current_login()
     existing = find_scoreboard_comments(repo, pr)
     if existing is None:
@@ -282,7 +285,14 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
 
     ok = False
     if sb_id:
-        if gh_api("PATCH", f"/repos/{repo}/issues/comments/{sb_id}", body_file=body_file,
+        current = next(c for c in ours if c["id"] == sb_id)
+        strictly_newest = all(c.get("updated_at") and current.get("updated_at")
+                             and c["updated_at"] < current["updated_at"]
+                             for c in existing if c["id"] != sb_id)
+        if strictly_newest and current.get("body") == pathlib.Path(body_file).read_text():
+            pr_state["scoreboard_comment_id"] = sb_id
+            ok = True
+        elif gh_api("PATCH", f"/repos/{repo}/issues/comments/{sb_id}", body_file=body_file,
                   failures=failures, action="scoreboard PATCH") is not None:
             pr_state["scoreboard_comment_id"] = sb_id
             ok = True
