@@ -48,14 +48,42 @@ def run(fake, existing, pr_state, plan_sb_id=None, mine="bot"):
     post.find_scoreboard_comments = lambda repo, pr: None if existing is None else list(existing)
     failures = []
     try:
-        sb_id, ok = post.upsert_scoreboard("o/r", 1, "body.md", plan_sb_id, pr_state, failures,
-                                           mine=mine)
+        with tempfile.TemporaryDirectory() as directory:
+            body = pathlib.Path(directory) / "body.md"
+            body.write_text("scoreboard body\n")
+            sb_id, ok = post.upsert_scoreboard("o/r", 1, body, plan_sb_id, pr_state, failures,
+                                               mine=mine)
     finally:
         post.gh_api, post.find_scoreboard_comments = saved_gh, saved_find  # don't leak into other tests
     return sb_id, ok, failures
 
 
 # --- upsert_scoreboard --------------------------------------------------------------------------
+
+def test_identical_scoreboard_is_success_without_writes():
+    fake, state = FakeGH(), {}
+    sb_id, ok, failures = run(fake, existing=[{
+        "id": 200, "login": "bot", "body": "scoreboard body\n"}], pr_state=state)
+    assert ok and sb_id == 200 and state["scoreboard_comment_id"] == 200
+    assert not fake.calls and not failures
+
+
+def test_identical_scoreboard_still_removes_only_our_obsolete_duplicates():
+    fake = FakeGH()
+    sb_id, ok, failures = run(fake, existing=[
+        {"id": 200, "login": "bot", "body": "scoreboard body\n"},
+        {"id": 100, "login": "bot", "body": "old"},
+        {"id": 50, "login": "someone-else", "body": "old"}], pr_state={})
+    assert ok and sb_id == 200 and not failures
+    assert fake.calls == [("DELETE", "/repos/o/r/issues/comments/100")]
+
+
+def test_identical_foreign_scoreboard_does_not_count_as_our_publication():
+    fake = FakeGH(post_id=300)
+    sb_id, ok, failures = run(fake, existing=[{
+        "id": 200, "login": "someone-else", "body": "scoreboard body\n"}], pr_state={})
+    assert ok and sb_id == 300 and not failures
+    assert fake.calls == [("POST", "/repos/o/r/issues/1/comments")]
 
 def test_known_id_edits_in_place():
     fake = FakeGH(patch_ok=True)
