@@ -260,7 +260,8 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
     scoreboard. A foreign or missing known id is never PATCHed, and a new scoreboard is posted only
     when this identity has none to reuse. Discovery is required: on failure, mutate nothing and let
     the publication retry. A failed edit of our own comment is likewise a real error, never silently
-    re-posted. Identical text is already published and needs no PATCH, but our
+    re-posted. Identical text needs no PATCH only when this comment is strictly
+    newest: updated_at determines which scoreboard supersedes others. Our
     obsolete duplicates are still removed. Returns (sb_id, ok). `mine` overrides
     the actor login."""
     me = mine if mine is not None else current_login()
@@ -285,7 +286,10 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
     ok = False
     if sb_id:
         current = next(c for c in ours if c["id"] == sb_id)
-        if current.get("body") == pathlib.Path(body_file).read_text():
+        strictly_newest = all(c.get("updated_at") and current.get("updated_at")
+                             and c["updated_at"] < current["updated_at"]
+                             for c in existing if c["id"] != sb_id)
+        if strictly_newest and current.get("body") == pathlib.Path(body_file).read_text():
             pr_state["scoreboard_comment_id"] = sb_id
             ok = True
         elif gh_api("PATCH", f"/repos/{repo}/issues/comments/{sb_id}", body_file=body_file,
