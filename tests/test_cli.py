@@ -126,6 +126,41 @@ def test_unresolved_merge_base_stops_before_the_diff_or_review():
     sub.assert_not_called()                     # no pr_diff run
     assert not any(len(c) > 1 and str(c[1]).endswith("review.py") for c in calls)
 
+def test_a_failed_run_removes_the_workspace_it_created():
+    # Only success used to remove the mkdtemp workspace, so every die()/provider-down exit leaked a
+    # ~400 MB checkout; a worker retrying an expired OAuth token filled a host disk in ten minutes.
+    # --keep must still keep it, and a caller-provided --workdir is never deleted.
+    for extra, kept in (([], False), (["--keep"], True), (["--workdir", "WORK"], True)):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            work = pathlib.Path(tmp) / "tauceti-review-1-x"
+            work.mkdir()
+            (work / "diff.txt").write_text("x")
+            argv = ["tauceti-review", "1", "--reviewer", "claude", "--no-archive", "--no-mathlib",
+                    "--store", tmp + "/store", "--submitted-by", "test-reviewer",
+                    *[str(work) if x == "WORK" else x for x in extra]]
+            stack.enter_context(patch.object(sys, "argv", argv))
+            stack.enter_context(patch.object(cli.tempfile, "mkdtemp", return_value=str(work)))
+            stack.enter_context(patch.object(cli, "_install_marker_cleanup"))
+            stack.enter_context(patch.object(cli, "run", lambda *a, **k: types.SimpleNamespace(
+                returncode=0, stdout="", stderr="")))
+            stack.enter_context(patch.object(cli, "need"))
+            stack.enter_context(patch.object(cli.shutil, "which",
+                                             side_effect=lambda n: "/bin/claude" if n == "claude" else None))
+            stack.enter_context(patch.object(cli.subprocess, "run"))
+            stack.enter_context(patch.object(cli, "resolve_repo_dir",
+                                             return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
+            stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
+            stack.enter_context(patch.object(cli, "merge_base_sha", return_value=""))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            try:
+                cli.main()
+            except SystemExit as e:
+                assert e.code == 1
+            else:
+                raise AssertionError("CLI went on without a merge base")
+            assert work.exists() == kept, (extra, work.exists())
+
+
 def test_fable_review_preserves_exact_model_and_reported_cost():
     # Exercise the actual engine dispatch and ledger, with only model I/O stubbed.
     import test_billing as billing

@@ -494,7 +494,8 @@ def _delete_active_markers():
 
 def _install_marker_cleanup():
     """Arm marker deletion on normal exit and on SIGTERM/SIGINT. Idempotent; installed only once we
-    actually own a marker, so a non-coordinating run never changes signal disposition."""
+    own something to clean up (a marker, or a workspace this run created), so a run that owns neither
+    never changes signal disposition."""
     global _CLEANUP_INSTALLED
     if _CLEANUP_INSTALLED:
         return
@@ -765,243 +766,247 @@ def main():
         prefix=f"tauceti-review-{a.pr}-"))
     work.mkdir(parents=True, exist_ok=True)
     print(f"workspace: {work}", file=sys.stderr)
-
-    # PR head, base, diff, and description (author-provided context, no more trusted than the
-    # diff). The base/merge-base SHAs are provenance: they pin exactly which diff was reviewed.
-    head, base = pr_ref_oids(a.repo, a.pr)
-    print(f"PR #{a.pr} head: {head[:12]}", file=sys.stderr)
-    if a.expect_head and not (head.startswith(a.expect_head) or a.expect_head.startswith(head)):
-        die(f"PR #{a.pr} head is {head[:12]}, expected {a.expect_head[:12]}. The push may not have "
-            "propagated to the API yet; re-run in a moment to avoid reviewing a stale commit.")
-
-    # De-contend concurrent reviewers BEFORE the expensive workspace setup + inference. Only for a
-    # contributing run (one that posts or archives): a pure read-only dry run (--no-archive, no --post)
-    # touches nothing, and a shadow arm deliberately re-reviews the same diff, so both opt out.
-    if (a.post or not a.no_archive) and not a.shadow and not a.no_coordinate:
-        avail = coordinate(a.repo, a.pr, head, avail, a.submitted_by)
-        if not avail:
-            if not a.keep and not a.workdir:
-                shutil.rmtree(work, ignore_errors=True)
-            return
-        providers = ",".join(avail)
-        print(f"reviewers (after de-contention): {providers}", file=sys.stderr)
-
-    # The diff of exactly `head`, built with git by the same helper the workflows run (`gh pr diff`
-    # refuses PRs touching more than 300 files), as raw bytes: the engine digests this file
-    # (casefile.patch_digest) to decide whether an approval carries to a new head, so every path
-    # must produce it identically. The helper ships beside this file, so a --rubrics-sha pin to an
-    # older engine still gets it.
-    merge_base = merge_base_sha(a.repo, base, head)
-    if not merge_base:
-        # The merge gate matches a scoreboard to the merge base it records; a review without one
-        # could never merge, so stop before spending anything on it.
-        die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
-    diff = subprocess.run(
-        [sys.executable, str(pathlib.Path(__file__).resolve().parent / "pr_diff.py"),
-         "--repo", a.repo, "--pr", str(a.pr), "--head-sha", head,
-         "--merge-base-sha", merge_base, "--out", str(work / "diff.txt"),
-         "--paths-out", str(work / "paths.z")])
-    if diff.returncode != 0:
-        die(f"could not compute the diff of PR #{a.pr} ({diff.returncode})")
-    # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
-    # Passed to the engine so the prompt can assert the code compiles; best-effort (a fetch failure
-    # just leaves it blank, and the engine then injects nothing).
-    ci_build = ""
+    # A run that created its own workspace removes it however it ends: success, die(), the provider-
+    # down exit, an exception, or SIGTERM/SIGINT (routed through sys.exit). Each one holds a TauCeti,
+    # roadmap and Mathlib checkout (~400 MB), and the driving worker retries a provider outage within
+    # seconds, so leaking it on every non-success exit filled a host disk in ten minutes.
+    if not a.workdir:
+        _install_marker_cleanup()
     try:
-        build_meta = gh_json(a.repo, a.pr, "headRefOid,statusCheckRollup")
-        ci_build = ci_build_status(build_meta, head)
-    except Exception:
+        # PR head, base, diff, and description (author-provided context, no more trusted than the
+        # diff). The base/merge-base SHAs are provenance: they pin exactly which diff was reviewed.
+        head, base = pr_ref_oids(a.repo, a.pr)
+        print(f"PR #{a.pr} head: {head[:12]}", file=sys.stderr)
+        if a.expect_head and not (head.startswith(a.expect_head) or a.expect_head.startswith(head)):
+            die(f"PR #{a.pr} head is {head[:12]}, expected {a.expect_head[:12]}. The push may not have "
+                "propagated to the API yet; re-run in a moment to avoid reviewing a stale commit.")
+
+        # De-contend concurrent reviewers BEFORE the expensive workspace setup + inference. Only for a
+        # contributing run (one that posts or archives): a pure read-only dry run (--no-archive, no --post)
+        # touches nothing, and a shadow arm deliberately re-reviews the same diff, so both opt out.
+        if (a.post or not a.no_archive) and not a.shadow and not a.no_coordinate:
+            avail = coordinate(a.repo, a.pr, head, avail, a.submitted_by)
+            if not avail:
+                return
+            providers = ",".join(avail)
+            print(f"reviewers (after de-contention): {providers}", file=sys.stderr)
+
+        # The diff of exactly `head`, built with git by the same helper the workflows run (`gh pr diff`
+        # refuses PRs touching more than 300 files), as raw bytes: the engine digests this file
+        # (casefile.patch_digest) to decide whether an approval carries to a new head, so every path
+        # must produce it identically. The helper ships beside this file, so a --rubrics-sha pin to an
+        # older engine still gets it.
+        merge_base = merge_base_sha(a.repo, base, head)
+        if not merge_base:
+            # The merge gate matches a scoreboard to the merge base it records; a review without one
+            # could never merge, so stop before spending anything on it.
+            die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
+        diff = subprocess.run(
+            [sys.executable, str(pathlib.Path(__file__).resolve().parent / "pr_diff.py"),
+             "--repo", a.repo, "--pr", str(a.pr), "--head-sha", head,
+             "--merge-base-sha", merge_base, "--out", str(work / "diff.txt"),
+             "--paths-out", str(work / "paths.z")])
+        if diff.returncode != 0:
+            die(f"could not compute the diff of PR #{a.pr} ({diff.returncode})")
+        # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
+        # Passed to the engine so the prompt can assert the code compiles; best-effort (a fetch failure
+        # just leaves it blank, and the engine then injects nothing).
         ci_build = ""
-    meta = gh_json(a.repo, a.pr, "title,body")
-    (work / "pr_desc.txt").write_text(
-        f"# {meta.get('title','')}\n\n{meta.get('body','') or ''}\n")
+        try:
+            build_meta = gh_json(a.repo, a.pr, "headRefOid,statusCheckRollup")
+            ci_build = ci_build_status(build_meta, head)
+        except Exception:
+            ci_build = ""
+        meta = gh_json(a.repo, a.pr, "title,body")
+        (work / "pr_desc.txt").write_text(
+            f"# {meta.get('title','')}\n\n{meta.get('body','') or ''}\n")
 
-    # Reviewer workspace: PR source at head, roadmap, optional Mathlib source. No .git, no creds.
-    run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.repo}",
-         str(work / "code")])
-    run(["git", "-C", str(work / "code"), "fetch", "-q", "--depth", "1", "origin", head], quiet=True)
-    run(["git", "-C", str(work / "code"), "checkout", "-q", head], quiet=True)
-    shutil.rmtree(work / "code" / ".git", ignore_errors=True)
-    if a.roadmap_dir:   # pre-staged (e.g. mounted into a network-restricted bubble); copy, don't clone
-        stage_tree(a.roadmap_dir, work / "roadmap")
-    else:
-        run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.roadmap_repo}",
-             str(work / "roadmap")])
-        shutil.rmtree(work / "roadmap" / ".git", ignore_errors=True)
-
-    mathlib_args = []
-    if not a.no_mathlib and a.mathlib_dir:   # pre-staged Mathlib source; copy into the workspace
-        stage_tree(a.mathlib_dir, work / "mathlib",
-                   ignore_extra=(".lake", "build", ".cache", ".elan"))
-        mathlib_args = ["--mathlib-path", "mathlib"]
-    elif not a.no_mathlib:
-        # Mathlib rev comes from the PR head's own manifest here (local trusted use); CI instead
-        # pins it from the base repo to avoid evaluating attacker-controlled manifests.
-        manifest = work / "code" / "lake-manifest.json"
-        rev = ""
-        if manifest.is_file():
-            for pkg in json.loads(manifest.read_text()).get("packages", []):
-                if pkg.get("name") == "mathlib":
-                    rev = pkg.get("rev", "")
-        if rev:
-            ml = work / "mathlib"
-            run(["git", "init", "-q", str(ml)], quiet=True)
-            run(["git", "-C", str(ml), "remote", "add", "origin",
-                 "https://github.com/leanprover-community/mathlib4"], quiet=True)
-            print(f"fetching Mathlib source @ {rev[:12]} (for reuse/grep)…", file=sys.stderr)
-            run(["git", "-C", str(ml), "fetch", "-q", "--depth", "1", "origin", rev], quiet=True)
-            run(["git", "-C", str(ml), "checkout", "-q", "FETCH_HEAD"], quiet=True)
-            mathlib_args = ["--mathlib-path", "mathlib"]
+        # Reviewer workspace: PR source at head, roadmap, optional Mathlib source. No .git, no creds.
+        run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.repo}",
+             str(work / "code")])
+        run(["git", "-C", str(work / "code"), "fetch", "-q", "--depth", "1", "origin", head], quiet=True)
+        run(["git", "-C", str(work / "code"), "checkout", "-q", head], quiet=True)
+        shutil.rmtree(work / "code" / ".git", ignore_errors=True)
+        if a.roadmap_dir:   # pre-staged (e.g. mounted into a network-restricted bubble); copy, don't clone
+            stage_tree(a.roadmap_dir, work / "roadmap")
         else:
-            print("note: no mathlib rev in lake-manifest.json; skipping Mathlib source.",
-                  file=sys.stderr)
+            run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.roadmap_repo}",
+                 str(work / "roadmap")])
+            shutil.rmtree(work / "roadmap" / ".git", ignore_errors=True)
 
-    # The store (ledger of scoreboard/thread comment ids + per-rubric verdicts) is PERSISTENT and
-    # lives outside the throwaway workspace, so a re-review edits the same scoreboard and threads in
-    # place instead of posting duplicates, and --mode commit can re-run only unresolved rubrics.
-    if a.shadow:
-        # Scratch store, always: a shadow arm must never read or write production review state
-        # (case files, staleness, comment ids). review.py refuses a production-looking store too.
-        store = work / "store"
-    elif a.store:
-        store = pathlib.Path(a.store)
-    elif a.fresh:
-        store = work / "store"
-    else:
-        store = CACHE_DIR / "store" / a.repo.replace("/", "__")
-    store.mkdir(parents=True, exist_ok=True)
-    print(f"store: {store}{'  (scratch: shadow)' if a.shadow else '  (fresh)' if a.fresh else ''}",
-          file=sys.stderr)
+        mathlib_args = []
+        if not a.no_mathlib and a.mathlib_dir:   # pre-staged Mathlib source; copy into the workspace
+            stage_tree(a.mathlib_dir, work / "mathlib",
+                       ignore_extra=(".lake", "build", ".cache", ".elan"))
+            mathlib_args = ["--mathlib-path", "mathlib"]
+        elif not a.no_mathlib:
+            # Mathlib rev comes from the PR head's own manifest here (local trusted use); CI instead
+            # pins it from the base repo to avoid evaluating attacker-controlled manifests.
+            manifest = work / "code" / "lake-manifest.json"
+            rev = ""
+            if manifest.is_file():
+                for pkg in json.loads(manifest.read_text()).get("packages", []):
+                    if pkg.get("name") == "mathlib":
+                        rev = pkg.get("rev", "")
+            if rev:
+                ml = work / "mathlib"
+                run(["git", "init", "-q", str(ml)], quiet=True)
+                run(["git", "-C", str(ml), "remote", "add", "origin",
+                     "https://github.com/leanprover-community/mathlib4"], quiet=True)
+                print(f"fetching Mathlib source @ {rev[:12]} (for reuse/grep)…", file=sys.stderr)
+                run(["git", "-C", str(ml), "fetch", "-q", "--depth", "1", "origin", rev], quiet=True)
+                run(["git", "-C", str(ml), "checkout", "-q", "FETCH_HEAD"], quiet=True)
+                mathlib_args = ["--mathlib-path", "mathlib"]
+            else:
+                print("note: no mathlib rev in lake-manifest.json; skipping Mathlib source.",
+                      file=sys.stderr)
 
-    # Read the author's replies on the rubric threads from GitHub and pass them to the engine, so a
-    # re-review audits the contest (e.g. a push-back on a finding) instead of re-judging the diff
-    # blind. This is the local equivalent of CI's reply-trigger flow.
-    replies = fetch_thread_replies(a.repo, a.pr)
-    replies_path = work / "replies.json"
-    replies_path.write_text(json.dumps(replies))
-    # Another reviewer's newest scoreboard, whose approvals the engine seeds as stale (♻️) where this
-    # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
-    prior_board = None
-    if a.mode == "commit" and not (a.fresh or a.shadow):
-        prior_board = latest_scoreboard(issue_comments(a.repo, a.pr) or [])
-    prior_board_path = work / "prior_scoreboard.json"
-    prior_board_path.write_text(json.dumps(prior_board or {}))
-    if replies:
-        print("author replies on threads: "
-              + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
-
-    rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
-    # By environment rather than a flag, so a --rubrics-sha pin to an engine predating it still runs.
-    # Only the engine's environment: an embedding caller's os.environ must not carry it onward.
-    sha, dirty = cli_sha()
-    drift, published = rubrics_publication(repo_dir / "rubrics", rub_sha)
-    if drift:
-        print(f"tauceti-review: WARNING: the rubrics in {repo_dir} differ from {REVIEW_REPO}'s "
-              "published main. This review applies them anyway and the scoreboard will say so; "
-              "update the checkout unless you are testing a rubric change.", file=sys.stderr)
-    if published is False:
-        print(f"tauceti-review: WARNING: rubrics commit {rub_sha[:12]} is not on GitHub, so PR "
-              "authors cannot read the rubric text this review used.", file=sys.stderr)
-    engine_env = {**os.environ, "TAUCETI_CLI_SHA": sha, "TAUCETI_CLI_DIRTY": "1" if dirty else "0",
-                  "TAUCETI_RUBRICS_DRIFT": tristate(drift),
-                  "TAUCETI_RUBRICS_PUBLISHED": tristate(published)}
-    # Shadow outbox lives under the PERSISTENT store, not the throwaway scratch one: if the
-    # sync at the end fails, the records must survive the workspace cleanup for a later sync.
-    outbox_store = (CACHE_DIR / "store" / a.repo.replace("/", "__")) if a.shadow else store
-    outbox = "" if a.no_archive else str(outbox_store / "outbox")
-    plan = work / "post_plan.json"
-    cmd = [sys.executable, str(repo_dir / "runner" / "review.py"),
-           "--repo", a.repo, "--pr", str(a.pr), "--mode", "manual" if a.shadow else a.mode,
-           *(["--shadow", "--arm", f"shadow:{a.label}"] if a.shadow else []),
-           "--rubrics-dir", str(repo_dir / "rubrics"), "--tool-cwd", str(work),
-           "--code-path", "code", "--roadmap-path", "roadmap",
-           *mathlib_args,
-           "--diff-file", str(work / "diff.txt"), "--paths-file", str(work / "paths.z"),
-           "--pr-desc-file", str(work / "pr_desc.txt"),
-           "--store", str(store), "--head-sha", head, "--base-sha", base,
-           "--merge-base-sha", merge_base,
-           "--rubrics-sha", rub_sha, *(["--rubrics-sha-approx"] if rub_approx else []),
-           *(["--archive-dir", outbox] if outbox else []),
-           *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
-           "--ci-build", ci_build or "", "--auth", a.auth,
-           "--providers", providers, "--daily-budget", "1000000", "--no-post",
-           "--kiro-model", a.kiro_model,
-           "--scoreboard-file", str(work / "scoreboard.md"),
-           "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
-           "--replies-json", str(replies_path), "--prior-scoreboard-json", str(prior_board_path)]
-    if a.claude_model:
-        cmd += ["--claude-model", a.claude_model]
-    if a.rubrics:
-        cmd += ["--rubrics", a.rubrics]
-    print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
-          file=sys.stderr)
-    r = run(cmd, allow_fail=True, env=engine_env)
-    # The engine aborts with PROVIDER_DOWN_EXIT when consecutive rubrics failed because the provider
-    # itself is unusable (expired credential, exhausted subscription window). It has already said
-    # which, and it deliberately wrote no scoreboard: an outage is not a review verdict and must not
-    # reach the PR. Exit on the engine's own diagnosis rather than the generic "command failed", and
-    # keep the status distinct so a driving worker can tell "wait and retry" from "this round failed".
-    if r.returncode == PROVIDER_DOWN_EXIT:
-        sys.exit(PROVIDER_DOWN_EXIT)
-    if r.returncode != 0:
-        die(f"command failed ({r.returncode}): {' '.join(cmd)}")
-
-    # The review step exits 0 having written a scoreboard on every path this CLI drives (commit /
-    # manual / shadow). A clean exit with no scoreboard means the engine did not actually run: a
-    # broken or partial engine (e.g. a missing entry point), not a review verdict. Fail at the phase
-    # boundary instead of limping on to post a nonexistent plan with a cryptic downstream error.
-    sb = (work / "scoreboard.md")
-    if not sb.is_file():
-        die(f"review step exited cleanly but produced no scoreboard ({sb}); the engine did not run.")
-    review_error = not a.shadow and plan.is_file() and json.loads(plan.read_text()).get("review_error", False)
-    if drift:
-        ensure_drift_warning(sb)
-    print("\n" + "=" * 72)
-    print(sb.read_text())
-    threads = sorted((work / "threads").glob("*.md")) if (work / "threads").is_dir() else []
-    for t in threads:
-        print("\n" + "-" * 72 + f"\n[thread] {t.stem}\n")
-        print(t.read_text())
-    print("=" * 72 + "\n")
-
-    if a.shadow:
-        print(f"shadow arm `{a.label}` complete — archived, nothing posted.", file=sys.stderr)
-    elif a.post:
-        if not plan.is_file():
-            die(f"review step exited cleanly but wrote no post plan ({plan}); refusing to post.")
-        token = run(["gh", "auth", "token"], capture=True, quiet=True).stdout.strip()
-        if not token:
-            die("`gh auth token` returned nothing; run `gh auth login` first.")
-        print("posting scoreboard + threads to the PR as you…", file=sys.stderr)
-        env = {**os.environ, "GH_TOKEN": token}
-        run([sys.executable, str(repo_dir / "runner" / "post.py"),
-             "--repo", a.repo, "--pr", str(a.pr), "--plan", str(plan), "--store", str(store),
-             *(["--archive-dir", outbox] if outbox else [])],
-            env=env)
-        print("posted.", file=sys.stderr)
-    else:
-        print("dry run — nothing posted. Re-run with --post to publish this review.",
+        # The store (ledger of scoreboard/thread comment ids + per-rubric verdicts) is PERSISTENT and
+        # lives outside the throwaway workspace, so a re-review edits the same scoreboard and threads in
+        # place instead of posting duplicates, and --mode commit can re-run only unresolved rubrics.
+        if a.shadow:
+            # Scratch store, always: a shadow arm must never read or write production review state
+            # (case files, staleness, comment ids). review.py refuses a production-looking store too.
+            store = work / "store"
+        elif a.store:
+            store = pathlib.Path(a.store)
+        elif a.fresh:
+            store = work / "store"
+        else:
+            store = CACHE_DIR / "store" / a.repo.replace("/", "__")
+        store.mkdir(parents=True, exist_ok=True)
+        print(f"store: {store}{'  (scratch: shadow)' if a.shadow else '  (fresh)' if a.fresh else ''}",
               file=sys.stderr)
 
-    # Drain the archive outbox into TauCetiData. Best-effort by design: a push outage keeps the
-    # records in <store>/outbox, and the next run (or `archive.py sync` / `--sync-only`) lands them.
-    # --no-sync skips this push: the records stay in the outbox for a trusted caller (the worker
-    # host) to drain with --sync-only, which is how a network-restricted bubble publishes.
-    if outbox and not a.no_sync and pathlib.Path(outbox).is_dir():
-        data_dir = a.data_dir or str(CACHE_DIR / "data" / "TauCetiData")
-        r = run([sys.executable, str(repo_dir / "runner" / "archive.py"), "sync",
-                 "--store", str(outbox_store), "--data-dir", data_dir], allow_fail=True)
+        # Read the author's replies on the rubric threads from GitHub and pass them to the engine, so a
+        # re-review audits the contest (e.g. a push-back on a finding) instead of re-judging the diff
+        # blind. This is the local equivalent of CI's reply-trigger flow.
+        replies = fetch_thread_replies(a.repo, a.pr)
+        replies_path = work / "replies.json"
+        replies_path.write_text(json.dumps(replies))
+        # Another reviewer's newest scoreboard, whose approvals the engine seeds as stale (♻️) where this
+        # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
+        prior_board = None
+        if a.mode == "commit" and not (a.fresh or a.shadow):
+            prior_board = latest_scoreboard(issue_comments(a.repo, a.pr) or [])
+        prior_board_path = work / "prior_scoreboard.json"
+        prior_board_path.write_text(json.dumps(prior_board or {}))
+        if replies:
+            print("author replies on threads: "
+                  + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
+
+        rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
+        # By environment rather than a flag, so a --rubrics-sha pin to an engine predating it still runs.
+        # Only the engine's environment: an embedding caller's os.environ must not carry it onward.
+        sha, dirty = cli_sha()
+        drift, published = rubrics_publication(repo_dir / "rubrics", rub_sha)
+        if drift:
+            print(f"tauceti-review: WARNING: the rubrics in {repo_dir} differ from {REVIEW_REPO}'s "
+                  "published main. This review applies them anyway and the scoreboard will say so; "
+                  "update the checkout unless you are testing a rubric change.", file=sys.stderr)
+        if published is False:
+            print(f"tauceti-review: WARNING: rubrics commit {rub_sha[:12]} is not on GitHub, so PR "
+                  "authors cannot read the rubric text this review used.", file=sys.stderr)
+        engine_env = {**os.environ, "TAUCETI_CLI_SHA": sha, "TAUCETI_CLI_DIRTY": "1" if dirty else "0",
+                      "TAUCETI_RUBRICS_DRIFT": tristate(drift),
+                      "TAUCETI_RUBRICS_PUBLISHED": tristate(published)}
+        # Shadow outbox lives under the PERSISTENT store, not the throwaway scratch one: if the
+        # sync at the end fails, the records must survive the workspace cleanup for a later sync.
+        outbox_store = (CACHE_DIR / "store" / a.repo.replace("/", "__")) if a.shadow else store
+        outbox = "" if a.no_archive else str(outbox_store / "outbox")
+        plan = work / "post_plan.json"
+        cmd = [sys.executable, str(repo_dir / "runner" / "review.py"),
+               "--repo", a.repo, "--pr", str(a.pr), "--mode", "manual" if a.shadow else a.mode,
+               *(["--shadow", "--arm", f"shadow:{a.label}"] if a.shadow else []),
+               "--rubrics-dir", str(repo_dir / "rubrics"), "--tool-cwd", str(work),
+               "--code-path", "code", "--roadmap-path", "roadmap",
+               *mathlib_args,
+               "--diff-file", str(work / "diff.txt"), "--paths-file", str(work / "paths.z"),
+               "--pr-desc-file", str(work / "pr_desc.txt"),
+               "--store", str(store), "--head-sha", head, "--base-sha", base,
+               "--merge-base-sha", merge_base,
+               "--rubrics-sha", rub_sha, *(["--rubrics-sha-approx"] if rub_approx else []),
+               *(["--archive-dir", outbox] if outbox else []),
+               *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
+               "--ci-build", ci_build or "", "--auth", a.auth,
+               "--providers", providers, "--daily-budget", "1000000", "--no-post",
+               "--kiro-model", a.kiro_model,
+               "--scoreboard-file", str(work / "scoreboard.md"),
+               "--threads-dir", str(work / "threads"), "--post-plan-file", str(plan),
+               "--replies-json", str(replies_path), "--prior-scoreboard-json", str(prior_board_path)]
+        if a.claude_model:
+            cmd += ["--claude-model", a.claude_model]
+        if a.rubrics:
+            cmd += ["--rubrics", a.rubrics]
+        print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
+              file=sys.stderr)
+        r = run(cmd, allow_fail=True, env=engine_env)
+        # The engine aborts with PROVIDER_DOWN_EXIT when consecutive rubrics failed because the provider
+        # itself is unusable (expired credential, exhausted subscription window). It has already said
+        # which, and it deliberately wrote no scoreboard: an outage is not a review verdict and must not
+        # reach the PR. Exit on the engine's own diagnosis rather than the generic "command failed", and
+        # keep the status distinct so a driving worker can tell "wait and retry" from "this round failed".
+        if r.returncode == PROVIDER_DOWN_EXIT:
+            sys.exit(PROVIDER_DOWN_EXIT)
         if r.returncode != 0:
-            print("note: archive sync failed; records remain in the outbox and will sync "
-                  "on a later run.", file=sys.stderr)
+            die(f"command failed ({r.returncode}): {' '.join(cmd)}")
 
-    if not a.keep and not a.workdir:
-        shutil.rmtree(work, ignore_errors=True)
-    elif a.keep:
-        print(f"workspace kept at {work}", file=sys.stderr)
+        # The review step exits 0 having written a scoreboard on every path this CLI drives (commit /
+        # manual / shadow). A clean exit with no scoreboard means the engine did not actually run: a
+        # broken or partial engine (e.g. a missing entry point), not a review verdict. Fail at the phase
+        # boundary instead of limping on to post a nonexistent plan with a cryptic downstream error.
+        sb = (work / "scoreboard.md")
+        if not sb.is_file():
+            die(f"review step exited cleanly but produced no scoreboard ({sb}); the engine did not run.")
+        review_error = not a.shadow and plan.is_file() and json.loads(plan.read_text()).get("review_error", False)
+        if drift:
+            ensure_drift_warning(sb)
+        print("\n" + "=" * 72)
+        print(sb.read_text())
+        threads = sorted((work / "threads").glob("*.md")) if (work / "threads").is_dir() else []
+        for t in threads:
+            print("\n" + "-" * 72 + f"\n[thread] {t.stem}\n")
+            print(t.read_text())
+        print("=" * 72 + "\n")
 
-    if review_error:
-        die("review completed with rubric errors; see the scoreboard")
+        if a.shadow:
+            print(f"shadow arm `{a.label}` complete — archived, nothing posted.", file=sys.stderr)
+        elif a.post:
+            if not plan.is_file():
+                die(f"review step exited cleanly but wrote no post plan ({plan}); refusing to post.")
+            token = run(["gh", "auth", "token"], capture=True, quiet=True).stdout.strip()
+            if not token:
+                die("`gh auth token` returned nothing; run `gh auth login` first.")
+            print("posting scoreboard + threads to the PR as you…", file=sys.stderr)
+            env = {**os.environ, "GH_TOKEN": token}
+            run([sys.executable, str(repo_dir / "runner" / "post.py"),
+                 "--repo", a.repo, "--pr", str(a.pr), "--plan", str(plan), "--store", str(store),
+                 *(["--archive-dir", outbox] if outbox else [])],
+                env=env)
+            print("posted.", file=sys.stderr)
+        else:
+            print("dry run — nothing posted. Re-run with --post to publish this review.",
+                  file=sys.stderr)
+
+        # Drain the archive outbox into TauCetiData. Best-effort by design: a push outage keeps the
+        # records in <store>/outbox, and the next run (or `archive.py sync` / `--sync-only`) lands them.
+        # --no-sync skips this push: the records stay in the outbox for a trusted caller (the worker
+        # host) to drain with --sync-only, which is how a network-restricted bubble publishes.
+        if outbox and not a.no_sync and pathlib.Path(outbox).is_dir():
+            data_dir = a.data_dir or str(CACHE_DIR / "data" / "TauCetiData")
+            r = run([sys.executable, str(repo_dir / "runner" / "archive.py"), "sync",
+                     "--store", str(outbox_store), "--data-dir", data_dir], allow_fail=True)
+            if r.returncode != 0:
+                print("note: archive sync failed; records remain in the outbox and will sync "
+                      "on a later run.", file=sys.stderr)
+
+        if review_error:
+            die("review completed with rubric errors; see the scoreboard")
+    finally:
+        if a.keep:
+            print(f"workspace kept at {work}", file=sys.stderr)
+        elif not a.workdir:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == "__main__":
