@@ -16,9 +16,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Engine is dependency-free — no install step. Byte-compile, then run the price-coverage
+      # Install the pinned shared configuration, byte-compile, then run price-coverage
       # checks (every dispatchable model must be priced; prices.json must be well-formed).
-      - run: python -m pip install "tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@c81692e993326a127d46115052080bf5c38e8b99"
+      - run: python -m pip install "tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@4c7381d3a47fd9b9f7aa786dd2a28c375e36fee6"
       - run: python -m py_compile runner/*.py
       - run: python tests/test_cli.py
       - run: python tests/test_coordinate.py

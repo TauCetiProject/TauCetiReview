@@ -266,12 +266,13 @@ def build_prompt(rubrics_dir, rubric, context, marker):
     common = (rubrics_dir / "_common.md").read_text()
     angle = (rubrics_dir / f"{rubric}.md").read_text()
     refs = "".join(_reference_block(rubrics_dir, p) for p in RUBRIC_REFERENCES.get(rubric, []))
-    from tauceti_tools.project import active
-    from tauceti_tools.templates import render
+    if os.environ.get("TAUCETI_CONF"):
+        from tauceti_tools.project import active
+        from tauceti_tools.templates import render
 
-    project = active()
-    if project:
-        common, angle, refs = (render(text, project) for text in (common, angle, refs))
+        project = active()
+        if project:
+            common, angle, refs = (render(text, project) for text in (common, angle, refs))
     return (f"{common}\n\n---\n\n{angle}{refs}\n\n---\n\n# This pull request\n\n{context}\n\n"
             "Produce your review now. After any analysis, end your response with this exact "
             f"marker alone on a line:\n\n{marker}\n\nand then, as the very last content with "

@@ -11,8 +11,9 @@ rubrics whose last round was not `approve`. The workflow commits the store after
 
 import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, sys, time
 
-from tauceti_tools.project import bootstrap, conf_argument
-bootstrap()
+if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
+    from tauceti_tools.project import bootstrap
+    bootstrap()
 
 import archive
 from dataclasses import dataclass, field
@@ -728,7 +729,8 @@ def main():
     ap.add_argument("--post-plan-file", default="",
                     help="write the post plan (scoreboard + thread upsert/close actions) here")
     ap.add_argument("--dry-run", action="store_true")
-    a = ap.parse_args(conf_argument(sys.argv[1:])[1])
+    ap.add_argument("--conf")
+    a = ap.parse_args()
     try:
         a.kiro_model = exact_kiro_model(a.kiro_model)
         reject_retired_opus(a.claude_model)

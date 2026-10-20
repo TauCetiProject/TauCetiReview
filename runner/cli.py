@@ -40,9 +40,9 @@ import uuid
 # this CLI drives the engine as a subprocess and never imports it (the engine's modules use flat
 # sibling imports and only resolve with runner/ on sys.path, which an installed `runner.cli` has no
 # reason to arrange). tests/test_provider_down.py pins the two definitions together.
-from tauceti_tools.project import active, bootstrap, conf_argument
-
-bootstrap()
+if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
+    from tauceti_tools.project import bootstrap
+    bootstrap()
 
 PROVIDER_DOWN_EXIT = 3
 
@@ -672,7 +672,8 @@ def main():
                          "(e.g. a private read-only pass), at the cost of possible duplicate spend.")
     # Older workers pass this flag. Accept it during rolling upgrades without limiting reviews.
     ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
-    a = ap.parse_args(conf_argument(sys.argv[1:])[1])
+    ap.add_argument("--conf")
+    a = ap.parse_args()
 
     a.kiro_model = (a.kiro_model or "").strip()
     if not a.kiro_model or a.kiro_model.lower().startswith("auto"):
@@ -896,7 +897,7 @@ def main():
 
     rubric_dir = repo_dir / "rubrics"
     rubric_repo = os.environ.get("TAUCETI_RUBRICS_REPO", REVIEW_REPO)
-    if active() and rubric_repo != REVIEW_REPO:
+    if os.environ.get("TAUCETI_CONF") and rubric_repo != REVIEW_REPO:
         ref = os.environ.get("TAUCETI_RUBRICS_REF", "")
         if not re.fullmatch(r"[0-9a-f]{40}", ref):
             die("A custom rubric repository requires review.rubrics_ref as a full commit SHA")

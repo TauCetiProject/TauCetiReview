@@ -42,9 +42,9 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "not yet run": "absent", "error": "error"}
 
 
-from tauceti_tools.project import bootstrap, conf_argument
-
-bootstrap()
+if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
+    from tauceti_tools.project import bootstrap
+    bootstrap()
 
 def parse_meta(body):
     m = META_RE.findall(body or "")
@@ -255,7 +255,8 @@ def main():
     ap.add_argument("--merge-path-prefix", default=os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + "/")
     ap.add_argument("--merge-allow-file", action="append", default=list(DEFAULT_ALLOW))
     ap.add_argument("--merge-decision-file", default="")
-    a = ap.parse_args(conf_argument(sys.argv[1:])[1])
+    ap.add_argument("--conf")
+    a = ap.parse_args()
 
     required = {r for r in a.rubrics.split(",") if r}
     try:

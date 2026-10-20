@@ -167,7 +167,7 @@ jobs:
 
       - name: Prepare review store (reviews branch; public read, no token on disk)
         env:
-          LEDGER_REPO: ${{ env.TAUCETI_REPO == '' && 'TauCetiProject/TauCetiReview' || env.TAUCETI_DATA_REPO }}
+          LEDGER_REPO: ${{ env.TAUCETI_REPO == '' && 'TauCetiProject/TauCetiReview' || env.TAUCETI_LEDGER_REPO }}
         run: |
           if [ -n "$LEDGER_REPO" ]; then
             git clone --depth 1 --branch reviews --single-branch "https://github.com/$LEDGER_REPO" store 2>/dev/null || true
@@ -373,20 +373,20 @@ jobs:
 
       - name: Mint store token (TauCetiReview contents:write)
         id: store_token
-        if: always() && (env.TAUCETI_REPO == '' || env.TAUCETI_DATA_REPO != '')
+        if: always() && (env.TAUCETI_REPO == '' || env.TAUCETI_LEDGER_REPO != '')
         uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1; v1 ignores permission-* inputs
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ env.TAUCETI_DATA_OWNER || github.repository_owner }}
-          repositories: ${{ env.TAUCETI_REPO == '' && 'TauCetiReview' || env.TAUCETI_DATA_NAME }}
+          owner: ${{ env.TAUCETI_LEDGER_OWNER || github.repository_owner }}
+          repositories: ${{ env.TAUCETI_REPO == '' && 'TauCetiReview' || env.TAUCETI_LEDGER_NAME }}
           permission-contents: write
 
       - name: Persist review store
-        if: always() && (env.TAUCETI_REPO == '' || env.TAUCETI_DATA_REPO != '')
+        if: always() && (env.TAUCETI_REPO == '' || env.TAUCETI_LEDGER_REPO != '')
         env:
           GH_TOKEN: ${{ steps.store_token.outputs.token }}
-          LEDGER_REPO: ${{ env.TAUCETI_REPO == '' && 'TauCetiProject/TauCetiReview' || env.TAUCETI_DATA_REPO }}
+          LEDGER_REPO: ${{ env.TAUCETI_REPO == '' && 'TauCetiProject/TauCetiReview' || env.TAUCETI_LEDGER_REPO }}
         run: |
           cd store
           git add -A

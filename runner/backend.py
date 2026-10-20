@@ -11,9 +11,9 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-from tauceti_tools.project import active, bootstrap
-
-bootstrap()
+if os.environ.get("TAUCETI_CONF"):
+    from tauceti_tools.project import bootstrap
+    bootstrap()
 
 import api_budget
 import eligibility
@@ -115,7 +115,7 @@ def github_entries(repo, paths=False):
 
 
 def bors_observation():
-    if active() and active().service("bors").get("mode", "off") == "off":
+    if os.environ.get("TAUCETI_CONF") and not _bors_url:
         return {"batch_ids": [], "batches": [], "held": [], "outcomes": []}
     if not BORS_URL:
         raise RuntimeError("Configure services.bors.url and repository_id before observing Bors drainage")
