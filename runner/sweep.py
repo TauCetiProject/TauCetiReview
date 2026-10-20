@@ -691,6 +691,37 @@ def sweep_bors(prs, admit=True):
     return 1 if failures else 0
 
 
+def sweep_direct(prs):
+    """Retry the same direct merge gate; no queues, rebases or base-freshness requirement."""
+    from direct_merge import merge
+    failures = 0
+    for p in candidates(prs, set(), set()):
+        api_budget.begin_pr()
+        n = p["number"]
+        try:
+            v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
+                         "headRefOid,baseRefName,baseRefOid,statusCheckRollup"])
+            if v.get("baseRefName") != backend.BASE_BRANCH:
+                continue
+            head = v["headRefOid"]
+            comments = gh_jsonl(["api", "--paginate", f"repos/{REPO}/issues/{n}/comments?per_page=100",
+                                 "--jq", ".[] | {body, updated_at, created_at}"])
+            cmp = gh_json(["api", f"repos/{REPO}/compare/{v['baseRefOid']}...{head}?per_page=1"])
+            mb = cmp["merge_base_commit"]["sha"]
+            paths = pr_diff(REPO, n, head, mb)
+            build, bump, scope = status_states(v.get("statusCheckRollup"))
+            decision = decide_from_comments(comments, head, set(DEFAULT_RUBRICS), paths,
+                                            build, bump, MERGE_PREFIX, scope=scope, merge_base_sha=mb)
+            merge(REPO, n, decision, mb, dry_run=DRY_RUN)
+        except api_budget.Exhausted:
+            raise
+        except (RuntimeError, KeyError) as e:
+            print(f"#{n}: direct merge failed ({e})", file=sys.stderr)
+            api_budget.check_result(False)
+            failures += 1
+    return 1 if failures else 0
+
+
 def main():
     if not REPO:
         print("merge-sweep: REPO env is required", file=sys.stderr)
@@ -704,6 +735,8 @@ def main():
         api_budget.check_result(False)
         mode = "unknown"
     prs = open_prs()
+    if mode == "direct":
+        return sweep_direct(prs)
     bors_prs = bors_approved_prs()
     queue_prs = set()
     membership_unknown = bors_prs is None

@@ -191,7 +191,7 @@ jobs:
         run: python3 runner/backend.py eligibility
 
       - name: Reconcile the merge queue
-        if: ${{ always() && steps.merge_token.outcome == 'success' }}
+        if: ${{ always() && steps.merge_token.outcome == 'success' && steps.backend.outputs.backend != 'direct' }}
         env:
           GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
           REPO: ${{ github.repository }}
@@ -334,3 +334,10 @@ jobs:
             fi
           fi
           check_merge_base "while enqueuing"
+
+      - name: Merge the reviewed head directly
+        if: steps.backend.outputs.backend == 'direct'
+        env:
+          GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
+          REPO: ${{ github.repository }}
+        run: python3 runner/direct_merge.py

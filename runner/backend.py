@@ -60,7 +60,7 @@ def selected(repo):
     found = [v for v in variables if v.get("name") == "MERGE_BACKEND"]
     if not found:
         return {"backend": "queue", "updated_at": None}
-    if len(found) != 1 or found[0].get("value") not in ("queue", "bors"):
+    if len(found) != 1 or found[0].get("value") not in ("queue", "bors", "direct"):
         raise RuntimeError("invalid MERGE_BACKEND")
     return {"backend": found[0]["value"], "updated_at": found[0].get("updated_at")}
 
