@@ -60,7 +60,7 @@ FOCUSED = os.environ.get("FOCUSED") == "1"
 # update-branch. 0 prior evictions => first re-enqueue; the queue rebuild is the real test. The default
 # (2) gives a transient eviction one more cheap retry before paying for an update-branch + re-review.
 EVICT_ESCALATE = int(os.environ.get("EVICT_ESCALATE", "2"))
-MERGE_PREFIX = os.environ.get("MERGE_PREFIX", "TauCeti/")
+MERGE_PREFIX = os.environ.get("MERGE_PREFIX", os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + "/")
 # A PR touching these gets the merge queue to itself while it is enqueued (see reservation_holder).
 PIN_PATHS = {"lake-manifest.json", "lean-toolchain"}
 # How long a holder may hold the queue. Its build takes 83-95 minutes, so an entry much older than
@@ -432,7 +432,7 @@ def merge_base_now(pr, head):
     or a rewritten base changes the reviewed diff under the same head, and enqueueing binds only the
     head. Raises RuntimeError when it cannot be read or the PR no longer targets main."""
     v = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName,baseRefOid"]) or {}
-    if v.get("baseRefName") != "main" or not v.get("baseRefOid"):
+    if v.get("baseRefName") != os.environ.get("TAUCETI_BASE_BRANCH", "main") or not v.get("baseRefOid"):
         raise RuntimeError(f"base is now {v.get('baseRefName') or 'unknown'}, not main")
     cmp = gh_json(["api", f"/repos/{REPO}/compare/{v['baseRefOid']}...{head}?per_page=1"]) or {}
     merge_base = (cmp.get("merge_base_commit") or {}).get("sha") or ""
@@ -649,7 +649,7 @@ def sweep_bors(prs, admit=True):
         try:
             v = gh_json(["pr", "view", str(n), "--repo", REPO, "--json",
                          "headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup"])
-            if v["baseRefName"] != "main":
+            if v["baseRefName"] != os.environ.get("TAUCETI_BASE_BRANCH", "main"):
                 continue
             head = v["headRefOid"]
             comments = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/issues/{n}/comments?per_page=100",
@@ -782,7 +782,7 @@ def main():
                          "headRefOid,baseRefName,baseRefOid,id,labels,statusCheckRollup,"
                          "isCrossRepository"])
             head = v["headRefOid"]
-            if (v.get("baseRefName") or "") != "main":
+            if (v.get("baseRefName") or "") != os.environ.get("TAUCETI_BASE_BRANCH", "main"):
                 continue   # the sweep only drives PRs targeting main (the merge queue is main's)
             comments = gh_jsonl(["api", "--paginate", f"/repos/{REPO}/issues/{n}/comments?per_page=100",
                                  "--jq", ".[] | {body, updated_at, created_at, author: .user.login}"])

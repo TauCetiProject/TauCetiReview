@@ -13,6 +13,8 @@ name: merge-sweep
 on:
   workflow_call:
     inputs:
+      tools_repository: {required: false, type: string, default: TauCetiProject/TauCetiTools}
+      tools_ref: {required: false, type: string, default: ""}
       dry_run:
         description: "List actions without enqueuing / updating / flagging"
         type: boolean
@@ -22,7 +24,7 @@ on:
         type: boolean
         default: false
       review_ref:
-        description: "TauCetiReview ref to check out for the runner. Omit it: the default is this workflow file's own commit (job.workflow_sha). Set it only to test a different policy commit."
+        description: "Full TauCetiReview commit SHA, matching the caller workflow pin."
         type: string
         default: ""
     secrets:
@@ -43,18 +45,18 @@ jobs:
       # An empty ref would make checkout fall back to TauCetiReview's default branch, silently
       # running unpinned code; refuse instead.
       - name: Require a pinned review ref
-        env: { REVIEW_REF: "${{ inputs.review_ref || job.workflow_sha }}" }
+        env: { REVIEW_REF: "${{ inputs.review_ref }}" }
         run: |
-          if [ -z "$REVIEW_REF" ]; then
-            echo "::error::neither review_ref nor job.workflow_sha is set"; exit 1
+          if ! [[ "$REVIEW_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::review_ref must be supplied as the pinned engine commit"; exit 1
           fi
 
       - name: Checkout review repo (runner)
         uses: actions/checkout@v4
         with:
           repository: TauCetiProject/TauCetiReview
-          # This workflow file's own commit (the SHA the caller pins in `uses:`); review_ref overrides it.
-          ref: ${{ inputs.review_ref || job.workflow_sha }}
+          # The explicit full commit SHA pinned by the caller.
+          ref: ${{ inputs.review_ref }}
           persist-credentials: false
 
       # contents:write to enqueue (as a queue bypass actor) and update-branch; pull-requests:write to
@@ -64,14 +66,43 @@ jobs:
       # never checks out or executes PR code, and scopes the token to TauCeti only.
       # The App registration AND its installation must approve this permission first;
       # see docs/merge-sweep-permissions.md. Other merge/review tokens remain narrower.
+      - name: Install engine dependencies for legacy callers
+        if: inputs.tools_ref == ''
+        run: python3 -m pip install .
+
+      - name: Checkout pinned common configuration tools
+        if: inputs.tools_ref != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.tools_repository }}
+          ref: ${{ inputs.tools_ref }}
+          path: .tauceti-tools
+          persist-credentials: false
+      - name: Checkout trusted caller project configuration
+        if: inputs.tools_ref != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: tauceti.toml
+          sparse-checkout-cone-mode: false
+          path: .tauceti-project
+          persist-credentials: false
+      - name: Bind this workflow to the configured project
+        if: inputs.tools_ref != ''
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.tauceti-tools
+        run: |
+          python3 -m tauceti_tools config environment --conf .tauceti-project/tauceti.toml --github-env "$GITHUB_ENV"
+          echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
       - name: Mint merge-sweep token (TauCeti branch-update permissions)
         id: merge_token
         uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1; v1 ignores permission-* inputs
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: TauCetiProject
-          repositories: TauCeti
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ env.TAUCETI_CONTENT_NAME || 'TauCeti' }}
           permission-contents: write
           permission-pull-requests: write
           permission-checks: write
@@ -83,7 +114,7 @@ jobs:
       - name: Re-drive evicted green PRs
         env:
           GH_TOKEN: ${{ steps.merge_token.outputs.token }}
-          REPO: TauCetiProject/TauCeti
+          REPO: ${{ github.repository }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           FOCUSED: ${{ inputs.focused && '1' || '' }}
         run: python3 runner/sweep.py

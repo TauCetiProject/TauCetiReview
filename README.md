@@ -74,3 +74,15 @@ counts at the rate in effect on each run's date. See [runner/COSTS.md](runner/CO
 - `runner/prices.json` — model rates; every dispatchable model must be priced (CI-enforced in `tests/`). A model the table has not caught up with does not stop a review: it bills at the rates of the newest release on its own model line (`gpt-7-sol` at `gpt-6.1-sol`'s rates) and the run records `price_inherited`. `tauceti-review-costs` applies the same rule, so the reported cost matches what was billed. Each archived run is stamped with a `prices_sha` so its cost is auditable. TauCetiWorker vendors this file byte-identically for its own cost model, so rates are edited here and nowhere else.
 - The GitHub Actions workflows — reusable review and merge helpers plus `tests` (price coverage) —
   live. Tau Ceti's caller currently disables metered review generation, as described above.
+
+Project bindings are shared with [TauCetiTools](https://github.com/TauCetiProject/TauCetiTools).
+Pass `--conf PATH_OR_HTTPS_URL` to select the content/roadmap repositories, source root,
+publication destinations, review policy and optional archive. For example:
+
+```sh
+tauceti-review 123 --conf ./tauceti.toml
+```
+
+The [manual setup](https://github.com/TauCetiProject/TauCetiTools/blob/main/docs/project-setup.md)
+documents credentials and generated workflow callers. An absent optional destination in a configured
+project stays disabled. Invocations without configuration retain the Tau Ceti defaults.

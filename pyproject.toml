@@ -5,8 +5,8 @@ description = "Run the Tau Ceti AI code review on a PR using your own Claude/Cod
 readme = "REVIEWING.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-# No Python dependencies: the engine shells out to the `git`, `gh`, `claude`, `codex`, and `kiro-cli` CLIs.
-dependencies = []
+# Shared project configuration is the only Python dependency: the engine shells out to the `git`, `gh`, `claude`, `codex`, and `kiro-cli` CLIs.
+dependencies = ["tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@4c7381d3a47fd9b9f7aa786dd2a28c375e36fee6"]
 
 [project.scripts]
 tauceti-review = "runner.cli:main"

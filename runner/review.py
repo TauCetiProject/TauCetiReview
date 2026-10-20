@@ -11,6 +11,10 @@ rubrics whose last round was not `approve`. The workflow commits the store after
 
 import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, sys, time
 
+if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
+    from tauceti_tools.project import bootstrap
+    bootstrap()
+
 import archive
 from dataclasses import dataclass, field
 
@@ -33,6 +37,7 @@ from render import meta_block, render_contest_reply, render_scoreboard, render_t
 # not blocked yet). The non-blocking style angles follow in their README order.
 DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
                    "generality", "placement", "naming", "documentation", "proof-quality"]
+DEFAULT_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]")) or DEFAULT_RUBRICS
 
 # Fields that must never be written to a record this runner persists. BOTH sinks are public: the
 # archive record goes to TauCetiData, and `--store` is a checkout of this repo's `reviews` branch
@@ -582,7 +587,7 @@ def merge_decision(a, states, candidates, all_green, head):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", default="TauCetiProject/TauCeti")
+    ap.add_argument("--repo", default=os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti"))
     ap.add_argument("--pr", required=True)
     ap.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS))
     ap.add_argument("--rubrics-dir", required=True)
@@ -613,7 +618,7 @@ def main():
     ap.add_argument("--merge-base-sha", default="",
                     help="merge base of base and head — the actual left side of the reviewed "
                          "three-dot diff (runner/pr_diff.py). Recorded as provenance")
-    ap.add_argument("--rubrics-repo", default="TauCetiProject/TauCetiReview",
+    ap.add_argument("--rubrics-repo", default=os.environ.get("TAUCETI_RUBRICS_REPO", "TauCetiProject/TauCetiReview"),
                     help="owner/name the pinned rubric links point into")
     ap.add_argument("--rubrics-sha", default="",
                     help="git commit SHA of the rubrics+engine checkout, for pinned rubric links "
@@ -645,11 +650,11 @@ def main():
     ap.add_argument("--auto-merge", action="store_true",
                     help="compute a merge decision: mergeable iff every rubric approves on the "
                          "current commit and the PR touches only --merge-path-prefix")
-    ap.add_argument("--merge-path-prefix", default="TauCeti/",
+    ap.add_argument("--merge-path-prefix", default=os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + "/",
                     help="auto-merge only PRs whose every changed path is under this prefix; "
                          "anything else (infra) is left for human merge")
     ap.add_argument("--merge-allow-file", action="append",
-                    default=["TauCeti.lean", "lake-manifest.json", "lean-toolchain"],
+                    default=[os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + ".lean", "lake-manifest.json", "lean-toolchain"],
                     help="extra exact paths (besides --merge-path-prefix) an auto-mergeable PR "
                          "may touch; defaults to the root aggregator TauCeti.lean (so a PR can make "
                          "a new module reachable from the root) and the two machine-validated Lake "
@@ -724,6 +729,7 @@ def main():
     ap.add_argument("--post-plan-file", default="",
                     help="write the post plan (scoreboard + thread upsert/close actions) here")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--conf")
     a = ap.parse_args()
     try:
         a.kiro_model = exact_kiro_model(a.kiro_model)
