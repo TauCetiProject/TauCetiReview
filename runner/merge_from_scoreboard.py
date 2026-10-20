@@ -21,6 +21,7 @@ table (one row per rubric; the 3rd cell is the state word). Writes `merge.json` 
         --merge-decision-file merge.json
 """
 import argparse
+import os
 import json
 import pathlib
 import re
@@ -40,6 +41,10 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
 
+
+from tauceti_tools.project import bootstrap, conf_argument
+
+bootstrap()
 
 def parse_meta(body):
     m = META_RE.findall(body or "")
@@ -129,7 +134,7 @@ def has_live_review(comments, head_sha, now=None):
 # Filling it in is the same work as writing the docstring. It is BibTeX read only by the pages
 # build — never by Lake or the review harness — so nothing here executes it. TauCeti's own scope
 # guard allows the same single path; both gates must agree for such a PR to merge.
-DEFAULT_ALLOW = ["TauCeti.lean", "lake-manifest.json", "lean-toolchain",
+DEFAULT_ALLOW = [os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + ".lean", "lake-manifest.json", "lean-toolchain",
                  "docbuild/docs/references.bib"]
 
 
@@ -156,7 +161,7 @@ def load_comments(text):
 
 
 def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_guard,
-                         merge_path_prefix="TauCeti/", merge_allow_file=None, scope="", now=None,
+                         merge_path_prefix=os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + "/", merge_allow_file=None, scope="", now=None,
                          merge_base_sha=""):
     """The gate shared by merge-only and the sweep.
 
@@ -233,7 +238,7 @@ def resolve_commit_status(repo, head_sha, context):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", default="TauCetiProject/TauCeti")
+    ap.add_argument("--repo", default=os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti"))
     ap.add_argument("--pr", required=True)
     ap.add_argument("--head-sha", required=True)
     ap.add_argument("--comments-file", required=True, help="JSON array of the PR's issue comments")
@@ -247,10 +252,10 @@ def main():
     ap.add_argument("--bump-guard", default="")
     ap.add_argument("--scope", default="",
                     help="trusted scope status; resolved from HEAD when omitted")
-    ap.add_argument("--merge-path-prefix", default="TauCeti/")
+    ap.add_argument("--merge-path-prefix", default=os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + "/")
     ap.add_argument("--merge-allow-file", action="append", default=list(DEFAULT_ALLOW))
     ap.add_argument("--merge-decision-file", default="")
-    a = ap.parse_args()
+    a = ap.parse_args(conf_argument(sys.argv[1:])[1])
 
     required = {r for r in a.rubrics.split(",") if r}
     try:

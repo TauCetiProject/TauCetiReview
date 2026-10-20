@@ -40,11 +40,15 @@ import uuid
 # this CLI drives the engine as a subprocess and never imports it (the engine's modules use flat
 # sibling imports and only resolve with runner/ on sys.path, which an installed `runner.cli` has no
 # reason to arrange). tests/test_provider_down.py pins the two definitions together.
+from tauceti_tools.project import active, bootstrap, conf_argument
+
+bootstrap()
+
 PROVIDER_DOWN_EXIT = 3
 
-REVIEW_REPO = "TauCetiProject/TauCetiReview"
-DEFAULT_CODE_REPO = "TauCetiProject/TauCeti"
-DEFAULT_ROADMAP_REPO = "TauCetiProject/TauCetiRoadmap"
+REVIEW_REPO = os.environ.get("TAUCETI_REVIEW_REPO", "TauCetiProject/TauCetiReview")
+DEFAULT_CODE_REPO = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
+DEFAULT_ROADMAP_REPO = os.environ.get("TAUCETI_ROADMAP_REPO", "TauCetiProject/TauCetiRoadmap")
 CACHE_DIR = pathlib.Path(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))) / "tauceti-review"
 
@@ -668,7 +672,7 @@ def main():
                          "(e.g. a private read-only pass), at the cost of possible duplicate spend.")
     # Older workers pass this flag. Accept it during rolling upgrades without limiting reviews.
     ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
-    a = ap.parse_args()
+    a = ap.parse_args(conf_argument(sys.argv[1:])[1])
 
     a.kiro_model = (a.kiro_model or "").strip()
     if not a.kiro_model or a.kiro_model.lower().startswith("auto"):
@@ -690,8 +694,8 @@ def main():
         if not outbox.is_dir() or not any(p.is_file() for p in outbox.rglob("*")):
             print("tauceti-review --sync-only: outbox empty; nothing to sync")
             return
-        repo_dir = engine_at(a.rubrics_sha) if a.rubrics_sha else resolve_repo_dir(a.repo_dir)
-        data_dir = a.data_dir or str(CACHE_DIR / "data" / "TauCetiData")
+        repo_dir = engine_at(a.rubrics_sha or os.environ.get("TAUCETI_REVIEW_REF")) if (a.rubrics_sha or os.environ.get("TAUCETI_REVIEW_REF")) and not a.repo_dir else resolve_repo_dir(a.repo_dir)
+        data_dir = a.data_dir or str(CACHE_DIR / "data" / os.environ.get("TAUCETI_DATA_REPO", "TauCetiProject/TauCetiData").replace("/", "__"))
         run([sys.executable, str(repo_dir / "runner" / "archive.py"), "sync",
              "--store", str(a.store), "--data-dir", data_dir])
         return
@@ -757,7 +761,7 @@ def main():
     providers = ",".join(avail)
     print(f"reviewers: {providers}", file=sys.stderr)
 
-    repo_dir = engine_at(a.rubrics_sha) if a.rubrics_sha else resolve_repo_dir(a.repo_dir)
+    repo_dir = engine_at(a.rubrics_sha or os.environ.get("TAUCETI_REVIEW_REF")) if (a.rubrics_sha or os.environ.get("TAUCETI_REVIEW_REF")) and not a.repo_dir else resolve_repo_dir(a.repo_dir)
     print(f"engine + rubrics: {repo_dir}"
           + (f" (pinned @ {a.rubrics_sha[:12]})" if a.rubrics_sha else ""), file=sys.stderr)
 
@@ -890,11 +894,23 @@ def main():
         print("author replies on threads: "
               + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
 
-    rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
+    rubric_dir = repo_dir / "rubrics"
+    rubric_repo = os.environ.get("TAUCETI_RUBRICS_REPO", REVIEW_REPO)
+    if active() and rubric_repo != REVIEW_REPO:
+        ref = os.environ.get("TAUCETI_RUBRICS_REF", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", ref):
+            die("A custom rubric repository requires review.rubrics_ref as a full commit SHA")
+        rubric_checkout = work / "rubric-source"
+        run(["git", "clone", "-q", "--no-checkout", f"https://github.com/{rubric_repo}", str(rubric_checkout)])
+        run(["git", "-C", str(rubric_checkout), "checkout", "--detach", ref])
+        rubric_dir = rubric_checkout / "rubrics"
+        rub_sha, rub_approx = ref, False
+    else:
+        rub_sha, rub_approx = rubrics_repo_sha(repo_dir)
     # By environment rather than a flag, so a --rubrics-sha pin to an engine predating it still runs.
     # Only the engine's environment: an embedding caller's os.environ must not carry it onward.
     sha, dirty = cli_sha()
-    drift, published = rubrics_publication(repo_dir / "rubrics", rub_sha)
+    drift, published = rubrics_publication(rubric_dir, rub_sha) if rubric_repo == REVIEW_REPO else (None, None)
     if drift:
         print(f"tauceti-review: WARNING: the rubrics in {repo_dir} differ from {REVIEW_REPO}'s "
               "published main. This review applies them anyway and the scoreboard will say so; "
@@ -913,7 +929,7 @@ def main():
     cmd = [sys.executable, str(repo_dir / "runner" / "review.py"),
            "--repo", a.repo, "--pr", str(a.pr), "--mode", "manual" if a.shadow else a.mode,
            *(["--shadow", "--arm", f"shadow:{a.label}"] if a.shadow else []),
-           "--rubrics-dir", str(repo_dir / "rubrics"), "--tool-cwd", str(work),
+           "--rubrics-dir", str(rubric_dir), "--rubrics-repo", rubric_repo, "--tool-cwd", str(work),
            "--code-path", "code", "--roadmap-path", "roadmap",
            *mathlib_args,
            "--diff-file", str(work / "diff.txt"), "--paths-file", str(work / "paths.z"),
@@ -987,8 +1003,8 @@ def main():
     # records in <store>/outbox, and the next run (or `archive.py sync` / `--sync-only`) lands them.
     # --no-sync skips this push: the records stay in the outbox for a trusted caller (the worker
     # host) to drain with --sync-only, which is how a network-restricted bubble publishes.
-    if outbox and not a.no_sync and pathlib.Path(outbox).is_dir():
-        data_dir = a.data_dir or str(CACHE_DIR / "data" / "TauCetiData")
+    if outbox and not a.no_sync and pathlib.Path(outbox).is_dir() and os.environ.get("TAUCETI_DATA_REPO", "TauCetiProject/TauCetiData"):
+        data_dir = a.data_dir or str(CACHE_DIR / "data" / os.environ.get("TAUCETI_DATA_REPO", "TauCetiProject/TauCetiData").replace("/", "__"))
         r = run([sys.executable, str(repo_dir / "runner" / "archive.py"), "sync",
                  "--store", str(outbox_store), "--data-dir", data_dir], allow_fail=True)
         if r.returncode != 0:

@@ -9,11 +9,20 @@ import json
 import os
 import subprocess
 import urllib.request
+import urllib.parse
+
+from tauceti_tools.project import active, bootstrap
+
+bootstrap()
 
 import api_budget
 import eligibility
 
-BORS_URL = "https://bors.taucetiproject.org/repositories/1/active-batches?base=main"
+BASE_BRANCH = os.environ.get("TAUCETI_BASE_BRANCH", "main")
+PROJECT_REPO = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
+_bors_url = os.environ.get("TAUCETI_BORS_URL", "https://bors.taucetiproject.org")
+_bors_id = os.environ.get("TAUCETI_BORS_REPOSITORY_ID", "1")
+BORS_URL = f"{_bors_url.rstrip('/')}/repositories/{_bors_id}/active-batches?" + urllib.parse.urlencode({"base": BASE_BRANCH}) if _bors_url and _bors_id else ""
 ACTIVE = {"waiting", "running"}
 
 
@@ -72,14 +81,14 @@ def github_entries(repo, paths=False):
     of the `files` connection does not hold them all. Callers read those from REST instead."""
     owner, name = repo.split("/")
     files = " changedFiles files(first:100){pageInfo{hasNextPage} nodes{path}}" if paths else ""
-    query = '''query($owner:String!,$name:String!,$cursor:String){
-      repository(owner:$owner,name:$name){mergeQueue(branch:"main"){
+    query = '''query($owner:String!,$name:String!,$branch:String!,$cursor:String){
+      repository(owner:$owner,name:$name){mergeQueue(branch:$branch){
         entries(first:100,after:$cursor){pageInfo{hasNextPage endCursor}
           nodes{enqueuedAt pullRequest{number id headRefOid''' + files + '''}}}}}}'''
     result, cursor, seen = [], None, set()
     while True:
         args = ["api", "graphql", "-f", "query=" + query,
-                "-f", "owner=" + owner, "-f", "name=" + name]
+                "-f", "owner=" + owner, "-f", "name=" + name, "-f", "branch=" + BASE_BRANCH]
         if cursor:
             args += ["-f", "cursor=" + cursor]
         data = gh_json(args)
@@ -106,6 +115,10 @@ def github_entries(repo, paths=False):
 
 
 def bors_observation():
+    if active() and active().service("bors").get("mode", "off") == "off":
+        return {"batch_ids": [], "batches": [], "held": [], "outcomes": []}
+    if not BORS_URL:
+        raise RuntimeError("Configure services.bors.url and repository_id before observing Bors drainage")
     req = urllib.request.Request(BORS_URL, headers={
         "Cache-Control": "no-cache", "Accept": "application/json",
         "User-Agent": "TauCetiReview/1.0",
@@ -113,7 +126,7 @@ def bors_observation():
     with urllib.request.urlopen(req, timeout=10) as r:
         data = json.load(r)
     if (not isinstance(data, dict) or data.get("schema") != "tauceti-bors.observation/v1"
-            or data.get("repo") != "TauCetiProject/TauCeti" or data.get("base") != "main"):
+            or data.get("repo") != PROJECT_REPO or data.get("base") != BASE_BRANCH):
         raise RuntimeError("incomplete or incorrectly scoped bors observation")
     for key in ("batch_ids", "batches", "held", "outcomes"):
         if not isinstance(data.get(key), list):
@@ -121,7 +134,7 @@ def bors_observation():
     if data["batch_ids"] != [b["id"] for b in data["batches"]]:
         raise RuntimeError("inconsistent active bors batches")
     for b in data["batches"]:
-        if b.get("base") != "main" or b.get("state") not in ACTIVE or not isinstance(b.get("members"), list):
+        if b.get("base") != BASE_BRANCH or b.get("state") not in ACTIVE or not isinstance(b.get("members"), list):
             raise RuntimeError("invalid active bors batch")
     return data
 

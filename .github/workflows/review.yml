@@ -3,13 +3,14 @@ name: review
 on:
   workflow_call:
     inputs:
+      tools_repository: {required: false, type: string, default: TauCetiProject/TauCetiTools}
+      tools_ref: {required: false, type: string, default: ""}
       pr: { required: true, type: string }
       trigger: { required: false, type: string, default: "manual" }
       review_ref:
-        required: false
+        required: true
         type: string
-        default: ""
-        description: "TauCetiReview ref to check out for the runner and rubrics. Omit it: the default is this workflow file's own commit (job.workflow_sha). Set it only to test a different policy commit."
+        description: "Full TauCetiReview commit SHA matching the caller's reusable workflow pin."
       enable_automerge: { required: false, type: boolean, default: false }
       # Reply flow (Stage 2): re-run a single rubric in response to an author reply.
       mode: { required: false, type: string, default: "" }
@@ -17,12 +18,13 @@ on:
       reply_comment_id: { required: false, type: string, default: "" }
   workflow_dispatch:
     inputs:
+      tools_repository: {required: false, type: string, default: TauCetiProject/TauCetiTools}
+      tools_ref: {required: false, type: string, default: ""}
       pr: { required: true, type: string }
       review_ref:
-        required: false
+        required: true
         type: string
-        default: ""
-        description: "TauCetiReview ref to check out for the runner and rubrics. Omit it: the default is this workflow file's own commit (job.workflow_sha). Set it only to test a different policy commit."
+        description: "Full TauCetiReview commit SHA matching the caller's reusable workflow pin."
       enable_automerge: { required: false, type: boolean, default: false }
 
 permissions:
@@ -41,10 +43,10 @@ jobs:
       # An empty ref would make checkout fall back to TauCetiReview's default branch, silently
       # running unpinned code; refuse instead.
       - name: Require a pinned review ref
-        env: { REVIEW_REF: "${{ inputs.review_ref || job.workflow_sha }}" }
+        env: { REVIEW_REF: "${{ inputs.review_ref }}" }
         run: |
-          if [ -z "$REVIEW_REF" ]; then
-            echo "::error::neither review_ref nor job.workflow_sha is set"; exit 1
+          if ! [[ "$REVIEW_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::review_ref must be supplied as the pinned engine commit"; exit 1
           fi
 
       # ---- Untrusted-input phase: NO tokens, NO provider keys reachable by PR code ----
@@ -54,26 +56,71 @@ jobs:
           repository: TauCetiProject/TauCetiReview
           # The commit that defines this workflow (the SHA a caller pins in `uses:`, or the dispatched
           # ref), so the runner and rubrics always match the workflow file. review_ref overrides it.
-          ref: ${{ inputs.review_ref || job.workflow_sha }}
+          ref: ${{ inputs.review_ref }}
           persist-credentials: false
 
+      - name: Install engine dependencies for legacy callers
+        if: inputs.tools_ref == ''
+        run: python3 -m pip install .
+
+      - name: Checkout pinned common configuration tools
+        if: inputs.tools_ref != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.tools_repository }}
+          ref: ${{ inputs.tools_ref }}
+          path: .tauceti-tools
+          persist-credentials: false
+      - name: Checkout trusted caller project configuration
+        if: inputs.tools_ref != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: tauceti.toml
+          sparse-checkout-cone-mode: false
+          path: .tauceti-project
+          persist-credentials: false
+      - name: Bind this workflow to the configured project
+        if: inputs.tools_ref != ''
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.tauceti-tools
+        run: |
+          python3 -m tauceti_tools config environment --conf .tauceti-project/tauceti.toml --github-env "$GITHUB_ENV"
+          echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
+      - name: Checkout custom project rubrics
+        if: inputs.tools_ref != '' && env.TAUCETI_RUBRICS_REPO != env.TAUCETI_REVIEW_REPO
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TAUCETI_RUBRICS_REPO }}
+          ref: ${{ env.TAUCETI_RUBRICS_REF }}
+          path: .tauceti-rubrics
+          persist-credentials: false
+      - name: Select trusted rubrics
+        run: |
+          directory="$GITHUB_WORKSPACE/rubrics"
+          if [ -d .tauceti-rubrics/rubrics ]; then
+            directory="$GITHUB_WORKSPACE/.tauceti-rubrics/rubrics"
+            echo "RUBRICS_SHA=$(git -C .tauceti-rubrics rev-parse HEAD)" >> "$GITHUB_ENV"
+          fi
+          echo "RUBRICS_DIRECTORY=$directory" >> "$GITHUB_ENV"
       - name: Checkout roadmap (public)
         uses: actions/checkout@v4
         with:
-          repository: TauCetiProject/TauCetiRoadmap
+          repository: ${{ env.TAUCETI_ROADMAP_REPO || 'TauCetiProject/TauCetiRoadmap' }}
           path: roadmap
           persist-credentials: false
 
       - name: Resolve PR head and fetch diff
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          HEAD_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json headRefOid -q .headRefOid)
+          HEAD_SHA=$(gh pr view "$PR" --repo ${{ github.repository }} --json headRefOid -q .headRefOid)
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           # Provenance for the review comments and meta block: the PR base tip, the merge base
           # (the actual left side of the three-dot diff below), and the rubrics+engine commit.
-          BASE_SHA=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json baseRefOid -q .baseRefOid)
+          BASE_SHA=$(gh pr view "$PR" --repo ${{ github.repository }} --json baseRefOid -q .baseRefOid)
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
-          MERGE_BASE=$(gh api "/repos/TauCetiProject/TauCeti/compare/${BASE_SHA}...${HEAD_SHA}" \
+          MERGE_BASE=$(gh api "/repos/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}" \
             --jq '.merge_base_commit.sha' 2>/dev/null || echo "")
           echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
           # The merge base pins the reviewed diff and is what the merge gate later matches the
@@ -82,47 +129,54 @@ jobs:
           if [ -z "$MERGE_BASE" ]; then
             echo "::error::could not resolve the merge base of $BASE_SHA and $HEAD_SHA"; exit 1
           fi
-          echo "RUBRICS_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "RUBRICS_SHA=${TAUCETI_RUBRICS_REF:-$(git rev-parse HEAD)}" >> "$GITHUB_ENV"
           # CI's build-check conclusion for this head (GitHub's own result, not author input): the
           # engine uses it to tell reviewers the code compiles so they don't re-litigate the build.
-          CI_BUILD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
+          CI_BUILD=$(gh pr view "$PR" --repo ${{ github.repository }} --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="build") | .state] | first // ""')
           echo "CI_BUILD=$CI_BUILD" >> "$GITHUB_ENV"
           # bump-guard's conclusion for this head: required green before a PR that changes a
           # Lake pin (lake-manifest.json / lean-toolchain) may
           # auto-merge (see runner/review.py).
-          BUMP_GUARD=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
+          BUMP_GUARD=$(gh pr view "$PR" --repo ${{ github.repository }} --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="bump-guard") | .state] | first // ""')
           echo "BUMP_GUARD=$BUMP_GUARD" >> "$GITHUB_ENV"
-          SCOPE=$(gh pr view "$PR" --repo TauCetiProject/TauCeti --json statusCheckRollup \
+          SCOPE=$(gh pr view "$PR" --repo ${{ github.repository }} --json statusCheckRollup \
             -q '[.statusCheckRollup[]? | select(.__typename=="StatusContext" and .context=="scope") | .state] | first // ""')
           echo "SCOPE=$SCOPE" >> "$GITHUB_ENV"
           # The three-dot diff of exactly HEAD_SHA and its changed paths, built with git
           # (runner/pr_diff.py): `gh pr diff` refuses PRs touching more than 300 files, and every
           # review/merge path must compute them the same way (the diff bytes feed the patch digest;
           # the machine-read paths feed the merge path rule).
-          python3 runner/pr_diff.py --repo TauCetiProject/TauCeti --pr "$PR" \
+          python3 runner/pr_diff.py --repo ${{ github.repository }} --pr "$PR" \
             --head-sha "$HEAD_SHA" --merge-base-sha "$MERGE_BASE" --out diff.txt --paths-out paths.z
           echo "diff lines: $(wc -l < diff.txt)"
           # The PR title+body: the author's stated intent, sources, and dependencies. The
           # rubric tells agents to read it; pass it through (as untrusted author input, like
           # the diff). Author-controlled, so no more trusted than the diff already is.
-          gh pr view "$PR" --repo TauCetiProject/TauCeti --json title,body \
+          gh pr view "$PR" --repo ${{ github.repository }} --json title,body \
             --jq '"# " + .title + "\n\n" + (.body // "")' > pr_desc.txt
           echo "pr_desc bytes: $(wc -c < pr_desc.txt)"
           # Reply flow: fetch the author's reply body (untrusted) so the re-run can address it.
           : > reply.txt
           if [ -n "${{ inputs.reply_comment_id }}" ]; then
-            gh api "/repos/TauCetiProject/TauCeti/pulls/comments/${{ inputs.reply_comment_id }}" \
+            gh api "/repos/${{ github.repository }}/pulls/comments/${{ inputs.reply_comment_id }}" \
               --jq '.body' > reply.txt || true
             echo "reply bytes: $(wc -c < reply.txt)"
           fi
 
       - name: Prepare review store (reviews branch; public read, no token on disk)
+        env:
+          LEDGER_REPO: ${{ env.TAUCETI_REPO == '' && 'TauCetiProject/TauCetiReview' || env.TAUCETI_DATA_REPO }}
         run: |
-          git clone --depth 1 --branch reviews --single-branch \
-            https://github.com/TauCetiProject/TauCetiReview store 2>/dev/null \
-            || { mkdir -p store && cd store && git init -q && git checkout -q --orphan reviews; }
+          if [ -n "$LEDGER_REPO" ]; then
+            git clone --depth 1 --branch reviews --single-branch "https://github.com/$LEDGER_REPO" store 2>/dev/null || true
+          fi
+          if [ ! -d store/.git ]; then
+            mkdir -p store
+            git -C store init -q
+            git -C store checkout -q --orphan reviews
+          fi
 
       # ---- Responsiveness: post an in-progress scoreboard NOW — before the slow Mathlib clone,
       # ---- CLI install, and the model calls — so the bot's sticky comment appears as soon as it
@@ -135,26 +189,26 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: TauCetiProject
-          repositories: TauCeti
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ env.TAUCETI_CONTENT_NAME || 'TauCeti' }}
           permission-pull-requests: write
 
       - name: Post in-progress scoreboard
         continue-on-error: true
         env: { GH_TOKEN: "${{ steps.early_comment_token.outputs.token }}" }
         run: |
-          python3 runner/review.py --repo TauCetiProject/TauCeti --pr "$PR" --mode init \
-            --rubrics-dir rubrics --tool-cwd . --diff-file diff.txt --store store \
+          python3 runner/review.py --repo ${{ github.repository }} --pr "$PR" --mode init \
+            --rubrics-dir "$RUBRICS_DIRECTORY" --tool-cwd . --diff-file diff.txt --store store \
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
             --rubrics-sha "$RUBRICS_SHA" \
             --scoreboard-file "$PWD/scoreboard.md" --post-plan-file "$PWD/post_plan.json"
-          python3 runner/post.py --repo TauCetiProject/TauCeti --pr "$PR" \
+          python3 runner/post.py --repo ${{ github.repository }} --pr "$PR" \
             --plan "$PWD/post_plan.json" --store store
 
       - name: Checkout code at PR head (public, no credentials persisted)
         uses: actions/checkout@v4
         with:
-          repository: TauCetiProject/TauCeti
+          repository: ${{ github.repository }}
           ref: ${{ env.HEAD_SHA }}
           path: code
           persist-credentials: false
@@ -164,7 +218,7 @@ jobs:
         # lakefile/manifest (that would be arbitrary code execution on attacker input — I1).
         run: |
           base=$(mktemp -d)
-          git clone --depth 1 https://github.com/TauCetiProject/TauCeti "$base/base"
+          git clone --depth 1 https://github.com/${{ github.repository }} "$base/base"
           MREV=$(jq -r '.packages[] | select(.name=="mathlib") | .rev' "$base/base/lake-manifest.json")
           echo "mathlib rev (from base manifest): $MREV"
           git init -q mathlib
@@ -220,8 +274,8 @@ jobs:
             REPLY_ARGS="--reply-rubric ${{ inputs.reply_rubric }} --reply-file $PWD/reply.txt"
           fi
           python3 runner/review.py \
-            --repo TauCetiProject/TauCeti --pr "$PR" --mode "$MODE" $REPLY_ARGS \
-            --rubrics-dir rubrics --tool-cwd "$REVROOT" \
+            --repo ${{ github.repository }} --pr "$PR" --mode "$MODE" $REPLY_ARGS \
+            --rubrics-dir "$RUBRICS_DIRECTORY" --tool-cwd "$REVROOT" \
             --code-path code --roadmap-path roadmap --mathlib-path mathlib \
             --diff-file diff.txt --paths-file paths.z --pr-desc-file pr_desc.txt --store store --daily-budget 50 \
             --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" --merge-base-sha "$MERGE_BASE" \
@@ -239,8 +293,8 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: TauCetiProject
-          repositories: TauCeti
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ env.TAUCETI_CONTENT_NAME || 'TauCeti' }}
           permission-pull-requests: write
           # issues:write so the budget-label step can create the repo label on first use.
           permission-issues: write
@@ -252,7 +306,7 @@ jobs:
         env: { GH_TOKEN: "${{ steps.comment_token.outputs.token }}" }
         run: |
           if [ -s post_plan.json ]; then
-            python3 runner/post.py --repo TauCetiProject/TauCeti --pr "$PR" \
+            python3 runner/post.py --repo ${{ github.repository }} --pr "$PR" \
               --plan "$PWD/post_plan.json" --store store --archive-dir store/outbox
           else
             echo "no post plan (runner did not run); nothing to post"
@@ -271,7 +325,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f budget.json ]; then echo "no budget.json; leaving labels untouched"; exit 0; fi
-          R=TauCetiProject/TauCeti
+          R=${{ github.repository }}
           if [ "$(jq -r '.budget_spent' budget.json)" = "true" ]; then
             # Create the label only if it is missing, so a real failure surfaces instead of being hidden.
             if ! gh label list --repo "$R" --search "$LABEL" --json name --jq '.[].name' \
@@ -292,49 +346,55 @@ jobs:
       # ---- store commit below and syncs on a later run.
       - name: Mint archive token (TauCetiData contents:write)
         id: archive_token
-        if: always()
+        if: always() && (env.TAUCETI_REPO == '' || env.TAUCETI_DATA_REPO != '')
         continue-on-error: true
         uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1; v1 ignores permission-* inputs
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: TauCetiProject
-          repositories: TauCetiData
+          owner: ${{ env.TAUCETI_DATA_OWNER || github.repository_owner }}
+          repositories: ${{ env.TAUCETI_DATA_NAME || 'TauCetiData' }}
           permission-contents: write
 
       - name: Sync archive to TauCetiData
-        if: always()
+        if: always() && (env.TAUCETI_REPO == '' || env.TAUCETI_DATA_REPO != '')
         continue-on-error: true
-        env: { TOKEN: "${{ steps.archive_token.outputs.token }}" }
+        env:
+          GH_TOKEN: ${{ steps.archive_token.outputs.token }}
+          ARCHIVE_REPO: ${{ env.TAUCETI_DATA_REPO || 'TauCetiProject/TauCetiData' }}
         run: |
-          if [ -d store/outbox ] && [ -n "$TOKEN" ]; then
+          if [ -d store/outbox ] && [ -n "$GH_TOKEN" ]; then
+            gh auth setup-git
             python3 runner/archive.py sync --store store --data-dir "$RUNNER_TEMP/tauceti-data" \
-              --remote "https://x-access-token:${TOKEN}@github.com/TauCetiProject/TauCetiData"
+              --remote "https://github.com/$ARCHIVE_REPO"
           else
             echo "no outbox or no token; skipping archive sync"
           fi
 
       - name: Mint store token (TauCetiReview contents:write)
         id: store_token
-        if: always()
+        if: always() && (env.TAUCETI_REPO == '' || env.TAUCETI_DATA_REPO != '')
         uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1; v1 ignores permission-* inputs
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: TauCetiProject
-          repositories: TauCetiReview
+          owner: ${{ env.TAUCETI_DATA_OWNER || github.repository_owner }}
+          repositories: ${{ env.TAUCETI_REPO == '' && 'TauCetiReview' || env.TAUCETI_DATA_NAME }}
           permission-contents: write
 
       - name: Persist review store
-        if: always()
-        env: { TOKEN: "${{ steps.store_token.outputs.token }}" }
+        if: always() && (env.TAUCETI_REPO == '' || env.TAUCETI_DATA_REPO != '')
+        env:
+          GH_TOKEN: ${{ steps.store_token.outputs.token }}
+          LEDGER_REPO: ${{ env.TAUCETI_REPO == '' && 'TauCetiProject/TauCetiReview' || env.TAUCETI_DATA_REPO }}
         run: |
           cd store
           git add -A
           git -c user.name="tauceti-review-bot[bot]" \
               -c user.email="tauceti-review-bot[bot]@users.noreply.github.com" \
               commit -q -m "review: PR #${PR}" || { echo "nothing to commit"; exit 0; }
-          git push "https://x-access-token:${TOKEN}@github.com/TauCetiProject/TauCetiReview" HEAD:reviews
+          gh auth setup-git
+          git push "https://github.com/$LEDGER_REPO" HEAD:reviews
 
       # ---- Auto-merge (I9): dormant unless enable_automerge. The App must be a ruleset bypass
       # ---- actor and hold TauCeti contents:write for the merge to land.
@@ -345,8 +405,8 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: TauCetiProject
-          repositories: TauCeti
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ env.TAUCETI_CONTENT_NAME || 'TauCeti' }}
           permission-contents: write
           permission-pull-requests: write
 
@@ -356,7 +416,7 @@ jobs:
         run: |
           if [ -f merge.json ] && [ "$(jq -r .merge merge.json)" = "true" ]; then
             echo "auto-merging: $(jq -r .reason merge.json)"
-            gh pr merge "$PR" --repo TauCetiProject/TauCeti --squash
+            gh pr merge "$PR" --repo ${{ github.repository }} --squash
           else
             echo "not auto-merging: $(jq -r '.reason // "no decision file"' merge.json 2>/dev/null || echo 'no decision file')"
           fi

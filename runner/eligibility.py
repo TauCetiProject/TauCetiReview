@@ -3,6 +3,8 @@
 Checks describe eligibility independently of MERGE_BACKEND. Bors owns admission
 and drainage. A neutral check preserves approvals; an unsafe review revokes them.
 """
+import os
+
 import json
 import re
 
@@ -39,7 +41,7 @@ def publish(gh, log, repo, pr, head, approve, single=False, dry_run=False,
     if approve is True and not SHA.fullmatch(merge_base or ""):
         raise ValueError("eligible decisions require the reviewed merge base")
     live = gh(["api", f"repos/{repo}/pulls/{pr}"])
-    if (live.get("state") != "open" or live.get("base", {}).get("ref") != "main"
+    if (live.get("state") != "open" or live.get("base", {}).get("ref") != os.environ.get("TAUCETI_BASE_BRANCH", "main")
             or live.get("head", {}).get("sha") != head):
         log(pr=pr, head_sha=head, reason="head_or_base_moved", published=False)
         return
@@ -68,7 +70,7 @@ def publish(gh, log, repo, pr, head, approve, single=False, dry_run=False,
         return
     # Re-read after pagination: never publish an old-head decision on a changed PR.
     live = gh(["api", f"repos/{repo}/pulls/{pr}"])
-    if (live.get("state") != "open" or live.get("base", {}).get("ref") != "main"
+    if (live.get("state") != "open" or live.get("base", {}).get("ref") != os.environ.get("TAUCETI_BASE_BRANCH", "main")
             or live.get("head", {}).get("sha") != head):
         return
     if approve is True:

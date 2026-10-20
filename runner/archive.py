@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import sys
 
-DATA_REPO = "TauCetiProject/TauCetiData"
+DATA_REPO = os.environ.get("TAUCETI_DATA_REPO", "TauCetiProject/TauCetiData")
 
 # Conservative scrubbing for blob text that may quote tool/CLI output: known credential shapes
 # and home paths. Records themselves never carry these fields, so this is defense in depth.
