@@ -10,6 +10,8 @@ name: merge-sweep
 # enqueue something the normal gate would refuse. Like merge-only, this runs no reviewer and mints only
 # the App credentials the merge needs.
 
+# MERGE_BACKEND=direct retries direct merges, without a queue or branch updates.
+
 on:
   workflow_call:
     inputs:

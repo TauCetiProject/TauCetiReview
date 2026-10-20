@@ -7,9 +7,11 @@ name: merge-only
 # operator-run worker or by people running tauceti-review locally. This keeps auto-merge automatic
 # with expensive CI review generation off.
 #
-# Enqueue, not direct merge: the queue retests each entry against the CURRENT main and merges in
+# In queue mode: the queue retests each entry against the CURRENT main and merges in
 # order, so an approved PR that has fallen behind main is retested and merged without any re-review,
 # rather than stranded (as it was when this merged directly and skipped BEHIND PRs).
+
+# MERGE_BACKEND=direct instead merges the reviewed head without a queue or branch update.
 
 on:
   workflow_call:
@@ -184,6 +186,7 @@ jobs:
         run: python3 runner/backend.py selected
 
       - name: Publish merge eligibility
+        if: steps.backend.outputs.backend != 'direct'
         # Unsafe review revocations run for BOTH engines, even if this step fails.
         env:
           GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
@@ -191,7 +194,7 @@ jobs:
         run: python3 runner/backend.py eligibility
 
       - name: Reconcile the merge queue
-        if: ${{ always() && steps.merge_token.outcome == 'success' }}
+        if: ${{ always() && steps.merge_token.outcome == 'success' && steps.backend.outputs.backend != 'direct' }}
         env:
           GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
           REPO: ${{ github.repository }}
@@ -334,3 +337,10 @@ jobs:
             fi
           fi
           check_merge_base "while enqueuing"
+
+      - name: Merge the reviewed head directly
+        if: steps.backend.outputs.backend == 'direct'
+        env:
+          GH_TOKEN: "${{ steps.merge_token.outputs.token }}"
+          REPO: ${{ github.repository }}
+        run: python3 runner/direct_merge.py
