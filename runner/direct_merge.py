@@ -27,15 +27,21 @@ def merge(repo, pr, decision, merge_base, *, dry_run=False):
         "api", f"repos/{repo}/compare/{current['base']['sha']}...{head}?per_page=1"])
     if not merge_base or comparison["merge_base_commit"]["sha"] != merge_base:
         return
-    if current["mergeable"] is not True:
-        backend.log(backend="direct", pr=pr, reason="conflicting_or_pending", merged=False)
-        return
     if dry_run:
         backend.log(backend="direct", pr=pr, head=head, dry_run=True)
         return
-    result = backend.gh_json([
-        "api", "--method", "PUT", f"repos/{repo}/pulls/{pr}/merge", "--input", "-"],
-        {"sha": head, "merge_method": "squash"})
+    try:
+        result = backend.gh_json([
+            "api", "--method", "PUT", f"repos/{repo}/pulls/{pr}/merge", "--input", "-"],
+            {"sha": head, "merge_method": "squash"})
+    except RuntimeError as error:
+        # Head races, conflicts and GitHub's pending mergeability are retried by
+        # the next event/sweep. Permission and branch-policy errors remain loud.
+        message = str(error)
+        if "HTTP 409" in message or ("HTTP 405" in message and "Pull Request is not mergeable" in message):
+            backend.log(backend="direct", pr=pr, head=head, reason="retry_later", merged=False)
+            return
+        raise
     if result.get("merged") is not True:
         raise RuntimeError(f"GitHub refused direct merge of #{pr}: {result.get('message', 'unknown')}")
     backend.log(backend="direct", pr=pr, head=head, merged=True)

@@ -35,6 +35,9 @@ and bound to the reviewed head, and a real execution failure exits nonzero; beni
 queued, head moved) do not. The merge decision is the SAME decide_from_comments the merge-only path
 uses, so the sweep can never enqueue something the normal gate would refuse.
 
+With MERGE_BACKEND=direct the sweep merges eligible heads directly, without
+queue observations, branch updates or requiring the latest main.
+
 Env: GH_TOKEN (contents+pull-requests+issues+workflows write), REPO (owner/name), optional DRY_RUN=1, EVICT_ESCALATE,
 MERGE_PREFIX.
 """
