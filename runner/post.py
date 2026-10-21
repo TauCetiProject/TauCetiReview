@@ -19,7 +19,7 @@ sidecar (records/posts/). A required thread failure withholds the scoreboard and
 scoreboard failure leaves the write-ahead markers pending and also exits nonzero. Thus a visible
 current-head scoreboard never names a blocker that lacks its contestable inline thread.
 """
-import argparse, datetime, hashlib, json, os, pathlib, re, subprocess, sys
+import argparse, datetime, hashlib, json, os, pathlib, re, subprocess, sys, time
 
 import archive
 
@@ -212,6 +212,9 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
         cmd += ["-F", f"body=@{body_file}"]  # @file -> read body from the rendered markdown
     for k, v in (fields or {}).items():
         cmd += ["-f", f"{k}={v}"]
+    if body_file and method in ("POST", "PATCH"):
+        # Space comment sends to guard against GitHub 422 spam/too-quickly rejections.
+        time.sleep(2)
     r = subprocess.run(cmd, text=True, capture_output=True)
     if r.returncode != 0:
         print(f"gh api {method} {endpoint} FAILED: {r.stderr[-600:]}", file=sys.stderr)
