@@ -493,6 +493,67 @@ def test_non_json_error_response_keeps_original_failure():
     assert failures == [{"action": "POST /repos/o/r/pulls/1/comments", "error": "gh: HTTP 502"}]
 
 
+def _throttled_comment(headers="", message="was submitted too quickly"):
+    return types.SimpleNamespace(returncode=1, stderr="gh: Validation Failed (HTTP 422)",
+        stdout="HTTP/2.0 422 Unprocessable Entity\n" + headers + "\n" + json.dumps({
+            "message": "Validation Failed", "errors": [{
+                "resource": "PullRequestReviewComment", "message": message}]}))
+
+
+def test_throttled_comment_retries_same_request_and_returns_confirmed_id():
+    from unittest.mock import patch
+    success = types.SimpleNamespace(returncode=0, stderr="",
+        stdout='HTTP/2.0 201 Created\nContent-Type: application/json\n\n{"id":123}')
+    failures = []
+    with (patch.object(post.subprocess, "run", side_effect=[_throttled_comment(), success]) as gh,
+          patch.object(post.time, "sleep") as sleep,
+          patch.object(post.random, "uniform", return_value=3)):
+        assert post.gh_api("POST", "/repos/o/r/pulls/1/comments", body_file="body.md",
+                           failures=failures) == {"id": 123}
+    assert not failures
+    assert [call.args[0] for call in sleep.call_args_list] == [2, 63]
+    assert gh.call_count == 2 and gh.call_args_list[0] == gh.call_args_list[1]
+    assert "--include" in gh.call_args.args[0]
+
+
+def test_comment_throttle_doubles_waits_and_exhaustion_retains_failure():
+    from unittest.mock import patch
+    failures = []
+    with (patch.object(post.subprocess, "run", return_value=_throttled_comment()) as gh,
+          patch.object(post.time, "sleep") as sleep,
+          patch.object(post.random, "uniform", return_value=0)):
+        assert post.gh_api("PATCH", "/repos/o/r/pulls/comments/123", body_file="body.md",
+                           failures=failures, action="required thread PATCH naming") is None
+    assert gh.call_count == 4
+    assert [call.args[0] for call in sleep.call_args_list] == [2, 60, 120, 240]
+    assert len(failures) == 1
+    assert failures[0]["action"] == "required thread PATCH naming"
+    assert failures[0]["response"]["errors"][0]["message"] == "was submitted too quickly"
+
+
+def test_comment_throttle_honors_retry_after():
+    from unittest.mock import patch
+    success = types.SimpleNamespace(returncode=0, stdout='{"id":123}', stderr="")
+    with (patch.object(post.subprocess, "run", side_effect=[
+              _throttled_comment("Retry-After: 180\n"), success]),
+          patch.object(post.time, "sleep") as sleep,
+          patch.object(post.random, "uniform", return_value=0)):
+        assert post.gh_api("POST", "/repos/o/r/pulls/1/comments", body_file="body.md") == {"id":123}
+    assert [call.args[0] for call in sleep.call_args_list] == [2, 180]
+
+
+def test_other_validation_errors_are_not_retried():
+    from unittest.mock import patch
+    failures = []
+    with (patch.object(post.subprocess, "run", return_value=_throttled_comment(
+              message="path is not part of the diff")) as gh,
+          patch.object(post.time, "sleep") as sleep):
+        assert post.gh_api("POST", "/repos/o/r/pulls/1/comments", body_file="body.md",
+                           failures=failures) is None
+    assert gh.call_count == 1 and sleep.call_args.args == (2,)
+    assert len(failures) == 1
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:

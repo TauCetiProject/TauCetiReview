@@ -110,6 +110,12 @@ Add `--post` to publish. Useful flags:
    `approve` (this anti-forgery channel is kept even though you are trusted).
 5. Prints the scoreboard + threads, and with `--post`, publishes them via `gh` as you.
 
+Comment publication keeps two-second spacing. GitHub's specific HTTP 422
+`was submitted too quickly` rejection retries the same comment after 60, 120, and 240 seconds,
+with up to five seconds of jitter and any longer `Retry-After` delay. Other validation errors
+are not retried. If publication still fails, the saved plan and confirmed comment IDs remain
+available for automatic publication repair without running the models again.
+
 The posted scoreboard is the live verdict consumed by auto-merge: both merge paths read the newest
 marked scoreboard and require it to name the current head. The engine also writes detailed records
 for the TauCetiData analytics/provenance archive, but archive publication is not part of the merge
