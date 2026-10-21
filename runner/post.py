@@ -186,6 +186,26 @@ def already_replied(repo, pr, rubric, through_id, me):
     return False
 
 
+def github_error_response(stdout):
+    """Retain GitHub's validation explanation, without request bodies or credentials."""
+    try:
+        payload = json.loads(stdout)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    detail = {k: payload[k] for k in ("message", "errors", "documentation_url", "status")
+              if k in payload}
+    if not detail:
+        return None
+    encoded = json.dumps(detail, ensure_ascii=True)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        token = os.environ.get(name)
+        if token:
+            encoded = encoded.replace(json.dumps(token)[1:-1], "[REDACTED]")
+    return json.loads(encoded)
+
+
 def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=""):
     cmd = ["gh", "api", "-X", method, endpoint]
     if body_file:
@@ -195,9 +215,13 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
     r = subprocess.run(cmd, text=True, capture_output=True)
     if r.returncode != 0:
         print(f"gh api {method} {endpoint} FAILED: {r.stderr[-600:]}", file=sys.stderr)
+        detail = github_error_response(r.stdout)
+        if detail:
+            print("GitHub error JSON: " + json.dumps(detail, ensure_ascii=True), file=sys.stderr)
         if failures is not None:
             failures.append({"action": action or f"{method} {endpoint}",
-                             "error": r.stderr[-300:]})
+                             "error": r.stderr[-300:],
+                             **({"response": detail} if detail else {})})
         return None
     try:
         return json.loads(r.stdout)
