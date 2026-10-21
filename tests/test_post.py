@@ -459,6 +459,40 @@ def test_optional_close_failure_does_not_roll_back_publication():
     assert fake.calls[-1] == ("PATCH", "/repos/o/r/pulls/comments/80"), fake.calls
 
 
+def test_validation_json_is_logged_and_retained_without_credentials():
+    import contextlib, io, json
+    from unittest.mock import patch
+    payload = {"message": "Validation Failed", "errors": [
+        {"resource": "PullRequestReviewComment", "code": "custom",
+         "message": "was submitted too quickly: diagnostic-token"}],
+        "status": "422", "documentation_url": "https://docs.github.com/rest",
+        "request_body": "must not be logged"}
+    failures, stderr = [], io.StringIO()
+    result = types.SimpleNamespace(returncode=1, stdout=json.dumps(payload),
+                                   stderr="gh: Validation Failed (HTTP 422)")
+    with (patch.object(post.subprocess, "run", return_value=result),
+          patch.dict(post.os.environ, GH_TOKEN="diagnostic-token"),
+          contextlib.redirect_stderr(stderr)):
+        assert post.gh_api("POST", "/repos/o/r/pulls/1/comments", failures=failures) is None
+    detail = failures[0]["response"]
+    assert detail["status"] == "422"
+    assert detail["errors"][0]["message"] == "was submitted too quickly: [REDACTED]"
+    assert "GitHub error JSON:" in stderr.getvalue()
+    assert "diagnostic-token" not in stderr.getvalue()
+    assert "must not be logged" not in stderr.getvalue()
+    assert "request_body" not in detail
+
+
+def test_non_json_error_response_keeps_original_failure():
+    from unittest.mock import patch
+    result = types.SimpleNamespace(returncode=1, stdout="<html>gateway failure</html>",
+                                   stderr="gh: HTTP 502")
+    failures = []
+    with patch.object(post.subprocess, "run", return_value=result):
+        assert post.gh_api("POST", "/repos/o/r/pulls/1/comments", failures=failures) is None
+    assert failures == [{"action": "POST /repos/o/r/pulls/1/comments", "error": "gh: HTTP 502"}]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:
