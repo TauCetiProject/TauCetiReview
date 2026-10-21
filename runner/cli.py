@@ -45,6 +45,7 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
     bootstrap()
 
 PROVIDER_DOWN_EXIT = 3
+COORDINATED_ELSEWHERE_EXIT = 81
 
 REVIEW_REPO = os.environ.get("TAUCETI_REVIEW_REPO", "TauCetiProject/TauCetiReview")
 DEFAULT_CODE_REPO = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
@@ -460,18 +461,21 @@ def covered_providers(comments, head, now, *, exclude_nonce, max_id=None):
     return cov
 
 
-def post_marker(repo, pr, head, providers, nonce, submitted_by):
+def post_marker(repo, pr, head, providers, nonce, submitted_by, *, git_claim=False):
     """Post a review-in-progress marker for `providers` on `head`; return its comment id (None on
     failure). Best-effort: an inability to comment (a reviewer with no access) just means no marker."""
     now = int(time.time())
     payload = {"schema": f"{COORD_MARKER}/v1", "nonce": nonce, "providers": list(providers),
+               "coordination_protocol": "git+comment/v1",
+               "git_claim": git_claim,
                "head": head, "submitted_by": submitted_by or "", "started_at": now,
                "expires_at": now + COORD_TTL}
     body = (f"🔍 Review in progress — `{','.join(providers)}` reviewing `{head[:12]}`."
             f"\n<!--{COORD_MARKER} "
             f"{json.dumps(payload, separators=(',', ':'))}-->")
     r = run(["gh", "api", f"/repos/{repo}/issues/{pr}/comments", "-f", f"body={body}", "--jq", ".id"],
-            capture=True, quiet=True, allow_fail=True)
+            capture=True, quiet=True, allow_fail=True,
+            env={**os.environ, "TAUCETI_GITHUB_EPHEMERAL": "1", "TAUCETI_GH_PROXY_WAIT": "5"})
     if r.returncode != 0:
         return None
     out = (r.stdout or "").strip()
@@ -481,16 +485,20 @@ def post_marker(repo, pr, head, providers, nonce, submitted_by):
 def delete_marker(repo, comment_id):
     """Remove a marker by id. Best-effort (a 404 — already gone or expired-and-gc'd — is fine)."""
     run(["gh", "api", "-X", "DELETE", f"/repos/{repo}/issues/comments/{comment_id}"],
-        quiet=True, capture=True, allow_fail=True)
+        quiet=True, capture=True, allow_fail=True,
+        env={**os.environ, "TAUCETI_GITHUB_EPHEMERAL": "1", "TAUCETI_GH_PROXY_WAIT": "5"})
 
 
 # Markers this process owns and must remove on exit. atexit alone misses signals, so SIGTERM/SIGINT are
 # routed through sys.exit (which DOES run atexit); SIGKILL can't be caught, which is what the TTL backs.
 _ACTIVE_MARKERS = []
+_ACTIVE_GIT_CLAIMS = []
 _CLEANUP_INSTALLED = False
 
 
 def _delete_active_markers():
+    while _ACTIVE_GIT_CLAIMS:
+        _ACTIVE_GIT_CLAIMS.pop().release()
     while _ACTIVE_MARKERS:
         repo, cid = _ACTIVE_MARKERS.pop()
         delete_marker(repo, cid)
@@ -541,6 +549,21 @@ def _recheck_lost(repo, pr, head, nonce, cid, *, settle_s=None, poll_s=None,
     return set()
 
 
+def git_claim_for(repo, pr, head, nonce):
+    from tauceti_tools.claims import GitClaim, review_repository
+    claim_repo = review_repository(repo)
+    if not claim_repo:
+        return None, 2
+    claim = GitClaim(claim_repo, f"review/{repo.lower()}/{pr}/{head}",
+                     f"{os.environ.get('TAUCETI_WORKER_ID', 'review')}-{nonce}", COORD_TTL)
+    return claim, claim.acquire()
+
+
+def record_coordination(repo, pr, head, nonce, *, marker_posted, git_held):
+    from tauceti_tools.claims import record_review_start
+    record_review_start(repo, pr, head, nonce, marker_posted=marker_posted, git_held=git_held)
+
+
 def coordinate(repo, pr, head, avail, submitted_by):
     """[COOP] de-contend concurrent reviewers via a review-in-progress comment, on the head ALONE: a
     commit is reviewed once regardless of model. Returns `avail` (this run owns the head and should
@@ -564,20 +587,38 @@ def coordinate(repo, pr, head, avail, submitted_by):
         print(f"PR #{pr} @ {head[:12]} is already being reviewed ({','.join(sorted(cov))}) — "
               f"skipping to avoid duplicate spend.", file=sys.stderr)
         return []
+    claim = None
+    attempt, rc = git_claim_for(repo, pr, head, nonce)
+    if rc == 1:
+        print(f"PR #{pr} @ {head[:12]}: Git claim held by another reviewer — skipping.", file=sys.stderr)
+        return []
+    if rc == 0:
+        claim = attempt
+        claim.start_heartbeat()
+        _ACTIVE_GIT_CLAIMS.append(claim)
+        _install_marker_cleanup()
+    else:
+        print("note: Git review claim unavailable; using legacy comment coordination.", file=sys.stderr)
     run_set = list(avail)
-    cid = post_marker(repo, pr, head, run_set, nonce, submitted_by)
+    cid = post_marker(repo, pr, head, run_set, nonce, submitted_by, git_claim=claim is not None)
     if cid is None:
+        record_coordination(repo, pr, head, nonce, marker_posted=False, git_held=claim is not None)
         print("note: couldn't post a review-in-progress marker (no comment access?); proceeding "
-              "without de-contention — a concurrent duplicate review is possible.", file=sys.stderr)
+              + ("under the Git claim; legacy-only clients may duplicate this review." if claim else
+                 "without de-contention — a concurrent duplicate review is possible."), file=sys.stderr)
         return run_set
     lost = _recheck_lost(repo, pr, head, nonce, cid)
     if lost:
         print(f"PR #{pr} @ {head[:12]}: lost the post race ({','.join(sorted(lost))} claimed it "
               f"first) — skipping.", file=sys.stderr)
         delete_marker(repo, cid)
+        if claim:
+            claim.release()
+            _ACTIVE_GIT_CLAIMS.remove(claim)
         return []
     _ACTIVE_MARKERS.append((repo, cid))
     _install_marker_cleanup()
+    record_coordination(repo, pr, head, nonce, marker_posted=True, git_held=claim is not None)
     return run_set
 
 
@@ -787,7 +828,7 @@ def main():
         if not avail:
             if not a.keep and not a.workdir:
                 shutil.rmtree(work, ignore_errors=True)
-            return
+            return COORDINATED_ELSEWHERE_EXIT
         providers = ",".join(avail)
         print(f"reviewers (after de-contention): {providers}", file=sys.stderr)
 
@@ -1022,4 +1063,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
