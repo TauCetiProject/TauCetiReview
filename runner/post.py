@@ -19,7 +19,7 @@ sidecar (records/posts/). A required thread failure withholds the scoreboard and
 scoreboard failure leaves the write-ahead markers pending and also exits nonzero. Thus a visible
 current-head scoreboard never names a blocker that lacks its contestable inline thread.
 """
-import argparse, datetime, hashlib, json, os, pathlib, re, subprocess, sys, time
+import argparse, datetime, hashlib, json, os, pathlib, random, re, subprocess, sys, time
 
 import archive
 
@@ -212,24 +212,53 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
         cmd += ["-F", f"body=@{body_file}"]  # @file -> read body from the rendered markdown
     for k, v in (fields or {}).items():
         cmd += ["-f", f"{k}={v}"]
-    if body_file and method in ("POST", "PATCH"):
+    comment_send = bool(body_file and method in ("POST", "PATCH"))
+    if comment_send:
+        cmd.append("--include")  # Keep Retry-After alongside GitHub's error JSON.
         # Space comment sends to guard against GitHub 422 spam/too-quickly rejections.
         time.sleep(2)
-    r = subprocess.run(cmd, text=True, capture_output=True)
-    if r.returncode != 0:
+    for attempt in range(4):
+        r = subprocess.run(cmd, text=True, capture_output=True)
+        body, headers, status = r.stdout, {}, None
+        # gh --include prefixes the JSON body with HTTP headers. subprocess normalizes newlines.
+        while body.startswith("HTTP/"):
+            block, separator, body = body.partition("\n\n")
+            if not separator:
+                break
+            status = block.splitlines()[0].split()[1]
+            headers = {k.strip().lower(): v.strip() for line in block.splitlines()[1:]
+                       if ":" in line for k, v in [line.split(":", 1)]}
+        if r.returncode == 0:
+            try:
+                return json.loads(body)
+            except Exception:
+                return {}
         print(f"gh api {method} {endpoint} FAILED: {r.stderr[-600:]}", file=sys.stderr)
-        detail = github_error_response(r.stdout)
+        detail = github_error_response(body)
         if detail:
             print("GitHub error JSON: " + json.dumps(detail, ensure_ascii=True), file=sys.stderr)
+        too_quickly = (comment_send and str(status or (detail or {}).get("status")) == "422"
+                       and any(isinstance(e, dict)
+                               and e.get("resource") == "PullRequestReviewComment"
+                               and e.get("message") == "was submitted too quickly"
+                               for e in ((detail or {}).get("errors") or [])))
+        if too_quickly and attempt < 3:
+            # Retry this rejected publication, never the model. Other 422 validation errors
+            # need fixing, not retries. GitHub recommends at least a minute after throttling.
+            try:
+                retry_after = float(headers.get("retry-after", "0"))
+            except ValueError:
+                retry_after = 0
+            delay = max(60 * 2 ** attempt, retry_after) + random.uniform(0, 5)
+            print(f"Comment throttled (HTTP 422); retry {attempt + 1}/3 in {delay:.1f}s",
+                  file=sys.stderr)
+            time.sleep(delay)
+            continue
         if failures is not None:
             failures.append({"action": action or f"{method} {endpoint}",
                              "error": r.stderr[-300:],
                              **({"response": detail} if detail else {})})
         return None
-    try:
-        return json.loads(r.stdout)
-    except Exception:
-        return {}
 
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
