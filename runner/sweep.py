@@ -84,14 +84,14 @@ REBASE_MARKER_RE = re.compile(r"^<!--tauceti-rebase:v1 ([0-9a-f]{40})-->$", re.M
 STALLED_MARKER_RE = re.compile(r"^<!--tauceti-merge-stalled:v1 ([0-9a-f]{40})-->$", re.M)
 STALLED_COMMENT = (
     "Merge-queue recovery for head `{sha}`: repeated queue evictions, but this branch already "
-    "includes current `main`. A maintainer needs to inspect the merge-group failure; no worker "
-    "rebase is requested. The sweep will wait at this head. Add `keep` to pause recovery.\n\n"
+    "includes current `main`. Diagnose and repair the integration failure; rebasing alone will "
+    "not resolve it. An author unable to resolve it should close their own PR with an explanation.\n\n"
     "<!--tauceti-merge-stalled:v1 {head}-->")
 REBASE_COMMENT = (
     "Merge-queue recovery for head `{sha}`: {reason} "
     "The author or their worker should merge current `main`, reconcile overlapping declarations, "
     "and push only after the build and axiom checks pass. This request uses the worker's existing "
-    "per-PR rebase-attempt budget; exhaustion requires human attention. The sweep will wait on this head "
+    "per-PR rebase-attempt budget; if repair cannot resolve the disagreement, close your own PR with an explanation. The sweep will wait on this head "
     "instead of retrying the same operation. A new head returns to normal CI and review. "
     "Workers predating this handoff support need a TauCetiWorker update and restart. "
     "The fork push credential must permit workflow changes inherited from main. "
@@ -501,7 +501,7 @@ def update_branch(pr, head):
 def flag(pr, head, comments, *, worker=True, reason="This head needs reconciliation against main after repeated queue evictions."):
     """Publish a head-bound handoff before labelling it, repairing partial failures on retry."""
     if DRY_RUN:
-        action = "request worker reconciliation" if worker else "request human diagnosis (already up to date)"
+        action = "request worker reconciliation" if worker else "request integration-failure repair (already up to date)"
         print(f"[dry-run] would {action} for #{pr} ({head[:7]}): {reason}")
         return True
     if head not in rebase_request_heads(comments, stalled=not worker):
@@ -535,7 +535,7 @@ def reconcile_rebase_request(pr, head, labels, comments):
     if head in requested:
         if not labelled and not flag(pr, head, comments, worker=head in worker_heads):
             return "error"
-        actor = "its worker to reconcile" if head in worker_heads else "human diagnosis of"
+        actor = "its worker to reconcile" if head in worker_heads else "integration-failure repair at"
         print(f"#{pr}: waiting for {actor} head {head[:7]}")
         return "waiting"
     if labelled and requested:

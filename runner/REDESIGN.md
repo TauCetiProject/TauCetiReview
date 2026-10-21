@@ -82,9 +82,6 @@ A reactivated rubric gets the normal rubric prompt plus a compact block:
 - instruction: *re-adjudicate from the current tree; do not preserve the previous verdict for
   consistency.*
 
-Optional later guard: if an appeal flips a finding **block→approve**, re-run once with a
-different provider/model seed as a cheap arbiter (continuity without conversational capture).
-
 ## Comments
 
 - **Scoreboard**: one issue comment, `scoreboard_comment_id` stored per PR, **edited in place**

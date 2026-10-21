@@ -23,8 +23,8 @@ node or heading; read it (in the roadmap checkout) to confirm.
   named target. "Might be useful for", or a long speculative chain, is not a prerequisite.
 - Building what is missing is the point, so do not reject genuine prerequisite
   infrastructure. Reject material on no path to any target, or justified only as interesting;
-  if it is off-roadmap but plausibly worthwhile, `block` and say a human must add it to the
-  roadmap first.
+  if it is off-roadmap but plausibly worthwhile, `block` and explain why no existing roadmap
+  target supports it. The author should narrow the PR to supported work or close it.
 - Check actual dependencies, not roadmap stage numbers. A PR may supply prerequisites itself;
   it need not wait for an entire earlier stage to be complete. Later-stage material must still
   have a real, proximate path to a named target.
