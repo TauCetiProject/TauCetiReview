@@ -182,7 +182,7 @@ comment race settlement remains during this transition. Markers identify dual
 clients and whether they obtained a Git claim. If comment publication is
 throttled, a held Git claim still prevents duplicates between updated clients.
 
-Claim collisions exit with status 4 so callers can select other work rather than
+Claim collisions exit with status 81 so callers can select other work rather than
 counting a review that never ran. Coordination failures remain best effort, not
 permanent blockers. Transient markers are not retained for later publication.
 

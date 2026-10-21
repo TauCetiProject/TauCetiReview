@@ -45,7 +45,7 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
     bootstrap()
 
 PROVIDER_DOWN_EXIT = 3
-COORDINATED_ELSEWHERE_EXIT = 4
+COORDINATED_ELSEWHERE_EXIT = 81
 
 REVIEW_REPO = os.environ.get("TAUCETI_REVIEW_REPO", "TauCetiProject/TauCetiReview")
 DEFAULT_CODE_REPO = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
