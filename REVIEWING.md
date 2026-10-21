@@ -172,3 +172,41 @@ fresh (`--mode manual` semantics, scratch store, no carried-forward case files) 
 arms over the same `(PR, head, rubric)` are comparable; records land with `arm: shadow:<label>`
 and pair up with the production run in TauCetiData's `ab_pairs` view. In CI, the
 `shadow-review` workflow (manual dispatch) does the same with API keys and a per-run budget.
+
+### Review coordination transition
+
+Updated clients acquire a run-owned Git lease for the exact repository/PR/head,
+while continuing to publish and respect old review-in-progress comments. Seeing
+a live claim in either protocol yields the work without inference; the existing
+comment race settlement remains during this transition. Markers identify dual
+clients and whether they obtained a Git claim. If comment publication is
+throttled, a held Git claim still prevents duplicates between updated clients.
+
+Claim collisions exit with status 4 so callers can select other work rather than
+counting a review that never ran. Coordination failures remain best effort, not
+permanent blockers. Transient markers are not retained for later publication.
+
+Review observed adoption about seven days after deployment before a subsequent
+release removes legacy markers and polling. No date changes protocol behavior
+automatically. The shared state service reports observed starts over 24 hours
+and seven days without GitHub API requests.
+
+### Publication traffic
+
+All rubric results, findings, contest answers and scoreboard metadata remain.
+For example, a publication repair that already set a finding's closed body used
+to PATCH that identical body again; it now skips that PATCH, while still resolving
+the thread if needed. Existing exact-root adoption, reply deduplication and
+scoreboard reuse remain in place. No per-rubric detail is removed.
+
+Standalone clients space comment sends and retry the specific captured
+422 anti-abuse responses with bounded exponential delay. Under an updated Worker
+transport, shared account-wide pacing and retry handling replace that local loop,
+so delays do not multiply. Newly created findings are still published individually;
+batched reviews are deferred because partial-response reconciliation would add a
+second publication protocol. Blocker roots still land before the scoreboard.
+
+The shared lease implementation is packaged in TauCetiTools. Operators using an
+explicit claim repository keep using `CLAIM_REPO`; otherwise the helper checks
+existing shared access and an existing direct fork. The worker passes its already
+resolved namespace, avoiding repeated access discovery in review subprocesses.

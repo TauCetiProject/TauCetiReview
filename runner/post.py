@@ -19,7 +19,7 @@ sidecar (records/posts/). A required thread failure withholds the scoreboard and
 scoreboard failure leaves the write-ahead markers pending and also exits nonzero. Thus a visible
 current-head scoreboard never names a blocker that lacks its contestable inline thread.
 """
-import argparse, datetime, hashlib, json, os, pathlib, random, re, subprocess, sys, time
+import argparse, datetime, hashlib, json, os, pathlib, random, re, shutil, subprocess, sys, time
 
 import archive
 
@@ -85,7 +85,7 @@ def find_review_roots(repo, pr):
             "rubric": rubric_match.group(1) if rubric_match else None,
             "head_sha": meta.get("head_sha") or c.get("commit_id"),
             "run_ids": [run.get("id") for run in (meta.get("runs") or []) if run.get("id")],
-            "created_at": c.get("created_at") or "",
+            "created_at": c.get("created_at") or "", "body": body,
         })
     return roots
 
@@ -213,10 +213,12 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
     for k, v in (fields or {}).items():
         cmd += ["-f", f"{k}={v}"]
     comment_send = bool(body_file and method in ("POST", "PATCH"))
+    shared_pacing = bool(os.environ.get("TAUCETI_GITHUB_SHARED_PACING")) and os.environ["TAUCETI_GITHUB_SHARED_PACING"] == shutil.which("gh")
     if comment_send:
         cmd.append("--include")  # Keep Retry-After alongside GitHub's error JSON.
         # Space comment sends to guard against GitHub 422 spam/too-quickly rejections.
-        time.sleep(2)
+        if not shared_pacing:
+            time.sleep(2)
     for attempt in range(4):
         r = subprocess.run(cmd, text=True, capture_output=True)
         body, headers, status = r.stdout, {}, None
@@ -239,10 +241,12 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
             print("GitHub error JSON: " + json.dumps(detail, ensure_ascii=True), file=sys.stderr)
         too_quickly = (comment_send and str(status or (detail or {}).get("status")) == "422"
                        and any(isinstance(e, dict)
-                               and e.get("resource") == "PullRequestReviewComment"
-                               and e.get("message") == "was submitted too quickly"
+                               and (e.get("resource") == "PullRequestReviewComment"
+                                    and e.get("message") == "was submitted too quickly"
+                                    or e.get("resource") in ("PullRequestReview", "PullRequestReviewComment")
+                                    and e.get("code") == "abuse")
                                for e in ((detail or {}).get("errors") or [])))
-        if too_quickly and attempt < 3:
+        if too_quickly and attempt < 3 and not shared_pacing:
             # Retry this rejected publication, never the model. Other 422 validation errors
             # need fixing, not retries. GitHub recommends at least a minute after throttling.
             try:
@@ -495,8 +499,9 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
         root = roots_by_id.get(cid)
         if not cid or not root or root.get("login") != me:
             continue  # nothing of ours to edit; never cross-edit another identity's thread
-        if gh_api("PATCH", f"/repos/{repo}/pulls/comments/{cid}", body_file=t["body"],
-                  failures=failures, action=f"thread close {rubric}") is not None:
+        if (root.get("body") == pathlib.Path(t["body"]).read_text()
+                or gh_api("PATCH", f"/repos/{repo}/pulls/comments/{cid}", body_file=t["body"],
+                          failures=failures, action=f"thread close {rubric}") is not None):
             posted_threads[rubric] = cid
             resolve_thread(repo, pr, cid)
 

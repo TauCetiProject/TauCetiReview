@@ -74,7 +74,7 @@ class FakeGH:
             base.append({"id": self.last_post_id, "body": "our own marker (visible)"})
         return base
 
-    def post_marker(self, repo, pr, head, providers, nonce, submitted_by):
+    def post_marker(self, repo, pr, head, providers, nonce, submitted_by, **kwargs):
         if self.post_fails:
             return None
         self.posted.append(list(providers))
@@ -90,14 +90,17 @@ _ORIG = {}
 
 def _wire(g):
     for name in ("issue_comments", "post_marker", "delete_marker", "_install_marker_cleanup",
-                 "COORD_SETTLE_S"):
+                 "COORD_SETTLE_S", "git_claim_for", "record_coordination"):
         _ORIG.setdefault(name, getattr(cli, name))
+    cli.git_claim_for = lambda *a: (None, 2)
+    cli.record_coordination = lambda *a, **kw: None
     cli.issue_comments = g.issue_comments
     cli.post_marker = g.post_marker
     cli.delete_marker = g.delete_marker
     cli._install_marker_cleanup = lambda: None   # never touch real signal/atexit state in a test
     cli.COORD_SETTLE_S = 0.0                     # ordinary unit cases need only one reconciliation read
     cli._ACTIVE_MARKERS = []
+    cli._ACTIVE_GIT_CLAIMS = []
     cli._CLEANUP_INSTALLED = False
 
 
@@ -105,6 +108,7 @@ def _unwire():
     for name, fn in _ORIG.items():
         setattr(cli, name, fn)
     cli._ACTIVE_MARKERS = []
+    cli._ACTIVE_GIT_CLAIMS = []
     cli._CLEANUP_INSTALLED = False
 
 
@@ -227,6 +231,46 @@ def test_settlement_read_failure_warns_and_proceeds():
         assert cli._ACTIVE_MARKERS == [("r", 999)]
     finally:
         _unwire()
+
+
+class FakeLease:
+    def __init__(self):
+        self.started = self.released = 0
+    def start_heartbeat(self): self.started += 1
+    def release(self): self.released += 1
+
+
+def test_git_owner_keeps_work_when_legacy_post_is_throttled():
+    g, lease = FakeGH(post_fails=True), FakeLease()
+    _wire(g)
+    try:
+        cli.git_claim_for = lambda *a: (lease, 0)
+        assert cli.coordinate('o/r', 1, H, ['claude'], 'me') == ['claude']
+        assert lease.started == 1
+        cli._delete_active_markers()
+        assert lease.released == 1
+    finally: _unwire()
+
+
+def test_git_collision_does_not_post_or_spend():
+    g = FakeGH()
+    _wire(g)
+    try:
+        cli.git_claim_for = lambda *a: (None, 1)
+        assert cli.coordinate('o/r', 1, H, ['claude'], 'me') == []
+        assert not g.posted
+    finally: _unwire()
+
+
+def test_old_client_can_win_after_git_acquisition():
+    g, lease = FakeGH(after=[marker(1, 'old', ['codex'])]), FakeLease()
+    _wire(g)
+    try:
+        cli.git_claim_for = lambda *a: (lease, 0)
+        assert cli.coordinate('o/r', 1, H, ['claude'], 'me') == []
+        assert lease.released == 1 and not cli._ACTIVE_GIT_CLAIMS
+        assert g.deleted == [999]
+    finally: _unwire()
 
 
 if __name__ == "__main__":
