@@ -469,7 +469,12 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
               f"{len(failures)} failure(s); publication remains pending.")
         return 1
 
-    pr_state["published_head_sha"] = head
+    if plan.get("in_progress"):
+        # The visible board no longer represents a completed review. A same-head
+        # Actions rerun must restore it even when no reviewer needs to run again.
+        pr_state.pop("published_head_sha", None)
+    else:
+        pr_state["published_head_sha"] = head
     if pr_state.get("pending_publication_head_sha") == head:
         pr_state.pop("pending_publication_head_sha", None)
     for t in required:

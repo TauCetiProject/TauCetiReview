@@ -879,7 +879,7 @@ def main():
         (outdir / "scoreboard.md").write_text(sb)
         if a.post_plan_file:
             pathlib.Path(a.post_plan_file).write_text(json.dumps(
-                {"head_sha": head, "round": round_num,
+                {"head_sha": head, "round": round_num, "in_progress": True,
                  "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
                  "scoreboard_body": str(sb_path), "threads": []}, indent=2))
         print("[init] wrote in-progress scoreboard + scoreboard-only post plan.")

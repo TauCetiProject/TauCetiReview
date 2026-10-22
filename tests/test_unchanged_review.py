@@ -32,6 +32,18 @@ def test_unchanged_review():
     with patch.object(post, 'gh_api', side_effect=AssertionError('unexpected GitHub write')), \
          patch.object(post, 'current_login', side_effect=AssertionError('unexpected auth lookup')):
         assert post.execute_post('Owner/Repo', 1, json.loads(plan.read_text()), '/no-ledger-needed') == 0
+    # Actions replaces the completed board with init before its commit-mode run.
+    tb._run(store, rd, d / 'diff.txt', mode='init', rubrics=['reuse'], extra=args)
+    init_plan = json.loads(plan.read_text())
+    assert init_plan['in_progress'] is True
+    with patch.object(post, 'current_login', return_value='bot'), \
+         patch.object(post, 'find_review_roots', return_value=[]), \
+         patch.object(post, 'upsert_scoreboard', return_value=(1, True)):
+        assert post.execute_post('Owner/Repo', 1, init_plan, ledger) == 0
+    assert 'published_head_sha' not in json.loads(ledger.read_text())['prs']['1']
+    tb._run(store, rd, d / 'diff.txt', mode='commit', rubrics=['reuse'], extra=args)
+    assert json.loads(plan.read_text())['review_changed'] is True
+    ledger.write_text(json.dumps(before))
     # A pending publication must still be repaired even though no new model runs.
     before['prs']['1']['pending_publication_head_sha'] = tb.HEAD
     ledger.write_text(json.dumps(before))
