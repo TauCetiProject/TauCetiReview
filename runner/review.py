@@ -246,12 +246,10 @@ def thread_action_rubrics(candidates, ran, state_map, head):
     return out
 
 
-def can_reuse_completed_review(board, head, candidates, replies, pr_state, rubrics_version):
+def can_reuse_completed_review(board, head, candidates, replies, pr_state):
     """Published completion survives an empty worker store; local repairs still run."""
     if (not board or board.get("mode") == "init" or board.get("head_sha") != head
             or not candidates or not isinstance(replies, dict)):
-        return False
-    if board.get("rubrics_version") not in (None, rubrics_version):
         return False
     states = board.get("states") or {}
     current = [states.get(r) for r in candidates]
@@ -266,9 +264,13 @@ def can_reuse_completed_review(board, head, candidates, replies, pr_state, rubri
         for reply in rubric_replies:
             if not isinstance(reply.get("id"), int):
                 return False
-    state_map = pr_state.get("state") or {}
+    # A completed review at the new head supersedes this worker's older case
+    # files. Current-head findings and interrupted publication still need work.
+    state_map = {r: cf for r, cf in (pr_state.get("state") or {}).items()
+                 if cf.get("reviewed_sha") == head or cf.get("approved_sha") == head}
     if (pr_state.get("pending_publication_head_sha") == head
-            or (pr_state.get("scoreboard_comment_id") and pr_state.get("published_head_sha") != head)
+            or (state_map and pr_state.get("scoreboard_comment_id")
+                and not pr_state.get("published_head_sha"))
             or any(is_unresolved(state_of(state_map.get(r), head)) for r in candidates)
             or thread_action_rubrics(candidates, [], state_map, head)):
         return False
@@ -875,7 +877,7 @@ def main():
         prior_board = json.loads(pathlib.Path(a.prior_scoreboard_json).read_text())
     handoff_board = (prior_board if a.mode == "commit" and not a.shadow
                      and can_reuse_completed_review(prior_board, head, candidates, author_replies,
-                                                    pr_state, rubrics_version) else None)
+                                                    pr_state) else None)
     published_states = (handoff_board or {}).get("states", {})
     through = (handoff_board or {}).get("replies_through")
     through = through if isinstance(through, int) else 0
@@ -900,6 +902,12 @@ def main():
         # During a real contest, retain the other published decisions for
         # scheduling/rendering. Do not invent local case files or model runs.
         prov["reused_scoreboard_comment_id"] = handoff_board.get("comment_id")
+        # Older-head findings/approvals are superseded by this completed board.
+        # Keep their archived rounds, but do not use them to adjudicate a new
+        # contest or override the current published decisions.
+        state_map = {r: cf for r, cf in state_map.items()
+                     if cf.get("reviewed_sha") == head or cf.get("approved_sha") == head}
+        pr_state["state"] = state_map
 
     # A reviewer taking over a PR another reviewer has been reviewing has no case files for it. Seed
     # that reviewer's approvals as stale, so this round re-runs only the blocking rubrics and sweeps
@@ -921,8 +929,8 @@ def main():
             if reps and rubric in candidates:
                 cf = state_map.setdefault(rubric, {})
                 cf["author_replies"] = reps
-                if handoff_board and not cf.get("verdict"):
-                    cf["last_reply_seen"] = through
+                if handoff_board:
+                    cf["last_reply_seen"] = max(cf.get("last_reply_seen") or 0, through)
                 # Hydrate the thread root id from GitHub (authoritative) when the local store does not
                 # know it, so a contest answer can ALWAYS be posted in-thread — otherwise a fresh or
                 # cross-machine store would queue+watermark the contest but skip the reply, swallowing

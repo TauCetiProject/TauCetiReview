@@ -87,11 +87,32 @@ def test_handoff():
         ({'reuse': 'stale', 'scope': 'green'}, {}),
         (None, {'head_sha': 'b' * 40}),
         (None, {'mode': 'init'}),
-        (None, {'rubrics_version': 'different rubric text'}),
     ):
         assert scenario(states, board_changes=changes)[2]
     assert scenario(mode='manual')[2], 'forced review still runs'
     assert scenario(unavailable=True)[2], 'unavailable replies must not establish no contest or block work'
+    assert scenario(board_changes={'rubrics_version': 'earlier rubric text'})[1]['review_changed'] is False
+    # A worker's files from an earlier head cannot reopen a completed newer head.
+    old = {'rounds': [], 'state': {
+        'reuse': {'verdict': 'request_changes', 'reviewed_sha': 'c' * 40,
+                  'summary': 'Superseded older finding', 'thread': None},
+        'scope': {'verdict': 'approve', 'approved_sha': 'c' * 40}},
+        'scoreboard_comment_id': 500, 'published_head_sha': 'c' * 40}
+    assert scenario(local=old)[1]['review_changed'] is False
+    after, plan, calls, sb = scenario(local=old, replies={'reuse': [reply]},
+                                    states={'reuse': 'blocking_request', 'scope': 'green'})
+    assert len(calls) == 1 and 'Original finding' in calls[0]
+    assert 'Superseded older finding' not in calls[0]
+    assert after['prs']['1']['rounds'][-1]['states']['scope'] == 'green'
+    assert any(t['action'] == 'reply' and t['in_reply_to'] == 42 for t in plan['threads'])
+    # A prior local adjudication does not re-run a contest already covered by the
+    # board while a newer contest for a different rubric is being answered.
+    current = copy.deepcopy(old)
+    current['state'] = {'scope': {'verdict': 'approve', 'approved_sha': tb.HEAD,
+                                  'reviewed_sha': tb.HEAD, 'last_reply_seen': 0}}
+    answered = {**reply, 'id': 10}
+    after, plan, calls, _ = scenario(local=current, replies={'reuse': [reply], 'scope': [answered]})
+    assert len(calls) == 1 and after['prs']['1']['rounds'][-1]['ran'] == ['reuse']
     # A pending publication and an init replacement still repair without inference.
     local = {'rounds': [], 'state': {r: {'verdict': 'approve', 'approved_sha': tb.HEAD}
                                     for r in ('reuse', 'scope')},
@@ -103,8 +124,14 @@ def test_handoff():
     init_local.pop('pending_publication_head_sha'); init_local.pop('published_head_sha')
     assert scenario(local=init_local)[1]['review_changed'] is True
     # Existing local findings cannot be erased by an imported green scoreboard.
+    local.pop('pending_publication_head_sha')
     local['state']['reuse'] = {'rubric': 'reuse', 'verdict': 'request_changes', 'reviewed_sha': tb.HEAD,
-                              'run_id': 'existing', 'summary': 'Keep this finding', 'thread': None}
+                              'run_id': 'existing', 'summary': 'Keep this finding',
+                              'thread': {'comment_id': 42}}
+    after, plan, _, _ = scenario(local=local)
+    assert after['prs']['1']['state']['reuse']['summary'] == 'Keep this finding'
+    assert plan['review_changed'] is True
+    local['state']['reuse']['thread'] = None
     after, plan, _, _ = scenario(local=local)
     assert after['prs']['1']['state']['reuse']['summary'] == 'Keep this finding'
     assert any(t['required'] and t['rubric'] == 'reuse' for t in plan['threads'])
