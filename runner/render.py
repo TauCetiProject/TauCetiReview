@@ -176,7 +176,10 @@ def thread_meta(cf, prov):
 
 
 def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cost_line="",
-                      prov=None, runs=None):
+                      prov=None, runs=None, published_board=None):
+    states = {r: (state_of(state_map.get(r), head_sha)
+                  if (state_map.get(r) or {}).get("verdict") or not published_board
+                  else published_board["states"].get(r, "absent")) for r in candidates}
     icon = {"green": "✅", "stale": "♻️", "blocking_request": "🟡", "blocking_block": "⛔",
             "error": "⚠️", "absent": "▫️"}
     word = {"green": "approved", "stale": "stale (re-run pending)",
@@ -191,9 +194,11 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
     lines += ["| | rubric | state | judge | summary |", "|---|---|---|---|---|"]
     for r in candidates:
         cf = state_map.get(r) or {}
-        s = state_of(cf, head_sha)
+        s = states[r]
         judge = f"{cf.get('provider')}/{cf.get('model')}" if cf.get("provider") else "—"
         summ = sanitize(cf.get("summary") or "").replace("\n", " ").replace("|", "\\|")
+        if not cf.get("verdict") and published_board:
+            summ = "Retained from the published review of this head."
         name = f"[{r}]({rubric_url(prov, r)})" if linkable_rubrics_sha(prov) else r
         state = word[s]
         if s == "green" and cf.get("carried_from_sha"):
@@ -225,7 +230,7 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
         # Full per-rubric state at this head (not just this round's runs), so a reader (the merge gate)
         # has the complete verdict without re-deriving it from the rendered table. green == approved
         # at head_sha; anything else is not mergeable.
-        states={r: state_of(state_map.get(r), head_sha) for r in candidates},
+        states=states,
         # The highest author-reply comment id adjudicated across all rubrics. GitHub comment ids are
         # monotonic, so the worker can trigger a contest re-review precisely on `newest_reply_id >
         # replies_through` — second-resolution timestamps would conflate two replies in one second.
