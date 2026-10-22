@@ -418,6 +418,8 @@ def archive_outcome(archive_dir, repo, pr, plan, sb_id, scoreboard_ok, posted_th
 
 def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
     """Execute one trusted plan. Return a process-style status code (0 success, 1 incomplete)."""
+    if plan.get("review_changed") is False:
+        return 0
     head = plan.get("head_sha", "")
     ledger_path = pathlib.Path(ledger_path)
     ledger = json.loads(ledger_path.read_text())
