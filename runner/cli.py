@@ -354,6 +354,8 @@ def fetch_thread_replies(repo, pr):
     r = run(["gh", "api", "--paginate", "--jq", ".[]",
              f"/repos/{repo}/pulls/{pr}/comments?per_page=100"],
             capture=True, quiet=True, allow_fail=True)
+    if r.returncode != 0:
+        return None  # Unavailable history cannot establish that there is no new contest.
     comments = []
     for line in (r.stdout or "").splitlines():
         line = line.strip()
@@ -363,11 +365,13 @@ def fetch_thread_replies(repo, pr):
             except json.JSONDecodeError:
                 continue
     root_rubric = {}
+    root_bodies = {}
     for c in comments:
         if c.get("in_reply_to_id") is None:
             m = re.search(r"tauceti-rubric:([a-z][a-z-]*?)\s*-->", c.get("body", ""))
             if m:
                 root_rubric[c["id"]] = m.group(1)
+                root_bodies[c["id"]] = c.get("body") or ""
     replies = {}
     for c in comments:
         root = c.get("in_reply_to_id")
@@ -379,7 +383,8 @@ def fetch_thread_replies(repo, pr):
             continue  # our own contest answer / a nested root — never a fresh contest
         replies.setdefault(rubric, []).append(
             {"id": c.get("id"), "ts": c.get("created_at", ""), "root_id": root,
-             "by": (c.get("user") or {}).get("login", "author"), "body": body})
+             "by": (c.get("user") or {}).get("login", "author"), "body": body,
+             "root_body": root_bodies.get(root, "")})
     return replies
 
 
@@ -420,7 +425,8 @@ def latest_scoreboard(comments):
         key = (c.get("updated_at") or c.get("created_at") or meta.get("ts") or "", index)
         if best is None or key > best[0]:
             best = (key, {"comment_id": c.get("id"), "by": (c.get("user") or {}).get("login"),
-                          "head_sha": meta["head_sha"], "states": meta["states"]})
+                          "head_sha": meta["head_sha"], "states": meta["states"],
+                          **{k: meta[k] for k in ("replies_through", "rubrics_version") if k in meta}})
     return best[1] if best else None
 
 
@@ -934,7 +940,10 @@ def main():
     # blind. This is the local equivalent of CI's reply-trigger flow.
     replies = fetch_thread_replies(a.repo, a.pr)
     replies_path = work / "replies.json"
-    replies_path.write_text(json.dumps(replies))
+    if replies is not None:
+        replies_path.write_text(json.dumps(replies))
+    else:
+        replies_path.unlink(missing_ok=True)
     # Another reviewer's newest scoreboard, whose approvals the engine seeds as stale (♻️) where this
     # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
     prior_board = None
