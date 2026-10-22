@@ -879,7 +879,7 @@ def main():
         (outdir / "scoreboard.md").write_text(sb)
         if a.post_plan_file:
             pathlib.Path(a.post_plan_file).write_text(json.dumps(
-                {"head_sha": head, "round": round_num,
+                {"head_sha": head, "round": round_num, "in_progress": True,
                  "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
                  "scoreboard_body": str(sb_path), "threads": []}, indent=2))
         print("[init] wrote in-progress scoreboard + scoreboard-only post plan.")
@@ -1061,6 +1061,14 @@ def main():
     # Every blocking rubric green on this head (fresh, not stale). Drives both the auto-merge gate
     # and the budget signal below.
     all_green = bool(candidates) and all(states[r] == "green" for r in candidates)
+    previous = (pr_state.get("rounds") or [{}])[-1]
+    unchanged = (a.mode == "commit" and not a.shadow and not (ran or carried or had_contest)
+                 and pr_state.get("published_head_sha") == head
+                 and pr_state.get("pending_publication_head_sha") != head
+                 and not thread_action_rubrics(candidates, [], state_map, head)
+                 and all(previous.get(k) == v for k, v in {
+                     "head_sha": head, "states": states, "patch_digest": digest,
+                     "rubrics_version": rubrics_version}.items()))
     # A commit round that re-ran ONLY contested-but-clean rubrics (no blocker, no Phase-2 sweep) is a
     # reply round, not a full review pass: an author's back-and-forth must not burn the review budget
     # (the engine's auto-close signal) nor the worker's review-round budget. `full_rounds` excludes
@@ -1117,7 +1125,7 @@ def main():
             led.persist()
         return
     threads_dir = pathlib.Path(a.threads_dir) if a.threads_dir else (outdir / "threads")
-    plan = {"head_sha": head, "round": round_num,
+    plan = {"head_sha": head, "round": round_num, "review_changed": not unchanged,
             "review_error": any(states[r] == "error" for r in ran),
             "scoreboard_comment_id": pr_state.get("scoreboard_comment_id"),
             "scoreboard_body": str(sb_path),
@@ -1153,6 +1161,10 @@ def main():
              "head_sha": head}))
         print(f"[budget] full_rounds {full_rounds}/{a.review_budget} (round {round_num}), "
               f"all_green={all_green}, stopped={bool(stopped)}, spent={budget_spent}")
+
+    if unchanged:
+        print("\nUNCHANGED: this head's review is already published; no new round or publication.")
+        return
 
     # A process-restart repair publishes already-persisted findings and the scoreboard but records
     # no review round: it called no model, spent nothing, and must not consume either review cap.

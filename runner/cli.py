@@ -387,6 +387,16 @@ SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
 
 
+def write_review_result(head, changed):
+    """A trusted per-invocation outcome for the driving worker; no API requests."""
+    target = os.environ.get("TAUCETI_REVIEW_RESULT_FILE")
+    if target:
+        path = pathlib.Path(target)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"head_sha": head, "changed": changed}))
+        os.replace(tmp, path)
+
+
 def latest_scoreboard(comments):
     """The newest completed scoreboard on the PR, at any head and by any poster, as
     {comment_id, by, head_sha, states}; None if there is none. In-progress (init) boards carry no
@@ -1012,6 +1022,13 @@ def main():
     if not sb.is_file():
         die(f"review step exited cleanly but produced no scoreboard ({sb}); the engine did not run.")
     review_error = not a.shadow and plan.is_file() and json.loads(plan.read_text()).get("review_error", False)
+    if not a.shadow and plan.is_file() and json.loads(plan.read_text()).get("review_changed") is False:
+        print("Review unchanged: already published; selecting other work.", file=sys.stderr)
+        if a.post:
+            write_review_result(head, False)
+        if not a.keep and not a.workdir:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
     if drift:
         ensure_drift_warning(sb)
     print("\n" + "=" * 72)
@@ -1037,6 +1054,7 @@ def main():
              *(["--archive-dir", outbox] if outbox else [])],
             env=env)
         print("posted.", file=sys.stderr)
+        write_review_result(head, True)
     else:
         print("dry run — nothing posted. Re-run with --post to publish this review.",
               file=sys.stderr)

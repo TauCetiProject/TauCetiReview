@@ -418,6 +418,8 @@ def archive_outcome(archive_dir, repo, pr, plan, sb_id, scoreboard_ok, posted_th
 
 def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
     """Execute one trusted plan. Return a process-style status code (0 success, 1 incomplete)."""
+    if plan.get("review_changed") is False:
+        return 0
     head = plan.get("head_sha", "")
     ledger_path = pathlib.Path(ledger_path)
     ledger = json.loads(ledger_path.read_text())
@@ -467,7 +469,12 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
               f"{len(failures)} failure(s); publication remains pending.")
         return 1
 
-    pr_state["published_head_sha"] = head
+    if plan.get("in_progress"):
+        # The visible board no longer represents a completed review. A same-head
+        # Actions rerun must restore it even when no reviewer needs to run again.
+        pr_state.pop("published_head_sha", None)
+    else:
+        pr_state["published_head_sha"] = head
     if pr_state.get("pending_publication_head_sha") == head:
         pr_state.pop("pending_publication_head_sha", None)
     for t in required:
