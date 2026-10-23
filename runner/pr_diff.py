@@ -114,10 +114,11 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
         lock = threading.Lock()
 
         def kill(reason):
-            # Only while git is unreaped (`done` is set before the reaping wait), so a recycled PID
-            # is never signalled.
+            # Only while git is unreaped (`done` is set before the reaping wait, and `returncode`
+            # as soon as the fallback wait below has reaped it), so a recycled PID is never
+            # signalled.
             with lock:
-                if not done.is_set():
+                if not done.is_set() and p.returncode is None:
                     reason.set()
                     _killpg(p)
 
@@ -146,8 +147,13 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
                 else:
                     sink.write(chunk)
             # Wait for git to exit WITHOUT reaping it, so the timer and the watcher can still
-            # kill it safely until `done` is set below.
-            os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)
+            # kill it safely until `done` is set below. CPython has no os.waitid on macOS before
+            # 3.13; there, reap it and rely on kill()'s `returncode` check, which leaves the same
+            # few-bytecode race Popen.send_signal accepts.
+            if hasattr(os, "waitid"):
+                os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)
+            else:
+                p.wait()
         except BaseException:
             kill(threading.Event())
             raise
