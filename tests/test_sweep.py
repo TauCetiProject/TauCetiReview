@@ -230,7 +230,7 @@ def test_in_progress_scoreboard_does_not_supersede_a_completed_verdict():
     assert not decision["review_safe"] and not decision["merge"]
 
 
-def test_live_review_marker_holds_enqueue_without_revoking_green_review():
+def test_old_review_markers_do_not_affect_completed_verdicts():
     head = "deadbee"
     required = {"correctness", "reuse"}
     green = {"correctness": "green", "reuse": "green"}
@@ -239,7 +239,7 @@ def test_live_review_marker_holds_enqueue_without_revoking_green_review():
 
     decision = mfs.decide_from_comments(
         comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB, now=1000)
-    assert decision["review_safe"] and not decision["merge"]
+    assert decision["review_safe"] and decision["merge"]
 
     decision = mfs.decide_from_comments(
         comments, head, required, diff, "SUCCESS", "", scope="SUCCESS", merge_base_sha=MB, now=2000)

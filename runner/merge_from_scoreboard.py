@@ -4,11 +4,9 @@
 Any reviewer — the worker, or anyone running tauceti-review — posts a scoreboard comment on the PR
 carrying a `<!--tauceti-meta:v1 {...}-->` block with `head_sha` and a full per-rubric `states` map. The
 newest completed scoreboard at the current head is the verdict: a later completed review supersedes
-an earlier one instead of making every disagreement a permanent veto. An unexpired
-review-in-progress marker delays initial enqueue, but does not revoke an already-completed green
-verdict; if that review later posts a blocking scoreboard, the completed verdict makes the review
-state unsafe and the reconciler dequeues the PR. It is mergeable when that review state is safe, no
-review is live, and the shared `decide_merge` rule also holds (build green, TauCeti/-only + allowed
+an earlier one instead of making every disagreement a permanent veto. A later blocking scoreboard
+makes the review state unsafe and the reconciler dequeues the PR. It is mergeable when that
+completed review state is safe and the shared `decide_merge` rule also holds (build green, TauCeti/-only + allowed
 root/pins, bump-guard for a pin). This is the "no bar" model: trust is the posted comment itself, so a
 contributor with no repo write can still have their review count. The HARD boundary that a forged
 scoreboard cannot bypass remains the CI build + scope + axiom audit + bump-guard checks.
@@ -27,14 +25,12 @@ import pathlib
 import re
 import subprocess
 import sys
-import time
 
 from merge import read_paths
 from review import DEFAULT_RUBRICS, decide_merge
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
-COORD_RE = re.compile(r"<!--tauceti-review-in-progress (.*?)-->", re.S)
 # A rendered scoreboard row: | <icon> | [rubric](url) | <state word> | `judge` | summary |
 TABLE_ROW_RE = re.compile(r"^\|[^|]*\|\s*\[?([a-z0-9-]+)\]?[^|]*\|\s*([^|]+?)\s*\|", re.M)
 WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
@@ -103,30 +99,6 @@ def latest_current_scoreboard(comments, head_sha):
         return timestamp, index
 
     return max(enumerate(candidates), key=order)[1]
-
-
-def has_live_review(comments, head_sha, now=None):
-    """Whether an unexpired review-in-progress marker claims this exact head.
-
-    Markers need only normal issue-comment access, so independent contributors can pause the queue
-    while reviewing without gaining repository permissions. Invalid, expired, and other-head markers
-    are ignored. A crashed reviewer self-clears when its marker's existing TTL expires.
-    """
-    now = int(time.time()) if now is None else now
-    for comment in comments:
-        match = COORD_RE.search(comment.get("body") or "")
-        if not match:
-            continue
-        try:
-            marker = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(marker, dict):
-            continue
-        expires = marker.get("expires_at")
-        if marker.get("head") == head_sha and isinstance(expires, int) and expires > now:
-            return True
-    return False
 
 
 # docbuild/docs/references.bib is the bibliography doc-gen4 resolves docstring citations
@@ -209,12 +181,6 @@ def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_gua
                 "reason": "the newest completed scoreboard for the current head is not all-green; "
                           "refusing",
                 "head_sha": head_sha}
-    if has_live_review(comments, head_sha, now):
-        return {"review_safe": True, "merge": False,
-                "reason": "the newest completed scoreboard is green, but a review is in progress; "
-                          "waiting before enqueue",
-                "head_sha": head_sha}
-
     states = {r: "green" for r in required}
     candidates = sorted(required)
     merge_ok, reason = decide_merge(states, candidates, True, set(paths), head_sha,
