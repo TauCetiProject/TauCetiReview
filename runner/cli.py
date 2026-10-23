@@ -469,8 +469,11 @@ def git_claim_for(repo, pr, head, nonce):
 
 
 def record_coordination(repo, pr, head, nonce, *, git_held):
-    from tauceti_tools.claims import record_review_start
-    record_review_start(repo, pr, head, nonce, git_held=git_held)
+    try:
+        from tauceti_tools.claims import record_review_start
+        record_review_start(repo, pr, head, nonce, git_held=git_held)
+    except Exception:
+        pass  # Local reporting must never prevent a review.
 
 
 def coordinate(repo, pr, head, avail):

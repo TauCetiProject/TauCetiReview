@@ -66,6 +66,12 @@ def test_git_outage_proceeds_without_comment_fallback():
         assert receipt.call_args.kwargs == {'git_held': False}
 
 
+
+def test_reporting_failure_does_not_abort_a_review():
+    with patch('tauceti_tools.claims.record_review_start', side_effect=TypeError('receipt unavailable')):
+        cli.record_coordination('o/r', 1, H, 'nonce', git_held=True)
+
+
 if __name__ == '__main__':
     for name, fn in sorted(list(globals().items())):
         if name.startswith('test_'):
