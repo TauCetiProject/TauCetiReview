@@ -1,7 +1,7 @@
 name: merge-only
 
 # A cheap, no-dispatch queue reconciler: use the newest completed scoreboard at the current head and
-# wait for any live review to finish before enqueueing. Dequeue only when the completed review state
+# enqueue when the completed verdict permits it. Dequeue only when the completed review state
 # becomes unsafe; starting another review does not eject an already-green queued PR.
 # Generates NO reviews, stages NO provider keys, and runs NO reviewer — reviews are produced by the
 # operator-run worker or by people running tauceti-review locally. This keeps auto-merge automatic
