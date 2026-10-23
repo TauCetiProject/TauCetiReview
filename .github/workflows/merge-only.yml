@@ -151,8 +151,8 @@ jobs:
         run: |
           set -euo pipefail
           # Review-safe iff the newest completed current-head scoreboard has every required rubric
-          # green. A live review marker delays enqueue without revoking that completed verdict.
-          # Mergeable also requires no live marker and the shared decide_merge rule (build + scope green,
+          # green. Only completed review verdicts affect the gate.
+          # Mergeable also requires the shared decide_merge rule (build + scope green,
           # TauCeti/-only + allowed root/pins, bump-guard for a pin). Reads the full `states` from the meta, falling back
           # to the rendered table for comments posted before that field existed.
           python3 runner/merge_from_scoreboard.py \

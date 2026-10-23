@@ -144,17 +144,13 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
-- **Concurrent reviewers.** Before spending inference, a contributing run (one that posts or
-  archives) posts a short-lived `review in progress` comment scoped to the `head` alone and checks
-  for one already there. If another reviewer already holds the commit, this run skips it entirely —
-  so a commit is reviewed once regardless of model, and a fleet never pays twice. A *different* model
-  is not a distinct unit (the first claimer wins); only a new push, being a fresh head, is a fresh
-  unit. Simultaneous claimers wait five seconds for GitHub's comment replicas to settle, then the
-  lowest comment id wins. The marker self-expires (a crashed reviewer never blocks anyone) and is
-  deleted when done.
-  It needs only the ability to comment, so an independent reviewer with no repo write still
-  coordinates. Pass `--no-coordinate` for a private read-only pass that touches the PR not at all
-  (at the cost of possible duplicate spend); a `--shadow` arm opts out automatically.
+- **Concurrent reviewers.** Before spending inference, a contributing run acquires a renewable
+  Git lease for the repository, PR and exact head. Another holder makes the run yield without
+  inference (exit status 81), regardless of model. Leases release on exit and expire after crashes.
+  Set `CLAIM_REPO` to an accessible claims repository; otherwise existing shared access or a direct
+  personal fork is used. No repository is created automatically. Git outages allow work to proceed
+  with a warning about possible duplicates. `--no-coordinate` opts out; shadow runs opt out automatically.
+  Old review-in-progress comments are ignored and no longer published or deleted.
 
 ## Shadow reviews (A/B arms)
 
@@ -172,24 +168,6 @@ fresh (`--mode manual` semantics, scratch store, no carried-forward case files) 
 arms over the same `(PR, head, rubric)` are comparable; records land with `arm: shadow:<label>`
 and pair up with the production run in TauCetiData's `ab_pairs` view. In CI, the
 `shadow-review` workflow (manual dispatch) does the same with API keys and a per-run budget.
-
-### Review coordination transition
-
-Updated clients acquire a run-owned Git lease for the exact repository/PR/head,
-while continuing to publish and respect old review-in-progress comments. Seeing
-a live claim in either protocol yields the work without inference; the existing
-comment race settlement remains during this transition. Markers identify dual
-clients and whether they obtained a Git claim. If comment publication is
-throttled, a held Git claim still prevents duplicates between updated clients.
-
-Claim collisions exit with status 81 so callers can select other work rather than
-counting a review that never ran. Coordination failures remain best effort, not
-permanent blockers. Transient markers are not retained for later publication.
-
-Review observed adoption about seven days after deployment before a subsequent
-release removes legacy markers and polling. No date changes protocol behavior
-automatically. The shared state service reports observed starts over 24 hours
-and seven days without GitHub API requests.
 
 ### Publication traffic
 
