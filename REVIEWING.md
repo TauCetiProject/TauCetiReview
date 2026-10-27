@@ -116,6 +116,15 @@ the model says `approve`. No review scoreboard or finding threads are posted. Sp
 errored case file remain recorded; repair the local toolchain and retry. Claude and Codex
 tool outcomes are checked independently of the model's verdict.
 
+Codex tool commands inherit no provider credentials or personal environment. The runner
+restores `PATH`, which the Linux sandbox helper also uses to find the system `bwrap`.
+Without it, Codex always falls back to its bundled helper: an installation without that
+resource fails even if `bwrap` is installed, and the bundled executable may not have the
+system executable's AppArmor permissions. The runner also creates a private per-attempt
+`TMPDIR` for the launcher's writable bookkeeping; a read-only system `/tmp` otherwise
+prevents it from starting. These are the only forwarded runtime variables. The model's
+tools remain read-only, including inside that temporary directory.
+
 To diagnose a failing Codex host, run the following **inside the same container or worker
 environment** that runs reviews, from a writable review workspace:
 
@@ -130,6 +139,16 @@ CLI version, relevant Linux kernel settings, and the actual launcher/sandbox err
 report does not relax the sandbox. Linux namespace or AppArmor restrictions, missing runtime
 helpers, and macOS Seatbelt errors must be investigated on the affected host; a successful
 probe on another host does not diagnose them.
+
+Add `--compare-path` to run an empty-PATH probe as well. If the current probe succeeds
+and `without_path` fails, the report sets `path_restoration_fixed_sandbox: true`. Both probes
+check read access and write denial, and neither calls a model or falls back to unrestricted
+execution. Add `--compare-tmpdir` to test the system temporary directory as well; the report
+sets `private_tmpdir_fixed_sandbox: true` if only the private temporary directory works.
+A system-level denial of namespace creation can still require a host-specific fix;
+compare the actual stderr before changing container or AppArmor policy. Nested sandboxing
+can work when the outer policy permits it; launching from another agent alone does not
+establish the cause.
 
 Comment publication keeps two-second spacing. GitHub's specific HTTP 422
 `was submitted too quickly` rejection retries the same comment after 60, 120, and 240 seconds,

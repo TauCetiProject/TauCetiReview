@@ -52,6 +52,24 @@ def test_logname_is_a_user_fallback():
     reviewers.cleanup_rev_home(isolated_home)
 
 
+def test_codex_uses_private_writable_temporary_storage():
+    old = os.environ.copy()
+    isolated_home = None
+    try:
+        os.environ["TMPDIR"] = "/must/not/inherit/host/tmp"
+        env, isolated_home = reviewers.reviewer_env("codex", {"openai": "test-key"})
+        tmp = pathlib.Path(env["TMPDIR"])
+        assert tmp.is_relative_to(pathlib.Path(isolated_home))
+        assert tmp.stat().st_mode & 0o777 == 0o700
+        (tmp / "writable").write_text("launcher bookkeeping")
+        assert env["TMPDIR"] != os.environ["TMPDIR"]
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+        reviewers.cleanup_rev_home(isolated_home)
+    assert not tmp.exists()
+
+
 def test_kiro_subscription_copies_only_login_store():
     old = os.environ.copy()
     try:

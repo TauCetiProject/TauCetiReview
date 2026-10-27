@@ -79,6 +79,33 @@ def test_large_prompts_use_stdin_not_argv():
     assert pi_kwargs["stdin_text"] == prompt
 
 
+def test_shell_keeps_the_executable_path_without_inheriting_credentials():
+    calls = []
+    env = {"PATH": '/opt/tools with spaces/λ/bin:/usr/bin', "HOME": "/isolated",
+           "TMPDIR": "/isolated/tmp",
+           "OPENAI_API_KEY": "provider-secret", "GH_TOKEN": "github-secret"}
+
+    def fake_sh(cmd, **kwargs):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    orig = reviewers.sh
+    reviewers.sh = fake_sh
+    try:
+        reviewers.run_codex("prompt", "/tmp", _SOL, env)
+    finally:
+        reviewers.sh = orig
+    import tomllib
+    cmd = calls[-1]
+    settings = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "-c"]
+    assert "shell_environment_policy.inherit=none" in settings
+    parsed = tomllib.loads("\n".join(s for s in settings if ".set." in s))
+    policy = parsed["shell_environment_policy"]
+    assert policy["set"] == {"PATH": env["PATH"], "TMPDIR": env["TMPDIR"]}
+    assert "provider-secret" not in str(cmd) and "github-secret" not in str(cmd)
+    assert "read-only" in cmd
+
+
 def test_run_codex_parses_status_and_message_from_real_output():
     out = _run_codex_with_stdout(REAL_UNAVAILABLE_STDOUT)
     assert out.get("error_status") == 400, f"terminal 400 must be parsed, got {out.get('error_status')!r}"
