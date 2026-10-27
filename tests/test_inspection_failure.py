@@ -42,6 +42,9 @@ def test_codex_records_outcomes_without_commands_or_output():
     result = codex_result([command(False), command(True, "PRIVATE_SOURCE")])
     assert reviewers.inspection_failure(result, {"verdict": "approve"}) is None
     assert "PRIVATE_SOURCE" not in json.dumps(review.public_record(result))
+    # A successful grep may read sandbox diagnostics from the project under review.
+    result = codex_result([command(True, "command sandbox failed to start")])
+    assert reviewers.inspection_failure(result, {}) is None
     # Diff-only answers and failed calls cannot masquerade as completed inspection.
     for items in ([], [command(False)]):
         assert reviewers.inspection_failure(codex_result(items), {}) == "no_successful_inspection"

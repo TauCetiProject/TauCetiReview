@@ -585,7 +585,7 @@ def run_codex(prompt, cwd, model, env):
                 trace.append({"tool": "command_execution", "ok": ok})
             # Inspect the diagnostic in memory only. Commands and their output may contain
             # private source or credentials; only the closed-vocabulary signal is persisted.
-            if _SANDBOX_FAILURE.search(item.get("aggregated_output") or ""):
+            if not ok and _SANDBOX_FAILURE.search(item.get("aggregated_output") or ""):
                 out["inspection_error"] = "sandbox_failed"
         elif t == "turn.completed":
             usage = ev.get("usage")
