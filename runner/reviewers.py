@@ -346,7 +346,7 @@ def _tool_trace(stream_lines, root):
     Returns `(trace, meta, result_event)`. Events are consumed as they are parsed and only the
     terminal result is retained, so a long review does not sit in memory twice."""
     trace, pending, result = [], {}, None
-    total = malformed = 0
+    total = malformed = successful = 0
     for line in stream_lines:
         line = line.strip()
         if not line.startswith("{"):
@@ -372,12 +372,12 @@ def _tool_trace(stream_lines, root):
                 if block.get("type") != "tool_use":
                     continue
                 total += 1
-                if len(trace) >= _MAX_TOOL_TRACE:
-                    continue
                 name = str(block.get("name") or "?")[:40]
                 target = _trace_target(name, block.get("input"), root)
-                trace.append({"tool": name, "target": target} if target else {"tool": name})
-                pending[block.get("id")] = trace[-1]
+                entry = {"tool": name, "target": target} if target else {"tool": name}
+                if len(trace) < _MAX_TOOL_TRACE:
+                    trace.append(entry)
+                pending[block.get("id")] = entry
         elif kind == "user":
             # The paired outcome, and nothing else from this event: a tool_result's `content` is the
             # file the reviewer just read.
@@ -387,7 +387,11 @@ def _tool_trace(stream_lines, root):
                 entry = pending.pop(block.get("tool_use_id"), None)
                 if entry is not None:
                     entry["ok"] = not block.get("is_error")
-    meta = {"total_calls": total, "trace_truncated": total > len(trace)}
+                    if (entry["ok"] and entry["tool"] in _REVIEW_TOOLS
+                            and entry.get("target") not in (_OUTSIDE, _MISSING)):
+                        successful += 1
+    meta = {"total_calls": total, "successful_calls": successful,
+            "trace_truncated": total > len(trace)}
     if malformed:
         meta["malformed_events"] = malformed
     return trace, meta, result
@@ -504,6 +508,44 @@ def codex_model_unavailable(res):
     return bool(_CODEX_MODEL_MSG.search(hay))
 
 
+_SANDBOX_FAILURE = re.compile(
+    r"Sandbox\((?:LandlockRestrict|Seccomp|Seatbelt)\)"
+    r"|(?:sandbox|read.only (?:shell|command|tool)|command (?:runner|sandbox))"
+    r"[^.\n]{0,100}(?:failed|unavailable|could not|couldn't|prevented)"
+    r"|(?:failed|unable) to (?:start|initialize|initialise|create|set up)[^.\n]{0,60}sandbox",
+    re.I,
+)
+_INSPECTION_FAILURE = re.compile(
+    r"(?:inspection|repository searches|filesystem access|source access)"
+    r"[^.\n]{0,100}(?:unavailable|incomplete|could not|couldn't|prevented|failed)"
+    r"|(?:Mathlib|dependency sources?)[^.\n]{0,60}(?:not in (?:the|its|this) checkout|missing)",
+    re.I,
+)
+
+
+def inspection_failure(res, verdict=None):
+    """Fail closed on broken inspection, even when the CLI and model claim success.
+
+    Tool outcomes are authoritative; the model cannot override them with an approval. A
+    self-reported inspection gap in the final summary is an additional reason to withhold
+    publication, never evidence that can grant approval. Do not scan quoted findings or diffs.
+    """
+    if res.get("inspection_error"):
+        return res["inspection_error"]
+    if _SANDBOX_FAILURE.search(res.get("raw_stderr") or ""):
+        return "sandbox_failed"
+    if verdict is not None:
+        summary = verdict.get("summary") or ""
+        if _SANDBOX_FAILURE.search(summary):
+            return "sandbox_failed"
+        if _INSPECTION_FAILURE.search(summary):
+            return "inspection_incomplete"
+        meta = res.get("tool_trace_meta") or {}
+        if meta.get("successful_calls") == 0:
+            return "no_successful_inspection"
+    return None
+
+
 def run_codex(prompt, cwd, model, env):
     # Authenticate into this invocation's isolated CODEX_HOME so the credential is not shared.
     # In subscription mode there is no key (and no isolated home): use the inherited codex login.
@@ -519,6 +561,7 @@ def run_codex(prompt, cwd, model, env):
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     text, usage, thread, events, errors = "", None, None, [], []
     fail_payload = err_payload = None  # turn.failed (authoritative) and first `error` event (fallback)
+    trace, total, successful = [], 0, 0
     for line in r.stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -533,6 +576,17 @@ def run_codex(prompt, cwd, model, env):
             thread = ev.get("thread_id")
         elif t == "item.completed" and ev.get("item", {}).get("type") == "agent_message":
             text = ev["item"].get("text", "")
+        elif t == "item.completed" and ev.get("item", {}).get("type") == "command_execution":
+            item = ev["item"]
+            total += 1
+            ok = item.get("exit_code") == 0 and item.get("status") == "completed"
+            successful += int(ok)
+            if len(trace) < _MAX_TOOL_TRACE:
+                trace.append({"tool": "command_execution", "ok": ok})
+            # Inspect the diagnostic in memory only. Commands and their output may contain
+            # private source or credentials; only the closed-vocabulary signal is persisted.
+            if not ok and _SANDBOX_FAILURE.search(item.get("aggregated_output") or ""):
+                out["inspection_error"] = "sandbox_failed"
         elif t == "turn.completed":
             usage = ev.get("usage")
         elif t == "turn.failed":  # authoritative terminal failure — its payload carries the API status
@@ -545,6 +599,9 @@ def run_codex(prompt, cwd, model, env):
             if err_payload is None and isinstance(ev.get("message"), str):
                 err_payload = ev["message"]
     out.update(text=text, usage=usage, session_id=thread)
+    out.update(tool_trace=trace, tool_trace_meta={
+        "total_calls": total, "successful_calls": successful,
+        "trace_truncated": total > len(trace)})
     # The terminal failure carries a JSON blob (serialized as a STRING field) with an HTTP `status`,
     # error `type`, and human `message`. Parse it defensively so a caller can classify the failure from
     # structured fields, not by regex-scanning escaped transcript text: codex may hand a string/list
