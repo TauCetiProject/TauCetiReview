@@ -116,6 +116,21 @@ the model says `approve`. No review scoreboard or finding threads are posted. Sp
 errored case file remain recorded; repair the local toolchain and retry. Claude and Codex
 tool outcomes are checked independently of the model's verdict.
 
+To diagnose a failing Codex host, run the following **inside the same container or worker
+environment** that runs reviews, from a writable review workspace:
+
+```sh
+uvx --refresh --from git+https://github.com/TauCetiProject/TauCetiReview tauceti-review-check-sandbox
+```
+
+This calls the native Codex sandbox directly in the reviewer's clean environment, without
+credentials, model inference, or GitHub access. It checks that a known file can be read and
+workspace writes are denied, then removes its scratch files. The JSON report includes the
+CLI version, relevant Linux kernel settings, and the actual launcher/sandbox error. A failed
+report does not relax the sandbox. Linux namespace or AppArmor restrictions, missing runtime
+helpers, and macOS Seatbelt errors must be investigated on the affected host; a successful
+probe on another host does not diagnose them.
+
 Comment publication keeps two-second spacing. GitHub's specific HTTP 422
 `was submitted too quickly` rejection retries the same comment after 60, 120, and 240 seconds,
 with up to five seconds of jitter and any longer `Retry-After` delay. Other validation errors

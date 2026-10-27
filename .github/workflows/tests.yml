@@ -45,4 +45,5 @@ jobs:
       - run: python tests/test_provider_down.py
       - run: python tests/test_tool_trace.py
       - run: python tests/test_inspection_failure.py
+      - run: python tests/test_sandbox_check.py
       - run: python tests/test_reviewer_no_shell.py

@@ -11,6 +11,7 @@ dependencies = ["tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTo
 [project.scripts]
 tauceti-review = "runner.cli:main"
 tauceti-review-costs = "runner.costs:main"
+tauceti-review-check-sandbox = "runner.sandbox_check:main"
 
 [build-system]
 requires = ["setuptools>=68"]
