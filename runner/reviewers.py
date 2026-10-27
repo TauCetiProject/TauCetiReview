@@ -6,7 +6,10 @@ import json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
 from contextlib import closing
 from urllib.parse import quote
 
-from pricing import OPENROUTER_MODELS, rates
+if __package__:
+    from .pricing import OPENROUTER_MODELS, rates
+else:
+    from pricing import OPENROUTER_MODELS, rates
 
 
 # A pi reviewer's tools: read + grep + ls only — never bash/edit/write. This keeps the review
