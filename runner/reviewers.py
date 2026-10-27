@@ -194,6 +194,10 @@ def reviewer_env(provider, keys, subscription=False):
         codex_home = os.path.join(home, ".codex")
         os.makedirs(codex_home, exist_ok=True)  # codex requires CODEX_HOME to already exist
         env["CODEX_HOME"] = codex_home
+        # The sandbox launcher needs writable bookkeeping before enforcing the tool's
+        # read-only policy. Do not depend on a host-global /tmp inside another sandbox.
+        env["TMPDIR"] = os.path.join(home, "tmp")
+        os.mkdir(env["TMPDIR"], mode=0o700)
         if subscription:
             # Seed only the ChatGPT login; no personal AGENTS.md / config.toml.
             src = os.path.expanduser("~/.codex/auth.json")
@@ -521,7 +525,10 @@ _SANDBOX_FAILURE = re.compile(
 _INSPECTION_FAILURE = re.compile(
     r"(?:inspection|repository searches|filesystem access|source access)"
     r"[^.\n]{0,100}(?:unavailable|incomplete|could not|couldn't|prevented|failed)"
-    r"|(?:Mathlib|dependency sources?)[^.\n]{0,60}(?:not in (?:the|its|this) checkout|missing)",
+    r"|\b(?:Mathlib|dependency sources?)(?: sources?| checkout)?\s+"
+    r"(?:(?:was|is|were|are)\s+)?(?:not in|not present in|missing from) (?:the|its|this) checkout\b"
+    r"|\b(?:Mathlib (?:sources?|checkout)|dependency sources?)\s+"
+    r"(?:(?:was|is|were|are)\s+)?(?:missing|absent|unavailable)\b",
     re.I,
 )
 
@@ -549,6 +556,23 @@ def inspection_failure(res, verdict=None):
     return None
 
 
+def codex_shell_environment_args(env):
+    """Keep tools credential-free while retaining the launcher's runtime requirements.
+
+    Codex launches the Linux sandbox helper with the shell environment. inherit=none
+    alone also deletes PATH there, forcing the bundled bwrap even when a working system
+    installation exists. TMPDIR is a private per-attempt directory created by reviewer_env,
+    so bookkeeping also works when the caller's /tmp is read-only. Neither grants the
+    model write access: the selected read-only sandbox policy still applies to its tools.
+    """
+    args = ["-c", "shell_environment_policy.inherit=none"]
+    for key in ("PATH", "TMPDIR"):
+        if key in env:
+            args += ["-c", f"shell_environment_policy.set.{key}="
+                     + json.dumps(env[key], ensure_ascii=False)]
+    return args
+
+
 def run_codex(prompt, cwd, model, env):
     # Authenticate into this invocation's isolated CODEX_HOME so the credential is not shared.
     # In subscription mode there is no key (and no isolated home): use the inherited codex login.
@@ -557,8 +581,8 @@ def run_codex(prompt, cwd, model, env):
     # inherit=none: codex's model-run shell commands get a clean env, not codex's own. `-` tells
     # codex to read the prompt from stdin; putting a large rendered review in argv can exceed the
     # OS argument-size limit before codex starts.
-    cmd = (["codex", "exec", "--json", "-s", "read-only", "--skip-git-repo-check",
-            "-c", "shell_environment_policy.inherit=none"]
+    cmd = (["codex", "exec", "--json", "-s", "read-only", "--skip-git-repo-check"]
+           + codex_shell_environment_args(env)
            + (["-m", model] if model else []) + ["-"])
     r = sh(cmd, cwd=cwd, env=env, stdin_text=prompt)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}

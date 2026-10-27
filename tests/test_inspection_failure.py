@@ -79,6 +79,13 @@ def test_reported_gaps_withhold_any_verdict():
         for verdict in ("approve", "request_changes", "block"):
             assert reviewers.inspection_failure({}, {"verdict": verdict, "summary": summary}), summary
     assert reviewers.inspection_failure({}, {"summary": "The sandbox failure handler is correct."}) is None
+    for summary in (
+        "The attribution names the central Mathlib declaration it follows; no missing attribution.",
+        "Reuses Mathlib's central declarations and has no missing citations.",
+        "No missing Mathlib attribution was found.",
+        "Mathlib is missing this API, so the project-specific lemma is needed.",
+    ):
+        assert reviewers.inspection_failure({}, {"verdict": "approve", "summary": summary}) is None
     # Findings can legitimately discuss sandbox code or quote an author's diagnostic.
     assert reviewers.inspection_failure({}, {"summary": "Bug found", "findings": [
         {"issue": "The sandbox failed to start"}]}) is None
