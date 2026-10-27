@@ -110,6 +110,12 @@ Add `--post` to publish. Useful flags:
    `approve` (this anti-forgery channel is kept even though you are trusted).
 5. Prints the scoreboard + threads, and with `--post`, publishes them via `gh` as you.
 
+If a reviewer's sandbox fails, its tools complete no successful inspection, or its verdict
+summary reports incomplete source inspection, the round aborts before publication, even if
+the model says `approve`. No review scoreboard or finding threads are posted. Spend and an
+errored case file remain recorded; repair the local toolchain and retry. Claude and Codex
+tool outcomes are checked independently of the model's verdict.
+
 Comment publication keeps two-second spacing. GitHub's specific HTTP 422
 `was submitted too quickly` rejection retries the same comment after 60, 120, and 240 seconds,
 with up to five seconds of jitter and any longer `Retry-After` delay. Other validation errors
