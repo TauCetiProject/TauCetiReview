@@ -36,6 +36,25 @@ TABLE_ROW_RE = re.compile(r"^\|[^|]*\|\s*\[?([a-z0-9-]+)\]?[^|]*\|\s*([^|]+?)\s*
 WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
+BLOCKING_STATES = {"blocking_request", "blocking_block"}
+
+# A rubric row whose judge says it could not inspect the workspace: its tool sandbox never started,
+# or the pinned Mathlib source was not in its checkout. Such a judge votes on the diff alone
+# (TauCetiReview#189). This reads model prose, which the reviewed diff can influence, so a match
+# only ever withholds an approval and never grants or removes a block.
+_BLIND_TOOL = (r"(?:sandbox|command runner|command tool|read-only (?:command|shell|tool|search)s?"
+               r"|read (?:command|tool)s?|shell|filesystem tools?|search tools?)")
+_BLIND_BAD = r"(?:fail\w*|error|unavailable|could not (?:start|run|initiali[sz]e)|did not start|prevented)"
+_BLIND_PLACE = r"(?:the|its|this) (?:checkout|runner|workspace|sandbox)"
+BLIND_ROW_RE = re.compile(
+    rf"\b{_BLIND_TOOL}\b[^|.;]{{0,60}}?\b{_BLIND_BAD}"
+    r"|\b(?:inspection|verification|searches|search|cross-checks?|comparison|grep)\b[^|.;]{0,40}?"
+    r"\b(?:was|were) (?:unavailable|prevented|not possible)"
+    r"|\b(?:searches|inspection)\b[^|.;]{0,20}?could not (?:run|execute|be (?:run|performed))"
+    rf"|mathlib[^|.;]{{0,60}}?\b(?:not (?:in|present in|available in|checked out in) {_BLIND_PLACE}"
+    rf"|absent from {_BLIND_PLACE}|missing from {_BLIND_PLACE}|could not be (?:searched|grepped))"
+    r"|mathlib (?:checkout|source|sources) (?:was|were|is) (?:absent|missing|not present)",
+    re.I)
 
 
 if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
@@ -63,6 +82,29 @@ def states_from_table(body):
     return out
 
 
+def blind_rubrics(body):
+    """Rubrics whose scoreboard row reports that the judge could not inspect the workspace."""
+    out = set()
+    for row in (body or "").splitlines():
+        m = TABLE_ROW_RE.match(row)
+        if m and m.group(1) in DEFAULT_RUBRICS and BLIND_ROW_RE.search(row):
+            out.add(m.group(1))
+    return out
+
+
+def board_states(board, meta):
+    raw = meta.get("states")
+    if not isinstance(raw, dict) or not raw:
+        raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
+    return raw
+
+
+def is_blind_approval(board, meta):
+    """A completed board with no blocking rubric whose judges, in some row, could not look."""
+    return (bool(blind_rubrics(board.get("body")))
+            and not any(s in BLOCKING_STATES for s in board_states(board, meta).values()))
+
+
 def current_scoreboards(comments, head_sha):
     """Valid scoreboard comments for this exact head. There is deliberately no author access bar:
     ordinary contributors' posted reviews count, just as they did in the original merge gate."""
@@ -85,12 +127,18 @@ def latest_current_scoreboard(comments, head_sha):
     completed verdict with an empty in-progress one. If init is the only current-head scoreboard,
     retain it and fail closed from its states. Comments normally arrive in creation order; use their
     update timestamp first and their input position as a deterministic fallback/tie-break.
+
+    A blind approval (is_blind_approval) is not a verdict: it is skipped, so an earlier completed
+    board decides, and with none the PR reads as unreviewed. A blind board that blocks still counts.
     """
     boards = current_scoreboards(comments, head_sha)
     if not boards:
         return None
     completed = [b for b in boards if b[1].get("mode") != "init"]
-    candidates = completed or boards
+    sighted = [b for b in completed if not is_blind_approval(*b)]
+    if completed and not sighted:
+        return None
+    candidates = sighted or boards
 
     def order(item):
         index, (comment, meta) = item
@@ -155,6 +203,11 @@ def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_gua
         return {"review_safe": False, "merge": False,
                 "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
     latest = latest_current_scoreboard(comments, head_sha)
+    if latest is None and current_scoreboards(comments, head_sha):
+        return {"review_safe": False, "merge": False,
+                "reason": ("every completed scoreboard for the current head approved without "
+                           "inspecting the workspace; a re-review is needed"),
+                "head_sha": head_sha}
     if latest is None:
         return {"review_safe": False, "merge": False,
                 "reason": "no scoreboard comment for the current head; refusing",
@@ -172,9 +225,7 @@ def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_gua
                            f"{(meta.get('merge_base_sha') or 'unrecorded')[:12]}, but the merge "
                            f"base is now {(merge_base_sha or 'unknown')[:12]}; refusing"),
                 "head_sha": head_sha}
-    raw = meta.get("states")
-    if not isinstance(raw, dict) or not raw:
-        raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
+    raw = board_states(board, meta)
     states = {r: (raw.get(r) or "absent") for r in required}
     if not all(states[r] == "green" for r in required):
         return {"review_safe": False, "merge": False,

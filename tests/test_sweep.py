@@ -252,6 +252,73 @@ def test_old_review_markers_do_not_affect_completed_verdicts():
     assert decision["review_safe"] and decision["merge"]
 
 
+def _rows(summaries, verdict="approved"):
+    return "".join(f"\n| ✅ | [{r}](https://x/rubrics/{r}.md) | {verdict} | `codex/gpt-6.1-sol` | {s} |"
+                   for r, s in summaries.items())
+
+
+def _with_rows(boards, summaries, verdict="approved"):
+    for board in boards:
+        board["body"] = board["body"].replace("\n", _rows(summaries, verdict) + "\n", 1)
+    return boards
+
+
+def test_blind_rows_are_recognised_from_their_prose():
+    blind = [
+        "Repository searches were unavailable because the read-only command runner failed to initialize.",
+        "Filesystem inspection was unavailable because the command sandbox failed to start.",
+        "Repository searches were prevented by a sandbox initialization failure, so reuse is unverified.",
+        "No duplicate in TauCeti; Mathlib was not in the checkout, so it could not be searched.",
+        "Grep found no in-repo duplicate; the pinned Mathlib sources were absent from the checkout.",
+    ]
+    sighted = [
+        "No duplicate found: grep for `exists_le_mem` in TauCeti/ and mathlib/ finds no near-clone.",
+        "The smooth bundle construction's Mathlib source is credited in the PR description but missing "
+        "from the code.",
+        "The proof could not be shortened further without losing readability.",
+    ]
+    for s in blind:
+        assert mfs.blind_rubrics(_rows({"reuse": s})) == {"reuse"}, s
+    for s in sighted:
+        assert mfs.blind_rubrics(_rows({"reuse": s})) == set(), s
+
+
+def test_blind_approval_is_not_a_verdict():
+    head = "deadbee"
+    required = {"correctness", "reuse"}
+    green = {"correctness": "green", "reuse": "green"}
+    blocking = {"correctness": "green", "reuse": "blocking_request"}
+    diff = {"TauCeti/Foo.lean"}
+    blind = {"reuse": "Repository searches were unavailable because the command sandbox failed to start."}
+
+    def decide(comments):
+        return mfs.decide_from_comments(comments, head, required, diff, "SUCCESS", "",
+                                        scope="SUCCESS", merge_base_sha=MB)
+
+    # Alone, a blind approval leaves the PR unreviewed rather than mergeable.
+    only_blind = _with_rows(_scoreboard(head, green), blind)
+    decision = decide(only_blind)
+    assert not decision["review_safe"] and not decision["merge"]
+    assert "re-review" in decision["reason"]
+    assert mfs.latest_current_scoreboard(only_blind, head) is None
+
+    # It cannot supersede an earlier sighted blocker...
+    comments = (_scoreboard(head, blocking, "2026-06-26T00:00:00Z")
+                + _with_rows(_scoreboard(head, green, "2026-06-26T01:00:00Z"), blind))
+    assert not decide(comments)["review_safe"]
+
+    # ...and does not disturb an earlier sighted approval.
+    comments = (_scoreboard(head, green, "2026-06-26T00:00:00Z")
+                + _with_rows(_scoreboard(head, green, "2026-06-26T01:00:00Z"), blind))
+    assert decide(comments)["merge"]
+
+    # A blind board that blocks still blocks: the prose only ever withholds an approval.
+    comments = (_scoreboard(head, green, "2026-06-26T00:00:00Z")
+                + _with_rows(_scoreboard(head, blocking, "2026-06-26T01:00:00Z"), blind,
+                             verdict="changes requested"))
+    assert not decide(comments)["review_safe"]
+
+
 def test_review_safe_is_separate_from_automatic_path_policy():
     head = "deadbee"
     required = {"correctness", "reuse"}
