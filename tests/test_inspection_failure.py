@@ -45,9 +45,10 @@ def test_codex_records_outcomes_without_commands_or_output():
     # A successful grep may read sandbox diagnostics from the project under review.
     result = codex_result([command(True, "command sandbox failed to start")])
     assert reviewers.inspection_failure(result, {}) is None
-    # Diff-only answers and failed calls cannot masquerade as completed inspection.
+    # A diff-only review needs no extra calls. A failed ordinary command by itself
+    # also does not establish that required source access failed.
     for items in ([], [command(False)]):
-        assert reviewers.inspection_failure(codex_result(items), {}) == "no_successful_inspection"
+        assert reviewers.inspection_failure(codex_result(items), {}) is None
     # Count beyond the public trace limit; truncation must not turn working tools into an outage.
     result = codex_result([command(False)] * reviewers._MAX_TOOL_TRACE + [command()])
     assert result["tool_trace_meta"]["successful_calls"] == 1
@@ -93,7 +94,7 @@ def test_reported_gaps_withhold_any_verdict():
 
 def test_engine_aborts_without_plan_and_can_recover():
     for mode in ("commit", "manual", "reply"):
-        for failure_kind in ("sandbox_failed", "no_successful_inspection", "reported_gap"):
+        for failure_kind in ("sandbox_failed", "reported_gap"):
             d, rd, store = tb._workspace(["correctness", "reuse"])
             plan, sb = d / "plan.json", d / "scoreboard.md"
             # A stale plan (including Actions init) must not be posted by a later always() step.
@@ -107,8 +108,6 @@ def test_engine_aborts_without_plan_and_can_recover():
                 if failure_kind == "reported_gap":
                     result["text"] = result["text"].replace(
                         "says approve", "inspection was unavailable because the sandbox failed to start")
-                elif failure_kind == "no_successful_inspection":
-                    result["tool_trace_meta"] = {"total_calls": 3, "successful_calls": 0}
                 else:
                     result["inspection_error"] = failure_kind
                 return result
@@ -139,14 +138,43 @@ def test_engine_aborts_without_plan_and_can_recover():
                 assert ledger["days"][review.today()] == tb.COST
                 record = json.loads((store / "reviews/1/1/correctness.json").read_text())
                 assert record["verdict_obj"] is None
-                assert record["attempts"][0]["error_kind"] in (
-                    "sandbox_failed", "no_successful_inspection")
+                assert record["attempts"][0]["error_kind"] == "sandbox_failed"
                 # Repairing the tools re-runs the errored rubric and can publish normally.
                 stack.enter_context(patch.object(review, "run_claude", tb._fake_runner))
                 recovered = tb._run(store, rd, d / "diff.txt", mode="commit",
                                     rubrics=["correctness", "reuse"], extra=extra)
                 assert recovered["prs"]["1"]["state"]["correctness"]["verdict"] == "approve"
                 assert plan.exists() and sb.exists()
+
+
+def test_engine_accepts_approval_from_source_in_prompt_without_tool_calls():
+    for mode in ("commit", "manual", "reply"):
+        d, rd, store = tb._workspace(["documentation"])
+        plan, sb = d / "plan.json", d / "scoreboard.md"
+
+        def runner(prompt, cwd, model, env):
+            result = tb._fake_runner(prompt, cwd, model, env)
+            result.update(tool_trace=[], tool_trace_meta={
+                "total_calls": 0, "successful_calls": 0, "trace_truncated": False})
+            return result
+
+        extra = ["--post-plan-file", str(plan), "--scoreboard-file", str(sb)]
+        if mode == "reply":
+            extra += ["--reply-rubric", "documentation"]
+        with contextlib.ExitStack() as stack:
+            stack.callback(shutil.rmtree, d)
+            stack.enter_context(patch.object(review, "run_claude", runner))
+            stack.enter_context(patch.object(review, "reviewer_env", return_value=({}, None)))
+            stack.enter_context(patch.object(review, "sweep_rev_homes"))
+            ledger = tb._run(store, rd, d / "diff.txt", mode=mode,
+                             rubrics=["documentation"], extra=extra)
+            assert ledger["prs"]["1"]["state"]["documentation"]["verdict"] == "approve"
+            assert ledger["days"][review.today()] == tb.COST
+            assert plan.exists() and sb.exists()
+            record = json.loads((store / "reviews/1/1/documentation.json").read_text())
+            assert record["verdict_obj"]["verdict"] == "approve"
+            assert record["tool_trace_meta"]["total_calls"] == 0
+            assert "error_kind" not in record["attempts"][0]
 
 
 if __name__ == "__main__":

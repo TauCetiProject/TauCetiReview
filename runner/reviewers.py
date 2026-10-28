@@ -536,9 +536,11 @@ _INSPECTION_FAILURE = re.compile(
 def inspection_failure(res, verdict=None):
     """Fail closed on broken inspection, even when the CLI and model claim success.
 
-    Tool outcomes are authoritative; the model cannot override them with an approval. A
+    Explicit tool failures are authoritative; the model cannot override them with an approval. A
     self-reported inspection gap in the final summary is an additional reason to withhold
-    publication, never evidence that can grant approval. Do not scan quoted findings or diffs.
+    publication, never evidence that can grant approval. Tool counts alone are not failures:
+    the prompt already contains the diff, which may provide all the source a rubric needs.
+    Do not scan quoted findings or diffs.
     """
     if res.get("inspection_error"):
         return res["inspection_error"]
@@ -550,9 +552,6 @@ def inspection_failure(res, verdict=None):
             return "sandbox_failed"
         if _INSPECTION_FAILURE.search(summary):
             return "inspection_incomplete"
-        meta = res.get("tool_trace_meta") or {}
-        if meta.get("successful_calls") == 0:
-            return "no_successful_inspection"
     return None
 
 
