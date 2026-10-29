@@ -503,7 +503,7 @@ def codex_model_unavailable(res):
     model-specific); a matching message with no parsed status does. This is a NECESSARY, not sufficient,
     signal: run_one reconfirms on the same model and only persists the Sol->Terra downgrade once the
     fallback yields a verdict, so a transient or non-model rejection costs at most one extra attempt."""
-    if res.get("returncode", 0) == 0 and res.get("text"):
+    if res.get("returncode", 0) == 0 and res.get("text") and not res.get("is_error"):
         return False  # it produced an answer — not a model problem
     status = res.get("error_status")
     if isinstance(status, int) and status not in _CODEX_MODEL_ERR_STATUS:
@@ -570,6 +570,7 @@ def run_codex(prompt, cwd, model, env):
         elif t == "turn.completed":
             usage = ev.get("usage")
         elif t == "turn.failed":  # authoritative terminal failure — its payload carries the API status
+            out["is_error"] = True
             errors.append(ev)
             e = ev.get("error")
             if isinstance(e, dict) and isinstance(e.get("message"), str):
@@ -594,6 +595,7 @@ def run_codex(prompt, cwd, model, env):
         try:
             j = json.loads(payload)
         except (ValueError, TypeError):
+            out.setdefault("error_message", payload)
             continue
         if not isinstance(j, dict):
             continue
@@ -612,7 +614,7 @@ def run_codex(prompt, cwd, model, env):
             out["error_message"] = msg
         break  # first well-formed dict payload wins
     # Surface why codex produced no usable answer, so failures are diagnosable not silent.
-    if r.returncode != 0 or not text:
+    if r.returncode != 0 or not text or out.get("is_error"):
         out.update(event_types=events, error_events=errors[:5], raw_stdout=r.stdout[-3000:])
     if usage:
         pin, pout, pcache, inherited = rates(model)

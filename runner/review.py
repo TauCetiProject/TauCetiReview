@@ -47,7 +47,7 @@ DEFAULT_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]")) or DEFAULT
 # raw_stdout joined these when the reviewer moved to stream-json: its tail is the last events of
 # the stream, and a tool_result block carries the file the reviewer just read. Kept in-process
 # for a local operator's diagnosis, never persisted.
-PRIVATE_KEYS = ("session_id", "raw_stderr", "raw_stdout", "error_message")
+PRIVATE_KEYS = ("session_id", "raw_stderr", "raw_stdout", "error_message", "error_events")
 
 
 def public_record(value):
@@ -115,12 +115,12 @@ def error_kind(res):
 
     Adapters put native CLI error messages in `error_message`. Model answers and
     command output are never inputs to failure classification."""
-    if res.get("error_status") == 429:
-        return "rate_limited"
     hay = f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}\n{res.get('error_message') or ''}"
     for kind, pattern in _ERROR_KINDS:
         if pattern.search(hay):
             return kind
+    if res.get("error_status") == 429:
+        return "rate_limited"
     if res.get("returncode"):
         return "unknown_error"
     return "no_verdict"  # the CLI exited 0 but emitted nothing this runner could parse

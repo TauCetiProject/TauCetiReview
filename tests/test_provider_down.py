@@ -46,10 +46,10 @@ def check(name, cond):
 
 
 def res(text="", stderr="", rc=1, is_error=None):
-    """A run result. rc=1 is what the observed provider failures actually carried; a legitimate
-    review that simply never emitted its marker exits 0 with is_error False."""
+    """Claude's native failure carries is_error=true, even with subtype=success."""
+    is_error = bool(rc) if is_error is None else is_error
     return {"returncode": rc, "text": "" if is_error else text,
-            "error_message": text if is_error or rc else "",
+            "error_message": text if is_error else "",
             "raw_stderr": stderr, "is_error": is_error}
 
 
@@ -89,6 +89,9 @@ def main():
           review.error_kind(res(text="You've hit your session limit", rc=0, is_error=True)) == "quota_exhausted")
     check("a codex structured status needs no model text",
           review.error_kind({"returncode": 0, "text": "429 rate limit", "error_status": 429}) == "rate_limited")
+    check("a native quota diagnosis remains more specific than HTTP 429",
+          review.error_kind({"returncode": 1, "error_status": 429,
+                             "error_message": "You've hit your session limit"}) == "quota_exhausted")
 
     # --- 2) transient kinds do NOT trip the breaker -------------------------------------------
     for kind in ("overloaded", "timed_out", "transport", "model_unavailable", "unknown_error", "no_verdict"):
