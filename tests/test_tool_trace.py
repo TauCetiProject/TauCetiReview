@@ -181,6 +181,24 @@ def main():
     body = src[src.index("    def has_verdict(r):"):src.index("    res = attempt()")]
     check("has_verdict rejects a CLI-reported failure", "_cli_reports_failure(r)" in body)
 
+    out = run([{**RESULT, "is_error": True, "result": "You've hit your session limit"}], ".")
+    check("a CLI error is separate from the model answer", out["text"] == "")
+    check("native provider failures still classify", review.error_kind(out) == "quota_exhausted")
+    check("native error messages stay private", "error_message" not in review.public_record(out))
+
+    command = {"type": "command_execution", "command": SECRET, "aggregated_output": SECRET,
+               "status": "failed", "exit_code": 1}
+    items = [command] * reviewers._MAX_TOOL_TRACE + [{**command, "status": "completed", "exit_code": 0}]
+    stream = "\n".join(json.dumps({"type": "item.completed", "item": item}) for item in items)
+    original_sh = reviewers.sh
+    reviewers.sh = lambda *a, **k: type("Response", (), {"returncode": 0, "stderr": "", "stdout": stream})
+    try:
+        out = reviewers.run_codex("prompt", ".", review.CODEX_MODEL, {})
+    finally:
+        reviewers.sh = original_sh
+    check("Codex command strings and output stay private", SECRET not in json.dumps(review.public_record(out)))
+    check("Codex trace counts success beyond its display limit", out["tool_trace_meta"]["successful_calls"] == 1)
+
     print("FAIL" if fails else "PASS")
     return 1 if fails else 0
 

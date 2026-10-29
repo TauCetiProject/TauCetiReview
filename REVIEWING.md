@@ -110,13 +110,11 @@ Add `--post` to publish. Useful flags:
    `approve` (this anti-forgery channel is kept even though you are trusted).
 5. Prints the scoreboard + threads, and with `--post`, publishes them via `gh` as you.
 
-If a reviewer's sandbox fails or its verdict summary reports incomplete source inspection,
-the round aborts before publication, even if
-the model says `approve`. No review scoreboard or finding threads are posted. Spend and an
-errored case file remain recorded; repair the local toolchain and retry. Claude and Codex
-tool outcomes are checked independently of the model's verdict.
-The prompt includes the PR diff, so a review may need no tool calls. Tool counts are recorded
-for diagnostics and do not determine whether a verdict is accepted.
+The reviewer's structured verdict supplies the review decision. Narrative summaries and
+tool output are never reinterpreted as approval or veto conditions. The prompt includes
+the PR diff, so a review may need no tool calls. Tool outcomes are recorded for diagnostics.
+An unsuccessful reviewer process or an unparseable verdict uses the ordinary retry path;
+provider outages retain the existing automatic provider selection and retry handling.
 
 Codex tool commands inherit no provider credentials or personal environment. The runner
 restores `PATH`, which the Linux sandbox helper also uses to find the system `bwrap`.

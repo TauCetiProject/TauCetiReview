@@ -25,7 +25,7 @@ from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL,
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge, read_paths
-from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, inspection_failure, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
+from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import (build_reactivation_block, carry_forward, normalize_finding_path, patch_digest,
                       pick_anchor, seed_stale_approvals, update_case_file)
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
@@ -47,7 +47,7 @@ DEFAULT_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]")) or DEFAULT
 # raw_stdout joined these when the reviewer moved to stream-json: its tail is the last events of
 # the stream, and a tool_result block carries the file the reviewer just read. Kept in-process
 # for a local operator's diagnosis, never persisted.
-PRIVATE_KEYS = ("session_id", "raw_stderr", "raw_stdout")
+PRIVATE_KEYS = ("session_id", "raw_stderr", "raw_stdout", "error_message", "error_events")
 
 
 def public_record(value):
@@ -103,15 +103,7 @@ _PROVIDER_DOWN_PHRASE = {
     "provider_unavailable": "the review provider is unavailable",
 }
 
-# The result text is the CLI's own diagnosis only when the CLI SAYS the run failed. Length is not a
-# trust boundary: `text` is model output, the diff being reviewed is untrusted, and a short review
-# that never emitted its marker ("the `/login` handler returns 401 on an expired token") would
-# otherwise read as an auth outage — which, downstream, refunds the round instead of ever charging a
-# PR whose review genuinely cannot complete. So require a structured failure signal first: claude's
-# own `is_error`, codex's parsed `error_status`/`error_message`, or a non-zero exit. The observed
-# failures all carry one ("Failed to authenticate. API Error: 401 OAuth access token has been
-# revoked." arrives with returncode 1), and a model that merely talks about a 401 while its CLI
-# reports success no longer can.
+# Native CLI failures remain distinct from the model's structured review verdict.
 def _cli_reports_failure(res):
     return bool(res.get("is_error")) or bool(res.get("returncode")) or res.get("error_status") is not None
 
@@ -121,38 +113,17 @@ def error_kind(res):
     produced no verdict"; this only classifies. It reads stderr but returns none of it, so the answer
     is safe to publish anywhere.
 
-    The result TEXT is read too, but only once the CLI has reported the run as failed. Claude Code in
-    -p mode puts a total provider failure in `result` with an empty stderr, so a stderr-only
-    classifier called every one of those `unknown_error` — which is how 639 quota and auth failures
-    were filed as reviews, and nine of them posted to a PR as blocking `error` rows."""
-    if res.get("inspection_error"):
-        return res["inspection_error"]
+    Adapters put native CLI error messages in `error_message`. Model answers and
+    command output are never inputs to failure classification."""
     hay = f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}\n{res.get('error_message') or ''}"
-    if _cli_reports_failure(res):
-        hay += f"\n{(res.get('text') or '').strip()}"
     for kind, pattern in _ERROR_KINDS:
         if pattern.search(hay):
             return kind
+    if res.get("error_status") == 429:
+        return "rate_limited"
     if res.get("returncode"):
         return "unknown_error"
     return "no_verdict"  # the CLI exited 0 but emitted nothing this runner could parse
-
-
-def abort_inspection_failure(ctx, rubric, kind):
-    """A broken local toolchain is not a review of the PR. Publish nothing."""
-    ctx.pr_state.pop("pending_publication_head_sha", None)
-    # A reused work directory may still contain an earlier publication plan. Remove it,
-    # including an Actions init plan, so even a separately invoked poster has nothing to send.
-    for name in ("scoreboard_file", "post_plan_file"):
-        value = getattr(ctx.a, name, None)
-        if value:
-            pathlib.Path(value).unlink(missing_ok=True)
-    (ctx.outdir / "scoreboard.md").unlink(missing_ok=True)
-    if not ctx.a.dry_run:
-        ctx.ledger.persist()
-    print(f"review aborted: {rubric} inspection failed ({kind}); "
-          "no review will be posted. Repair the reviewer toolchain and retry.", file=sys.stderr)
-    sys.exit(1)
 
 
 def abort_provider_down(ctx):
@@ -448,9 +419,6 @@ def run_rubric(ctx, rubric):
             r = fn(prompt, a.tool_cwd, model, env)
         finally:
             cleanup_rev_home(rev_home)   # throwaway HOME, one per attempt — don't accumulate
-        failure = inspection_failure(r, extract_verdict(r.get("text", ""), marker))
-        if failure:
-            r["inspection_error"] = failure
         # Keep each attempt's execution facts: the retry path returns only the last result, but the
         # first attempt's spend/usage/failure is provenance too. error_kind rides along because it is
         # the only field that says *why* an attempt failed: a total auth failure otherwise reads as
@@ -468,7 +436,7 @@ def run_rubric(ctx, rubric):
         # A run the CLI itself reports as failed is not a review, however well-formed its text looks:
         # a partial or injected result could carry a syntactically valid marker and object, and
         # accepting it would publish an outage or an injection as a verdict.
-        return (r["returncode"] == 0 and not _cli_reports_failure(r) and not r.get("inspection_error")
+        return (r["returncode"] == 0 and not _cli_reports_failure(r)
                 and extract_verdict(r.get("text", ""), marker) is not None)
 
     res = attempt()
@@ -481,16 +449,16 @@ def run_rubric(ctx, rubric):
     # a TRANSIENT server error in the same "model not supported" 400 an entitlement failure uses
     # (openai/codex#14190), so reconfirm on the same model before downgrading: a transient rejection
     # clears on the second try; a real unavailability repeats.
-    if (not res.get("inspection_error") and provider == "codex"
+    if (provider == "codex"
             and not ctx.codex_model_explicit and codex_model_unavailable(res)):
         res = attempt()  # reconfirm on the same model
         cost += res.get("cost_usd") or 0.0
-        if not res.get("inspection_error") and not has_verdict(res) and codex_model_unavailable(res):
+        if not has_verdict(res) and codex_model_unavailable(res):
             model = CODEX_FALLBACK_MODEL  # rejected twice → treat as persistent → try the fallback
             res = attempt()
             cost += res.get("cost_usd") or 0.0
             downgraded = True
-    elif not has_verdict(res) and not res.get("inspection_error"):
+    elif not has_verdict(res):
         res = attempt()  # the ordinary one retry (unchanged for every non-codex-downgrade case)
         cost += res.get("cost_usd") or 0.0  # count every attempt
     res["cost_usd"] = round(cost, 6)
@@ -601,8 +569,6 @@ def run_rubric(ctx, rubric):
     if not a.dry_run:
         ctx.ledger.persist()
     ctx.spent_today = spent_today
-    if res.get("inspection_error"):
-        abort_inspection_failure(ctx, rubric, res["inspection_error"])
     v = res["verdict_obj"] or {}
     print(f"[{rubric}] {provider}/{model} rc={res['returncode']} "
           f"verdict={v.get('verdict', 'PARSE_FAILED')} cost=${res.get('cost_usd') or 0:.4f} "

@@ -128,6 +128,12 @@ def test_run_codex_survives_malformed_payloads():
     out2 = _run_codex_with_stdout('{"type":"turn.failed","error":{"message":"[1,2,3]"}}\n')
     assert out2.get("error_status") is None
     assert not reviewers.codex_model_unavailable(out2)  # no status, no message -> not a model problem
+    # A native failure may carry plain text, independently of process exit or model prose.
+    out3 = _run_codex_with_stdout(
+        '{"type":"turn.failed","error":{"message":"model_not_found for this account"}}\n',
+        returncode=0)
+    assert out3["is_error"] and reviewers.codex_model_unavailable(out3)
+    assert review._cli_reports_failure(out3)
 
 
 # ----- codex_model_unavailable: needs BOTH a model message AND a non-transient status -----
@@ -153,6 +159,8 @@ def test_no_status_falls_back_to_message_only():
     assert reviewers.codex_model_unavailable(
         {"returncode": 1, "raw_stderr": "error: model_not_found for gpt-5.6-sol"})
     assert not reviewers.codex_model_unavailable({"returncode": 0, "text": "APPROVE — looks correct."})
+    assert not reviewers.codex_model_unavailable({
+        "returncode": 1, "raw_stdout": REAL_UNAVAILABLE_STDOUT}), "unparsed output is not a CLI diagnosis"
     for msg in ("connection reset by peer", "request timed out after 600s", "stream disconnected"):
         assert not reviewers.codex_model_unavailable({"returncode": 1, "raw_stderr": msg}), msg
 
