@@ -100,9 +100,10 @@ def test_private_keys_cover_every_raw_provider_field():
     # raw_stdout joined the set when the claude reviewer moved to stream-json: its tail is the last
     # events of the stream, and a tool_result block carries the file the reviewer just read. Both
     # persisted sinks are public, so no raw provider stream may reach either.
-    assert set(review.PRIVATE_KEYS) == {"session_id", "raw_stderr", "raw_stdout"}
+    assert set(review.PRIVATE_KEYS) == {"session_id", "raw_stderr", "raw_stdout", "error_message"}
     published = review.public_record(
-        {"raw_stdout": "ANTHROPIC_API_KEY=sk-ant-SENTINEL", "attempts": [{"raw_stdout": "sk-ant-SENTINEL"}]}
+        {"raw_stdout": "ANTHROPIC_API_KEY=sk-ant-SENTINEL",
+         "attempts": [{"error_message": "sk-ant-SENTINEL"}]}
     )
     assert "SENTINEL" not in json.dumps(published)
 

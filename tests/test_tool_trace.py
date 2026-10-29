@@ -181,6 +181,11 @@ def main():
     body = src[src.index("    def has_verdict(r):"):src.index("    res = attempt()")]
     check("has_verdict rejects a CLI-reported failure", "_cli_reports_failure(r)" in body)
 
+    out = run([{**RESULT, "is_error": True, "result": "You've hit your session limit"}], ".")
+    check("a CLI error is separate from the model answer", out["text"] == "")
+    check("native provider failures still classify", review.error_kind(out) == "quota_exhausted")
+    check("native error messages stay private", "error_message" not in review.public_record(out))
+
     print("FAIL" if fails else "PASS")
     return 1 if fails else 0
 

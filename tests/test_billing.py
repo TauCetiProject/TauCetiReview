@@ -230,6 +230,28 @@ def main():
     check("error verdict retained", led["prs"]["1"]["state"]["correctness"]["verdict"], "error")
     check("post plan signals review error", json.loads(plan_path.read_text())["review_error"], True)
 
+    # --- I: model prose is not a second, implicit review verdict.
+    print("I. summary caveats preserve the structured verdict without extra attempts")
+    original_runner = review.run_claude
+
+    def caveated_runner(prompt, cwd, model, env):
+        result = _fake_runner(prompt, cwd, model, env)
+        result["text"] = result["text"].replace(
+            f"correctness says {_VERDICTS['correctness']}",
+            "Filesystem inspection was unavailable because the command sandbox failed to start.")
+        return result
+
+    try:
+        review.run_claude = caveated_runner
+        for verdict in ("approve", "request_changes", "block"):
+            _VERDICTS.clear(); _VERDICTS.update(correctness=verdict)
+            d, rd, store = _workspace(["correctness"])
+            led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"])
+            check("structured verdict retained", led["prs"]["1"]["state"]["correctness"]["verdict"], verdict)
+            check("one attempt", round(led["days"][today()], 6), round(COST, 6))
+    finally:
+        review.run_claude = original_runner
+
     print(f"\n{'PASS' if not fails else 'FAIL'}: {fails} failure(s)")
     return 1 if fails else 0
 

@@ -48,7 +48,9 @@ def check(name, cond):
 def res(text="", stderr="", rc=1, is_error=None):
     """A run result. rc=1 is what the observed provider failures actually carried; a legitimate
     review that simply never emitted its marker exits 0 with is_error False."""
-    return {"returncode": rc, "text": text, "raw_stderr": stderr, "is_error": is_error}
+    return {"returncode": rc, "text": "" if is_error else text,
+            "error_message": text if is_error or rc else "",
+            "raw_stderr": stderr, "is_error": is_error}
 
 
 def main():
@@ -70,11 +72,10 @@ def main():
           == "not_authenticated")
     check("an unclassifiable failure is unknown_error", review.error_kind(res(text="???")) == "unknown_error")
     check("a clean exit with no verdict is no_verdict", review.error_kind(res(rc=0)) == "no_verdict")
+    check("a failed process does not turn model prose into a provider diagnosis",
+          review.error_kind({"returncode": 1, "text": "You've hit your session limit"}) == "unknown_error")
 
-    # A REAL review that discusses a 401 or a rate limit is not an outage, however SHORT it is.
-    # Length is not a trust boundary: `text` is model output over an untrusted diff, so the gate is
-    # the CLI's own structured failure signal. These one-liners are exactly the shape that would
-    # otherwise be refunded for ever instead of eventually charging a PR that cannot be reviewed.
+    # Model prose is never a provider diagnosis, regardless of its length.
     for prose in (
         "the `/login` handler returns 401 on an expired token; the fix is wrong",
         "rate limit handling is wrong",
@@ -83,10 +84,10 @@ def main():
     ):
         check(f"a clean-exit review is not an outage: {prose[:38]!r}",
               review.error_kind(res(text=prose, rc=0, is_error=False)) == "no_verdict")
-    # ...but the same words DO classify once the CLI reports the run as failed.
-    check("is_error promotes the text to a diagnosis",
+    # Native CLI diagnostics and status codes remain available independently.
+    check("is_error supplies a native CLI diagnosis",
           review.error_kind(res(text="You've hit your session limit", rc=0, is_error=True)) == "quota_exhausted")
-    check("a codex structured status promotes it too",
+    check("a codex structured status needs no model text",
           review.error_kind({"returncode": 0, "text": "429 rate limit", "error_status": 429}) == "rate_limited")
 
     # --- 2) transient kinds do NOT trip the breaker -------------------------------------------

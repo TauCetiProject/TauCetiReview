@@ -454,10 +454,12 @@ def run_claude(prompt, cwd, model, env):
         #
         # `subtype` is NOT that signal: an API failure arrives as is_error=true WITH
         # subtype="success" (observed). `api_error_status` is the field that names it.
-        out.update(text=d.get("result", ""), cost_usd=d.get("total_cost_usd"),
+        out.update(text="" if d.get("is_error") else d.get("result", ""), cost_usd=d.get("total_cost_usd"),
                    usage=d.get("usage"), session_id=d.get("session_id"),
                    is_error=d.get("is_error"), error_subtype=d.get("subtype"),
                    error_status=d.get("api_error_status"))
+        if d.get("is_error"):
+            out["error_message"] = d.get("result", "")
     except Exception as e:
         # NOT the raw stream. Under stream-json its tail is whatever events came last, which
         # includes tool_result blocks — the files the reviewer read. raw_stdout is stripped from
@@ -496,7 +498,7 @@ def codex_model_unavailable(res):
     """True when a run_codex result shows the requested model was rejected as unavailable/unentitled for
     this account, as opposed to a transient failure. Two conditions: (1) the failure NAMES a model-access
     problem — matched against the structured error message run_codex parsed (`error_message`), falling
-    back to the transcript only when none was parsed — and (2) any parsed HTTP status is a client
+    back to CLI stderr only when none was parsed — and (2) any parsed HTTP status is a client
     rejection (400/403/404), never a rate limit (429) or a 5xx. A status alone never qualifies (it isn't
     model-specific); a matching message with no parsed status does. This is a NECESSARY, not sufficient,
     signal: run_one reconfirms on the same model and only persists the Sol->Terra downgrade once the
@@ -507,52 +509,8 @@ def codex_model_unavailable(res):
     if isinstance(status, int) and status not in _CODEX_MODEL_ERR_STATUS:
         return False  # 429 / 5xx / other — a transient failure, never a model problem
     msg = res.get("error_message")
-    hay = msg if isinstance(msg, str) else " ".join([
-        res.get("raw_stderr") or "",
-        res.get("raw_stdout") or "",
-        json.dumps(res.get("error_events") or []),
-    ])
+    hay = msg if isinstance(msg, str) else res.get("raw_stderr") or ""
     return bool(_CODEX_MODEL_MSG.search(hay))
-
-
-_SANDBOX_FAILURE = re.compile(
-    r"Sandbox\((?:LandlockRestrict|Seccomp|Seatbelt)\)"
-    r"|(?:sandbox|read.only (?:shell|command|tool)|command (?:runner|sandbox))"
-    r"[^.\n]{0,100}(?:failed|unavailable|could not|couldn't|prevented)"
-    r"|(?:failed|unable) to (?:start|initialize|initialise|create|set up)[^.\n]{0,60}sandbox",
-    re.I,
-)
-_INSPECTION_FAILURE = re.compile(
-    r"(?:inspection|repository searches|filesystem access|source access)"
-    r"[^.\n]{0,100}(?:unavailable|incomplete|could not|couldn't|prevented|failed)"
-    r"|\b(?:Mathlib|dependency sources?)(?: sources?| checkout)?\s+"
-    r"(?:(?:was|is|were|are)\s+)?(?:not in|not present in|missing from) (?:the|its|this) checkout\b"
-    r"|\b(?:Mathlib (?:sources?|checkout)|dependency sources?)\s+"
-    r"(?:(?:was|is|were|are)\s+)?(?:missing|absent|unavailable)\b",
-    re.I,
-)
-
-
-def inspection_failure(res, verdict=None):
-    """Fail closed on broken inspection, even when the CLI and model claim success.
-
-    Explicit tool failures are authoritative; the model cannot override them with an approval. A
-    self-reported inspection gap in the final summary is an additional reason to withhold
-    publication, never evidence that can grant approval. Tool counts alone are not failures:
-    the prompt already contains the diff, which may provide all the source a rubric needs.
-    Do not scan quoted findings or diffs.
-    """
-    if res.get("inspection_error"):
-        return res["inspection_error"]
-    if _SANDBOX_FAILURE.search(res.get("raw_stderr") or ""):
-        return "sandbox_failed"
-    if verdict is not None:
-        summary = verdict.get("summary") or ""
-        if _SANDBOX_FAILURE.search(summary):
-            return "sandbox_failed"
-        if _INSPECTION_FAILURE.search(summary):
-            return "inspection_incomplete"
-    return None
 
 
 def codex_shell_environment_args(env):
@@ -609,10 +567,6 @@ def run_codex(prompt, cwd, model, env):
             successful += int(ok)
             if len(trace) < _MAX_TOOL_TRACE:
                 trace.append({"tool": "command_execution", "ok": ok})
-            # Inspect the diagnostic in memory only. Commands and their output may contain
-            # private source or credentials; only the closed-vocabulary signal is persisted.
-            if not ok and _SANDBOX_FAILURE.search(item.get("aggregated_output") or ""):
-                out["inspection_error"] = "sandbox_failed"
         elif t == "turn.completed":
             usage = ev.get("usage")
         elif t == "turn.failed":  # authoritative terminal failure — its payload carries the API status

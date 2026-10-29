@@ -153,6 +153,8 @@ def test_no_status_falls_back_to_message_only():
     assert reviewers.codex_model_unavailable(
         {"returncode": 1, "raw_stderr": "error: model_not_found for gpt-5.6-sol"})
     assert not reviewers.codex_model_unavailable({"returncode": 0, "text": "APPROVE — looks correct."})
+    assert not reviewers.codex_model_unavailable({
+        "returncode": 1, "raw_stdout": REAL_UNAVAILABLE_STDOUT}), "unparsed output is not a CLI diagnosis"
     for msg in ("connection reset by peer", "request timed out after 600s", "stream disconnected"):
         assert not reviewers.codex_model_unavailable({"returncode": 1, "raw_stderr": msg}), msg
 
