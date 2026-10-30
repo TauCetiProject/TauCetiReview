@@ -112,6 +112,8 @@ def test_unresolved_merge_base_stops_before_the_diff_or_review():
         stack.enter_context(patch.object(cli.shutil, "which",
                                          side_effect=lambda n: "/bin/claude" if n == "claude" else None))
         sub = stack.enter_context(patch.object(cli.subprocess, "run"))
+        replies = stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value=None))
+        comments = stack.enter_context(patch.object(cli, "issue_comments", return_value=None))
         stack.enter_context(patch.object(cli, "resolve_repo_dir",
                                          return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
         stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
@@ -123,6 +125,7 @@ def test_unresolved_merge_base_stops_before_the_diff_or_review():
             assert e.code == 1
         else:
             raise AssertionError("CLI went on without a merge base")
+    replies.assert_called_once(); comments.assert_called_once()
     assert all(pathlib.Path(c.args[0][1]).name == "handoff.py" for c in sub.call_args_list)
     assert not any(len(c) > 1 and str(c[1]).endswith("review.py") for c in calls)
 

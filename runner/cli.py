@@ -503,24 +503,35 @@ def review_completed_before_preparation(repo_dir, repo, pr, head, store, board, 
     """Optional read-only decision from the selected engine, never a launch gate."""
     helper = repo_dir / "runner" / "handoff.py"
     began = time.monotonic()
+    unchanged, reason = False, "no-helper"
     try:
-        if not helper.is_file():
-            return False  # Older selected engines retain the ordinary path.
-        cmd = [sys.executable, str(helper), "--repo", repo, "--pr", str(pr),
-               "--head-sha", head, "--store", str(store), "--board", str(board),
-               "--replies", str(replies)]
-        if rubrics:
-            cmd += ["--rubrics", rubrics]
-        result = subprocess.run(cmd, text=True, capture_output=True, timeout=2)
-        expected = {"version": 1, "repo": repo, "pr": str(pr), "head_sha": head,
-                    "decision": "unchanged"}
-        response = json.loads(result.stdout) if result.returncode == 0 else None
-        unchanged = (isinstance(response, dict) and type(response.get("version")) is int
-                     and response == expected)
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
-        unchanged = False
+        if helper.is_file():
+            cmd = [sys.executable, str(helper), "--repo", repo, "--pr", str(pr),
+                   "--head-sha", head, "--store", str(store), "--board", str(board),
+                   "--replies", str(replies)]
+            if rubrics:
+                cmd += ["--rubrics", rubrics]
+            result = subprocess.run(cmd, text=True, capture_output=True, timeout=2)
+            expected = {"version": 1, "repo": repo, "pr": str(pr), "head_sha": head}
+            response = json.loads(result.stdout) if result.returncode == 0 else None
+            valid = (isinstance(response, dict) and type(response.get("version")) is int
+                     and all(response.get(k) == v for k, v in expected.items())
+                     and response.get("decision") in ("unchanged", "continue"))
+            unchanged = valid and response["decision"] == "unchanged"
+            reason = "malformed" if result.returncode == 0 else "exit"
+            if valid:
+                # Never print arbitrary text from an engine subprocess.
+                value = response.get("reason")
+                reason = value if value in ("completed", "needs-review", "config-unavailable",
+                                            "inputs-unavailable") else "engine"
+    except subprocess.TimeoutExpired:
+        reason = "timeout"
+    except (OSError, subprocess.SubprocessError):
+        reason = "unavailable"
+    except (ValueError, TypeError):
+        reason = "malformed"
     try:
-        print(f"review preparation check: {'unchanged' if unchanged else 'continue'} "
+        print(f"review preparation check: {'unchanged' if unchanged else 'continue'}:{reason} "
               f"({time.monotonic() - began:.3f}s)", file=sys.stderr)
     except OSError:
         pass  # Optional diagnostics cannot prevent ordinary work.

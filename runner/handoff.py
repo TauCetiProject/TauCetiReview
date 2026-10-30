@@ -109,7 +109,7 @@ def main():
     parser.add_argument("--replies", required=True)
     parser.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS))
     args = parser.parse_args()
-    decision = "continue"
+    decision, reason = "continue", "needs-review"
     try:
         if not _CONFIG_VALID:
             raise ValueError("project snapshot unavailable")
@@ -126,13 +126,13 @@ def main():
         replies = json.loads(pathlib.Path(args.replies).read_text())
         candidates = [r.strip() for r in args.rubrics.split(",") if r.strip()]
         if completed_before_preparation(board, args.head_sha, candidates, replies, pr_state):
-            decision = "unchanged"
+            decision, reason = "unchanged", "completed"
     except Exception:
         # No inference, network, writes or recovery policy lives in this probe.
         # The ordinary engine retains its existing treatment of bad local state.
-        pass
+        reason = "inputs-unavailable" if _CONFIG_VALID else "config-unavailable"
     print(json.dumps({"version": 1, "repo": args.repo, "pr": args.pr,
-                      "head_sha": args.head_sha, "decision": decision}))
+                      "head_sha": args.head_sha, "decision": decision, "reason": reason}))
 
 
 if __name__ == "__main__":

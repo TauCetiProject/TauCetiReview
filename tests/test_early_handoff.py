@@ -125,7 +125,7 @@ class ProbeTests(unittest.TestCase):
 
 class CLITests(unittest.TestCase):
     def invoke(self, *, flags=(), replies=None, value=None, collision=False, helper_error=None,
-               old_engine=False, ledger_text=None, expect_cancel=False):
+               old_engine=False, ledger_text=None, expect_cancel=False, auto_workspace=False, keep=False):
         with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
             d = pathlib.Path(tmp); work = d / 'work'; store = d / 'store'; store.mkdir()
             if ledger_text is not None:
@@ -176,8 +176,11 @@ class CLITests(unittest.TestCase):
                 raise AssertionError(('unexpected subprocess', cmd))
 
             argv = ['tauceti-review', '1', '--repo', REPO, '--reviewer', 'claude', '--no-archive',
-                    '--post', '--workdir', str(work), '--store', str(store), '--submitted-by', 'test',
+                    '--post', *([] if auto_workspace else ['--workdir', str(work)]),
+                    *(['--keep'] if keep else []), '--store', str(store), '--submitted-by', 'test',
                     '--expect-head', HEAD, *flags]
+            if auto_workspace:
+                stack.enter_context(patch.object(cli.tempfile, 'mkdtemp', return_value=str(work)))
             stack.enter_context(patch.object(sys, 'argv', argv))
             stack.enter_context(patch.dict(os.environ, {'TAUCETI_REVIEW_RESULT_FILE': str(d / 'result.json')}))
             stack.enter_context(patch.object(cli, 'need'))
@@ -204,10 +207,17 @@ class CLITests(unittest.TestCase):
                 if not collision:
                     self.assertEqual(json.loads((d / 'result.json').read_text()),
                                      {'head_sha': HEAD, 'changed': False})
+            if auto_workspace:
+                self.assertEqual(work.exists(), keep)
             return events
 
     def test_completed_cli_omits_expensive_work(self):
         self.assertEqual(self.invoke(replies={}), ['head', 'claim', 'replies', 'board', 'probe'])
+
+    def test_unchanged_owned_workspace_cleanup_and_keep(self):
+        for keep in (False, True):
+            events = self.invoke(replies={}, auto_workspace=True, keep=keep)
+            self.assertNotIn('clone', events)
 
     def test_collision_omits_history_and_probe(self):
         self.assertEqual(self.invoke(collision=True), ['head', 'claim'])
@@ -227,7 +237,7 @@ class CLITests(unittest.TestCase):
 
     def test_nonzero_probe_and_failed_diagnostics_do_not_change_decision(self):
         expected = json.dumps({'version': 1, 'repo': REPO, 'pr': '1', 'head_sha': HEAD,
-                               'decision': 'unchanged'})
+                               'decision': 'unchanged', 'future_optional_field': True})
         args = (ROOT, REPO, 1, HEAD, ROOT, ROOT / 'board', ROOT / 'replies', '')
         with patch.object(cli.subprocess, 'run', return_value=types.SimpleNamespace(
                 returncode=1, stdout=expected)):
@@ -245,8 +255,9 @@ class CLITests(unittest.TestCase):
                 ').write_text(str(os.getpid()))\ntime.sleep(30)\n')
             self.assertFalse(cli.review_completed_before_preparation(
                 d, REPO, 1, HEAD, d, d / 'board', d / 'replies', ''))
-            pid = int(pid_file.read_text())
-            with self.assertRaises(ProcessLookupError): os.kill(pid, 0)
+            if pid_file.exists():  # A loaded runner may kill the child before its first instruction.
+                pid = int(pid_file.read_text())
+                with self.assertRaises(ProcessLookupError): os.kill(pid, 0)
 
     def test_bad_optional_probe_cannot_block_work_or_swallow_cancellation(self):
         for failure in ('garbage', '{}', json.dumps({'version': True, 'repo': REPO, 'pr': '1', 'head_sha': HEAD, 'decision': 'unchanged'}), json.dumps({'version': 1, 'repo': REPO, 'pr': '1',
