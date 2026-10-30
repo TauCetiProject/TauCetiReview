@@ -148,6 +148,7 @@ jobs:
           echo "fetched $(wc -l < comments.json) comment(s) for #$PR"
 
       - name: Compute queue decision from the review comments (no dispatch, no spend)
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
           # Review-safe iff the newest completed current-head scoreboard has every required rubric
