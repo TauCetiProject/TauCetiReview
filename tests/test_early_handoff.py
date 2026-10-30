@@ -260,7 +260,8 @@ class CLITests(unittest.TestCase):
                 with self.assertRaises(ProcessLookupError): os.kill(pid, 0)
 
     def test_bad_optional_probe_cannot_block_work_or_swallow_cancellation(self):
-        for failure in ('garbage', '{}', json.dumps({'version': True, 'repo': REPO, 'pr': '1', 'head_sha': HEAD, 'decision': 'unchanged'}), json.dumps({'version': 1, 'repo': REPO, 'pr': '1',
+        for failure in ('garbage', '{}', '[' * 2000 + ']' * 2000,
+                        json.dumps({'version': True, 'repo': REPO, 'pr': '1', 'head_sha': HEAD, 'decision': 'unchanged'}), json.dumps({'version': 1, 'repo': REPO, 'pr': '1',
                         'head_sha': 'wrong', 'decision': 'unchanged'}), OSError('no helper'),
                         subprocess.TimeoutExpired('helper', 2)):
             self.assertIn('engine', self.invoke(replies={}, helper_error=failure))

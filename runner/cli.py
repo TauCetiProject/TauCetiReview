@@ -528,7 +528,7 @@ def review_completed_before_preparation(repo_dir, repo, pr, head, store, board, 
         reason = "timeout"
     except (OSError, subprocess.SubprocessError):
         reason = "unavailable"
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         reason = "malformed"
     try:
         print(f"review preparation check: {'unchanged' if unchanged else 'continue'}:{reason} "
