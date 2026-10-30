@@ -498,6 +498,35 @@ def coordinate(repo, pr, head, avail):
     return list(avail)
 
 
+
+def review_completed_before_preparation(repo_dir, repo, pr, head, store, board, replies, rubrics):
+    """Optional read-only decision from the selected engine, never a launch gate."""
+    helper = repo_dir / "runner" / "handoff.py"
+    began = time.monotonic()
+    try:
+        if not helper.is_file():
+            return False  # Older selected engines retain the ordinary path.
+        cmd = [sys.executable, str(helper), "--repo", repo, "--pr", str(pr),
+               "--head-sha", head, "--store", str(store), "--board", str(board),
+               "--replies", str(replies)]
+        if rubrics:
+            cmd += ["--rubrics", rubrics]
+        result = subprocess.run(cmd, text=True, capture_output=True, timeout=2)
+        expected = {"version": 1, "repo": repo, "pr": str(pr), "head_sha": head,
+                    "decision": "unchanged"}
+        response = json.loads(result.stdout) if result.returncode == 0 else None
+        unchanged = (isinstance(response, dict) and type(response.get("version")) is int
+                     and response == expected)
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        unchanged = False
+    try:
+        print(f"review preparation check: {'unchanged' if unchanged else 'continue'} "
+              f"({time.monotonic() - began:.3f}s)", file=sys.stderr)
+    except OSError:
+        pass  # Optional diagnostics cannot prevent ordinary work.
+    return unchanged
+
+
 def main():
     ap = argparse.ArgumentParser(
         prog="tauceti-review",
@@ -705,6 +734,54 @@ def main():
         providers = ",".join(avail)
         print(f"reviewers (after de-contention): {providers}", file=sys.stderr)
 
+    # The store (ledger of scoreboard/thread comment ids + per-rubric verdicts) is PERSISTENT and
+    # lives outside the throwaway workspace, so a re-review edits the same scoreboard and threads in
+    # place instead of posting duplicates, and --mode commit can re-run only unresolved rubrics.
+    if a.shadow:
+        # Scratch store, always: a shadow arm must never read or write production review state
+        # (case files, staleness, comment ids). review.py refuses a production-looking store too.
+        store = work / "store"
+    elif a.store:
+        store = pathlib.Path(a.store)
+    elif a.fresh:
+        store = work / "store"
+    else:
+        store = CACHE_DIR / "store" / a.repo.replace("/", "__")
+    store.mkdir(parents=True, exist_ok=True)
+    print(f"store: {store}{'  (scratch: shadow)' if a.shadow else '  (fresh)' if a.fresh else ''}",
+          file=sys.stderr)
+
+    # Read the author's replies on the rubric threads from GitHub and pass them to the engine, so a
+    # re-review audits the contest (e.g. a push-back on a finding) instead of re-judging the diff
+    # blind. This is the local equivalent of CI's reply-trigger flow.
+    replies = fetch_thread_replies(a.repo, a.pr)
+    replies_path = work / "replies.json"
+    if replies is not None:
+        replies_path.write_text(json.dumps(replies))
+    else:
+        replies_path.unlink(missing_ok=True)
+    # Another reviewer's newest scoreboard, whose approvals the engine seeds as stale (♻️) where this
+    # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
+    prior_board = None
+    if a.mode == "commit" and not (a.fresh or a.shadow):
+        prior_board = latest_scoreboard(issue_comments(a.repo, a.pr) or [])
+    prior_board_path = work / "prior_scoreboard.json"
+    prior_board_path.write_text(json.dumps(prior_board or {}))
+    if replies:
+        print("author replies on threads: "
+              + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
+
+    if (a.mode == "commit" and not (a.fresh or a.shadow)
+            and review_completed_before_preparation(repo_dir, a.repo, a.pr, head, store,
+                                                    prior_board_path, replies_path, a.rubrics)):
+        print("Review unchanged before preparation: already published; selecting other work.",
+              file=sys.stderr)
+        if a.post:
+            write_review_result(head, False)
+        if not a.keep and not a.workdir:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
+
     # The diff of exactly `head`, built with git by the same helper the workflows run (`gh pr diff`
     # refuses PRs touching more than 300 files), as raw bytes: the engine digests this file
     # (casefile.patch_digest) to decide whether an approval carries to a new head, so every path
@@ -774,43 +851,6 @@ def main():
         else:
             print("note: no mathlib rev in lake-manifest.json; skipping Mathlib source.",
                   file=sys.stderr)
-
-    # The store (ledger of scoreboard/thread comment ids + per-rubric verdicts) is PERSISTENT and
-    # lives outside the throwaway workspace, so a re-review edits the same scoreboard and threads in
-    # place instead of posting duplicates, and --mode commit can re-run only unresolved rubrics.
-    if a.shadow:
-        # Scratch store, always: a shadow arm must never read or write production review state
-        # (case files, staleness, comment ids). review.py refuses a production-looking store too.
-        store = work / "store"
-    elif a.store:
-        store = pathlib.Path(a.store)
-    elif a.fresh:
-        store = work / "store"
-    else:
-        store = CACHE_DIR / "store" / a.repo.replace("/", "__")
-    store.mkdir(parents=True, exist_ok=True)
-    print(f"store: {store}{'  (scratch: shadow)' if a.shadow else '  (fresh)' if a.fresh else ''}",
-          file=sys.stderr)
-
-    # Read the author's replies on the rubric threads from GitHub and pass them to the engine, so a
-    # re-review audits the contest (e.g. a push-back on a finding) instead of re-judging the diff
-    # blind. This is the local equivalent of CI's reply-trigger flow.
-    replies = fetch_thread_replies(a.repo, a.pr)
-    replies_path = work / "replies.json"
-    if replies is not None:
-        replies_path.write_text(json.dumps(replies))
-    else:
-        replies_path.unlink(missing_ok=True)
-    # Another reviewer's newest scoreboard, whose approvals the engine seeds as stale (♻️) where this
-    # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
-    prior_board = None
-    if a.mode == "commit" and not (a.fresh or a.shadow):
-        prior_board = latest_scoreboard(issue_comments(a.repo, a.pr) or [])
-    prior_board_path = work / "prior_scoreboard.json"
-    prior_board_path.write_text(json.dumps(prior_board or {}))
-    if replies:
-        print("author replies on threads: "
-              + ", ".join(f"{k}×{len(v)}" for k, v in replies.items()), file=sys.stderr)
 
     rubric_dir = repo_dir / "rubrics"
     rubric_repo = os.environ.get("TAUCETI_RUBRICS_REPO", REVIEW_REPO)

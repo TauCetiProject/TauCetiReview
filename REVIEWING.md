@@ -77,6 +77,15 @@ tauceti-review 42 --reviewer deepseek   # use DeepSeek via OpenRouter + the `pi`
 tauceti-review 42 --no-mathlib          # skip the Mathlib clone (faster; weaker reuse checks)
 ```
 
+In normal commit mode, a completed review at this head with no unhandled author
+contest or local publication repair returns unchanged before preparing the source,
+roadmap, and Mathlib checkouts. The selected engine checks the existing scoreboard,
+replies, and local ledger after peer coordination. An older engine, unavailable
+evidence, or a failed optional check continues through ordinary review; it never
+waits for shared-history hydration. Fresh, manual, and shadow reviews keep their
+existing behaviour. The early check has a two-second local execution budget and
+makes no network requests of its own.
+
 It **defaults to a dry run**: it prints the scoreboard and each rubric's thread and posts nothing.
 Add `--post` to publish. Useful flags:
 

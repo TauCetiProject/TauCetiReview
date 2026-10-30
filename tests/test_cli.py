@@ -123,7 +123,7 @@ def test_unresolved_merge_base_stops_before_the_diff_or_review():
             assert e.code == 1
         else:
             raise AssertionError("CLI went on without a merge base")
-    sub.assert_not_called()                     # no pr_diff run
+    assert all(pathlib.Path(c.args[0][1]).name == "handoff.py" for c in sub.call_args_list)
     assert not any(len(c) > 1 and str(c[1]).endswith("review.py") for c in calls)
 
 def test_fable_review_preserves_exact_model_and_reported_cost():
