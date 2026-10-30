@@ -79,6 +79,19 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(self.probe(env={'TAUCETI_CONF': 'https://invalid.test/project.toml',
                                         'TAUCETI_CONF_SNAPSHOT': '', 'TAUCETI_CONF_SOURCE': ''}), 'continue')
 
+    def test_existing_project_snapshot_supplies_engine_rubrics_without_refresh(self):
+        from tauceti_tools.scaffold import initial_configuration
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = pathlib.Path(tmp) / 'project.toml'
+            text = initial_configuration(REPO, 'human') + '\n[review]\nrubrics=["custom"]\n'
+            snapshot.write_text(text)
+            env = {'TAUCETI_CONF': 'https://invalid.test/project.toml',
+                   'TAUCETI_CONF_SOURCE': 'https://invalid.test/project.toml',
+                   'TAUCETI_CONF_SNAPSHOT': str(snapshot), 'TAUCETI_RUBRICS': '["wrong"]'}
+            self.assertEqual(self.probe(value={'head_sha': HEAD, 'states': {'custom': 'green'}},
+                                        env=env), 'unchanged')
+            self.assertEqual(snapshot.read_text(), text)
+
     def test_local_publication_obligations_and_carry_forward_are_not_skipped(self):
         for state in ({'pending_publication_head_sha': HEAD},
                       {'state': {'reuse': {'verdict': 'request_changes', 'reviewed_sha': HEAD}}},
