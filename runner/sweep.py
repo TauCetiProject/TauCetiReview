@@ -49,6 +49,8 @@ import subprocess
 import sys
 import hashlib
 import itertools
+import pathlib
+import time
 
 import backend
 import api_budget
@@ -59,6 +61,7 @@ from review import DEFAULT_RUBRICS
 REPO = os.environ.get("REPO", "")
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 FOCUSED = os.environ.get("FOCUSED") == "1"
+_sweep_progress = {}
 # How many times the queue may evict the SAME head before the sweep stops re-enqueuing and escalates to
 # update-branch. 0 prior evictions => first re-enqueue; the queue rebuild is the real test. The default
 # (2) gives a transient eviction one more cheap retry before paying for an update-branch + re-review.
@@ -572,6 +575,35 @@ def open_prs():
     return [{**p, "isDraft": p["draft"]} for page in pages for p in page]
 
 
+def read_sweep_progress():
+    path = os.environ.get("SWEEP_PROGRESS_FILE")
+    if path:
+        try:
+            data = json.loads(pathlib.Path(path).read_text())
+            if isinstance(data, dict):
+                return data
+        except (OSError, ValueError):
+            pass
+    return {}
+
+
+def remember_sweep_attempt(pr):
+    path = os.environ.get("SWEEP_PROGRESS_FILE")
+    if not path or DRY_RUN:
+        return
+    _sweep_progress[str(pr["number"])] = {
+        "head": (pr.get("head") or {}).get("sha"), "at": time.time()}
+    try:
+        target = pathlib.Path(path)
+        pending = target.with_suffix(".tmp")
+        pending.write_text(json.dumps(_sweep_progress))
+        pending.replace(target)
+    except OSError:
+        # Scheduling hints never authorize a merge or gate publication. Losing
+        # the cache can repeat reads, but cannot stop this run from proceeding.
+        print("merge-sweep: progress checkpoint unavailable; continuing", file=sys.stderr)
+
+
 def candidates(prs, queue_prs, bors_prs, *, admit=True):
     """Labels select work, never authorize it. Existing approvals go first, then alternate
     with labelled PRs: a bounded run covers far fewer PRs than a busy queue holds, so the queue
@@ -581,6 +613,9 @@ def candidates(prs, queue_prs, bors_prs, *, admit=True):
     Hourly background ordering changes so a bounded run does not always strand the
     same old PRs. Both main queues are inspected under either backend selection.
     """
+    global _sweep_progress
+    opened = {str(p["number"]) for p in prs}
+    _sweep_progress = {k: v for k, v in read_sweep_progress().items() if k in opened}
     active = set(queue_prs) | set(bors_prs)
     priority, hinted, background = [], [], []
     for p in prs:
@@ -601,6 +636,17 @@ def candidates(prs, queue_prs, bors_prs, *, admit=True):
     for group in (priority, hinted):
         if group:
             group.sort(key=lambda p: hashlib.sha256(f"{slot}:{p['number']}".encode()).digest())
+    if os.environ.get("SWEEP_PROGRESS_FILE"):
+        def last_attempt(pr):
+            previous = _sweep_progress.get(str(pr["number"]))
+            if not isinstance(previous, dict) or previous.get("head") != (pr.get("head") or {}).get("sha"):
+                return 0
+            stamp = previous.get("at")
+            return stamp if isinstance(stamp, (int, float)) else 0
+        # Resume unfinished coverage across hosted jobs. A changed head is new
+        # work; an attempted PR moves behind untouched peers in its own tier.
+        for group in (priority, hinted, background):
+            group.sort(key=lambda p: (last_attempt(p), p["number"]))
     # With admission paused, spend the bounded run on existing approvals first.
     # Published eligibility describes the reviewed head independently of the
     # backend; live backend/drain guards still decide whether it can be admitted.
@@ -690,6 +736,8 @@ def sweep_bors(prs, admit=True):
             print(f"#{n}: bors reconciliation failed: {e}", file=sys.stderr)
             api_budget.check_result(False)
             failures += 1
+        finally:
+            remember_sweep_attempt(p)
     backend.log(backend="bors", candidates=len(prs), eligible=eligible, dry_run=DRY_RUN)
     return 1 if failures else 0
 
@@ -722,6 +770,8 @@ def sweep_direct(prs):
             print(f"#{n}: direct merge failed ({e})", file=sys.stderr)
             api_budget.check_result(False)
             failures += 1
+        finally:
+            remember_sweep_attempt(p)
     return 1 if failures else 0
 
 
@@ -875,6 +925,8 @@ def main():
         except (RuntimeError, KeyError, IndexError) as e:
             print(f"#{n}: state fetch failed ({e}); skipping this round", file=sys.stderr)
             continue
+        finally:
+            remember_sweep_attempt(p)
         action, reason = decide_action(merge_ok=True, in_queue=False, evictions_at_head=evicted,
                                        behind=behind)
         # Re-read the head and the merge base right before acting: if a push, a retarget or a base

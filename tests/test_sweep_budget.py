@@ -4,6 +4,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -92,6 +93,25 @@ class SweepBudgetTests(unittest.TestCase):
         self.assertEqual(len(order), 64)
         self.assertLessEqual(order[0], 62)
         self.assertEqual(set(order[1:4:2]), {69, 70})
+
+    def test_successive_bounded_jobs_resume_untouched_prs_and_prioritize_changed_heads(self):
+        prs = [{'number': n, 'head': {'sha': 'old'}, 'isDraft': False,
+                'labels': [{'name': 'ready-to-merge'}]} for n in range(1, 9)]
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict('os.environ', SWEEP_PROGRESS_FILE=str(pathlib.Path(directory) / 'progress.json')), \
+                patch.object(sweep, 'FOCUSED', True), patch.object(sweep, 'DRY_RUN', False):
+            first = sweep.candidates(prs, {1, 2, 3, 4}, set())
+            self.assertEqual([p['number'] for p in first[:4]], [1, 5, 2, 6])
+            for pr in first[:4]:
+                sweep.remember_sweep_attempt(pr)
+
+            # Read the checkpoint as a new hosted job would. The next bounded
+            # run covers unvisited members of both tiers, with no larger budget.
+            second = sweep.candidates(prs, {1, 2, 3, 4}, set())
+            self.assertEqual([p['number'] for p in second[:4]], [3, 7, 4, 8])
+
+            prs[0]['head']['sha'] = 'new'
+            self.assertEqual(sweep.candidates(prs, {1, 2, 3, 4}, set())[0]['number'], 1)
 
     def test_large_queue_reaches_admission_and_withdrawal_within_focused_budget(self):
         # Exercise the actual queue-path reader and candidate loop with more

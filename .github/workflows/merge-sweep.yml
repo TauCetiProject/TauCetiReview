@@ -113,10 +113,29 @@ jobs:
         env:
           INPUT_PERMISSION-ACTIONS-VARIABLES: read
 
+      # This cache only orders observations. An outage or malformed checkpoint
+      # must never prevent the shared policy from publishing current decisions.
+      - name: Restore sweep progress
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/tauceti-merge-sweep-progress.json
+          key: merge-sweep-progress-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: merge-sweep-progress-v1-${{ github.repository_id }}-
+
       - name: Re-drive evicted green PRs
         env:
           GH_TOKEN: ${{ steps.merge_token.outputs.token }}
           REPO: ${{ github.repository }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           FOCUSED: ${{ inputs.focused && '1' || '' }}
+          SWEEP_PROGRESS_FILE: ${{ runner.temp }}/tauceti-merge-sweep-progress.json
         run: python3 runner/sweep.py
+
+      - name: Save sweep progress
+        if: always() && !inputs.dry_run
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/tauceti-merge-sweep-progress.json
+          key: merge-sweep-progress-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
