@@ -118,6 +118,7 @@ jobs:
       - name: Restore sweep progress
         uses: actions/cache/restore@v4
         continue-on-error: true
+        timeout-minutes: 1
         with:
           path: ${{ runner.temp }}/tauceti-merge-sweep-progress.json
           key: merge-sweep-progress-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -136,6 +137,7 @@ jobs:
         if: always() && !inputs.dry_run
         uses: actions/cache/save@v4
         continue-on-error: true
+        timeout-minutes: 1
         with:
           path: ${{ runner.temp }}/tauceti-merge-sweep-progress.json
           key: merge-sweep-progress-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
