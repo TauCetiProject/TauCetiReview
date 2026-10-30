@@ -582,7 +582,7 @@ def read_sweep_progress():
             data = json.loads(pathlib.Path(path).read_text())
             if isinstance(data, dict):
                 return data
-        except (OSError, ValueError):
+        except Exception:
             pass
     return {}
 
@@ -598,7 +598,7 @@ def remember_sweep_attempt(pr):
         pending = target.with_suffix(".tmp")
         pending.write_text(json.dumps(_sweep_progress))
         pending.replace(target)
-    except OSError:
+    except Exception:
         # Scheduling hints never authorize a merge or gate publication. Losing
         # the cache can repeat reads, but cannot stop this run from proceeding.
         print("merge-sweep: progress checkpoint unavailable; continuing", file=sys.stderr)
@@ -646,7 +646,7 @@ def candidates(prs, queue_prs, bors_prs, *, admit=True):
         # Resume unfinished coverage across hosted jobs. A changed head is new
         # work; an attempted PR moves behind untouched peers in its own tier.
         for group in (priority, hinted, background):
-            group.sort(key=lambda p: (last_attempt(p), p["number"]))
+            group.sort(key=last_attempt)
     # With admission paused, spend the bounded run on existing approvals first.
     # Published eligibility describes the reviewed head independently of the
     # backend; live backend/drain guards still decide whether it can be admitted.

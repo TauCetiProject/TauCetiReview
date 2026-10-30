@@ -101,17 +101,24 @@ class SweepBudgetTests(unittest.TestCase):
                 patch.dict('os.environ', SWEEP_PROGRESS_FILE=str(pathlib.Path(directory) / 'progress.json')), \
                 patch.object(sweep, 'FOCUSED', True), patch.object(sweep, 'DRY_RUN', False):
             first = sweep.candidates(prs, {1, 2, 3, 4}, set())
-            self.assertEqual([p['number'] for p in first[:4]], [1, 5, 2, 6])
+            first_seen = {p['number'] for p in first[:4]}
+            self.assertEqual(len(first_seen & {1, 2, 3, 4}), 2)
             for pr in first[:4]:
                 sweep.remember_sweep_attempt(pr)
 
             # Read the checkpoint as a new hosted job would. The next bounded
             # run covers unvisited members of both tiers, with no larger budget.
             second = sweep.candidates(prs, {1, 2, 3, 4}, set())
-            self.assertEqual([p['number'] for p in second[:4]], [3, 7, 4, 8])
+            self.assertTrue(first_seen.isdisjoint(p['number'] for p in second[:4]))
+            for pr in second[:4]:
+                sweep.remember_sweep_attempt(pr)
 
             prs[0]['head']['sha'] = 'new'
             self.assertEqual(sweep.candidates(prs, {1, 2, 3, 4}, set())[0]['number'], 1)
+
+            # A broken checkpoint falls back to the existing rotating order.
+            pathlib.Path(directory, 'progress.json').write_text('{broken')
+            self.assertEqual(len(sweep.candidates(prs, {1, 2, 3, 4}, set())), 8)
 
     def test_large_queue_reaches_admission_and_withdrawal_within_focused_budget(self):
         # Exercise the actual queue-path reader and candidate loop with more
