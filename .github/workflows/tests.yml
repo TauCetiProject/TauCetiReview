@@ -29,6 +29,7 @@ jobs:
       - run: python tests/test_billing.py
       - run: python tests/test_unchanged_review.py
       - run: python tests/test_completed_handoff.py
+      - run: python tests/test_early_handoff.py
       - run: python tests/test_thread_states.py
       - run: python tests/test_patch_digest.py
       - run: python tests/test_seed_approvals.py

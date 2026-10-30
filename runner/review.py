@@ -19,6 +19,8 @@ import archive
 from dataclasses import dataclass, field
 
 from ledger import Ledger
+from handoff import (DEFAULT_RUBRICS, can_reuse_completed_review, has_unhandled_contest,
+                     thread_action_rubrics)
 from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, sum_usage, warn_unpriced
 # Re-exported for merge_from_scoreboard (changed_paths/decide_merge/DEFAULT_RUBRICS) and the price
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
@@ -30,14 +32,6 @@ from casefile import (build_reactivation_block, carry_forward, normalize_finding
                       pick_anchor, seed_stale_approvals, update_case_file)
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
 
-
-# Rubrics run in this order, and a `block` halts the round, so the block-capable integrity
-# angles go first, fail-fast style: ordered by observed block rate over cost (ledger data —
-# correctness and reuse block as often as scope but cost a third as much; attribution has
-# not blocked yet). The non-blocking style angles follow in their README order.
-DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
-                   "generality", "placement", "naming", "documentation", "proof-quality"]
-DEFAULT_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]")) or DEFAULT_RUBRICS
 
 # Fields that must never be written to a record this runner persists. BOTH sinks are public: the
 # archive record goes to TauCetiData, and `--store` is a checkout of this repo's `reviews` branch
@@ -215,56 +209,6 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
     except Exception as e:
         print(f"WARNING: archive round write failed: {e}", file=sys.stderr)
 
-
-def thread_action_rubrics(candidates, ran, state_map, head):
-    """Rubrics whose thread state must be reconciled by this invocation.
-
-    `ran` preserves the normal update/close behaviour for results produced now.  The other two
-    predicates are the crash-recovery path: an adverse case file without a root is legacy or was
-    interrupted before its first post, while `pending_thread_run_id` is the write-ahead marker set
-    before every new adverse result.  Infrastructure errors remain excluded by
-    posts_review_thread().  Candidate order keeps post plans deterministic.
-    """
-    ran = set(ran)
-    out = []
-    for rubric in candidates:
-        cf = state_map.get(rubric) or {}
-        adverse = posts_review_thread(state_of(cf, head))
-        missing_root = not (cf.get("thread") or {}).get("comment_id")
-        if rubric in ran or (adverse and (missing_root or cf.get("pending_thread_run_id"))):
-            out.append(rubric)
-    return out
-
-
-def can_reuse_completed_review(board, head, candidates, replies, pr_state):
-    """Published completion survives an empty worker store; local repairs still run."""
-    if (not board or board.get("mode") == "init" or board.get("head_sha") != head
-            or not candidates or not isinstance(replies, dict)):
-        return False
-    states = board.get("states") or {}
-    current = [states.get(r) for r in candidates]
-    allowed = {"green", "blocking_request", "blocking_block"}
-    if any(s in ("blocking_request", "blocking_block") for s in current):
-        allowed.add("stale")  # Approvals deferred while an adverse finding remains.
-    if "blocking_block" in current:
-        allowed.add("absent")  # A block halts the remaining rubric sweep.
-    if not all(isinstance(s, str) and s in allowed for s in current):
-        return False
-    for rubric_replies in replies.values():
-        for reply in rubric_replies:
-            if not isinstance(reply.get("id"), int):
-                return False
-    # A completed review at the new head supersedes this worker's older case
-    # files. Current-head findings and interrupted publication still need work.
-    state_map = {r: cf for r, cf in (pr_state.get("state") or {}).items()
-                 if cf.get("reviewed_sha") == head or cf.get("approved_sha") == head}
-    if (pr_state.get("pending_publication_head_sha") == head
-            or (state_map and pr_state.get("scoreboard_comment_id")
-                and not pr_state.get("published_head_sha"))
-            or any(is_unresolved(state_of(state_map.get(r), head)) for r in candidates)
-            or thread_action_rubrics(candidates, [], state_map, head)):
-        return False
-    return True
 
 
 def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_dir,
@@ -873,8 +817,7 @@ def main():
     published_states = (handoff_board or {}).get("states", {})
     through = (handoff_board or {}).get("replies_through")
     through = through if isinstance(through, int) else 0
-    new_contest = handoff_board and any(
-        reply["id"] > through for rubric in candidates for reply in author_replies.get(rubric, []))
+    new_contest = handoff_board and has_unhandled_contest(handoff_board, candidates, author_replies)
     if handoff_board and not new_contest:
         # The normal CLI expects a local scoreboard artifact before inspecting
         # the existing unchanged post-plan contract. This body is never posted.
