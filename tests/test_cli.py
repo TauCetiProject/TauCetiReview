@@ -21,6 +21,7 @@ def test_pr_ref_oids_uses_old_gh_compatible_rest_fields():
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
         return types.SimpleNamespace(
+            returncode=0,
             stdout=json.dumps({"head": {"sha": "head-sha"}, "base": {"sha": "base-sha"}})
         )
 
@@ -82,6 +83,7 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
             stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
             stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
             stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
+            stack.enter_context(patch.object(cli, "prepare_review_source"))
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             try:
                 cli.main()
@@ -370,6 +372,7 @@ def test_review_error_exits_after_posting_and_coordination_skip_stays_successful
             stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
             stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
             stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
+            stack.enter_context(patch.object(cli, "prepare_review_source"))
             stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             status = 0

@@ -104,8 +104,9 @@ Add `--post` to publish. Useful flags:
 
 ## What it does
 
-1. Reads the PR head SHA, diff, and description via `gh`.
-2. Builds the same read-only reviewer workspace CI uses: the PR source at its head, the roadmap
+1. Reads the PR head/base, comparison merge base, and description via `gh`.
+2. Fetches the head and merge-base commits shallowly once, generating the canonical patch and
+   exact-head source from those objects. Builds the read-only reviewer workspace: the source, roadmap
    repo, and (unless `--no-mathlib`) the pinned Mathlib source for `reuse`/`naming` to grep.
 3. Runs each rubric through `claude -p`, `codex exec`, exact-model `kiro-cli chat`, or the `pi`
    agent against OpenRouter, **read-only** (`Read`/`Grep`/`Glob`, or pi's `read`/`grep`/`ls` —
@@ -118,6 +119,11 @@ Add `--post` to publish. Useful flags:
 4. Reads each verdict from a fresh one-time marker token, so nothing in the PR text can forge an
    `approve` (this anti-forgery channel is kept even though you are trusted).
 5. Prints the scoreboard + threads, and with `--post`, publishes them via `gh` as you.
+
+Preparation transport or host failures stop before inference with status 83. Current fleet
+workers treat that as an uncharged backoff and retry through normal scheduling; the standalone
+command reports the error and exits. Invalid comparisons keep ordinary failure handling.
+Temporary Git data and held review claims are cleaned on failure and cancellation.
 
 The reviewer's structured verdict supplies the review decision. Narrative summaries and
 tool output are never reinterpreted as approval or veto conditions. The prompt includes

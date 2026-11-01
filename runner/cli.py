@@ -23,6 +23,8 @@ two you have available.
 """
 import argparse
 import atexit
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -36,6 +38,11 @@ import tempfile
 import time
 import uuid
 
+try:
+    from . import pr_diff as repository_diff
+except ImportError:
+    import pr_diff as repository_diff
+
 # review.py's abort status when the provider itself is unusable. Duplicated rather than imported:
 # this CLI drives the engine as a subprocess and never imports it (the engine's modules use flat
 # sibling imports and only resolve with runner/ on sys.path, which an installed `runner.cli` has no
@@ -47,6 +54,7 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
 PROVIDER_DOWN_EXIT = 3
 COORDINATED_ELSEWHERE_EXIT = 81
 HEAD_CHANGED_EXIT = 82
+PREPARATION_WAIT_EXIT = repository_diff.PREPARATION_WAIT_EXIT
 
 REVIEW_REPO = os.environ.get("TAUCETI_REVIEW_REPO", "TauCetiProject/TauCetiReview")
 DEFAULT_CODE_REPO = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
@@ -178,19 +186,48 @@ def pr_ref_oids(repo, pr):
     for much longer, so use it to keep the subscription CLI working with distro-packaged gh
     releases such as Ubuntu's 2.45.
     """
-    r = run(["gh", "api", f"/repos/{repo}/pulls/{pr}"], capture=True, quiet=True)
+    try:
+        r = run(["gh", "api", f"/repos/{repo}/pulls/{pr}"], capture=True, quiet=True,
+                allow_fail=True, timeout=repository_diff.FETCH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise repository_diff.PreparationUnavailable(f"PR metadata unavailable: {error}") from error
+    if r.returncode:
+        if repository_diff.transport_unavailable(r.stderr):
+            raise repository_diff.PreparationUnavailable(f"PR metadata unavailable: {r.stderr.strip()}")
+        raise RuntimeError(f"could not read PR metadata: {r.stderr.strip()}")
     data = json.loads(r.stdout)
     return data["head"]["sha"], data["base"]["sha"]
 
 
 def merge_base_sha(repo, base, head):
     """The merge base of base...head, from the compare API — the actual left side of the reviewed
-    three-dot diff (baseRefOid is the branch tip, which may have moved on). Empty on failure."""
+    three-dot diff (baseRefOid is the branch tip, which may have moved on)."""
     if not (base and head):
         return ""
-    r = run(["gh", "api", f"/repos/{repo}/compare/{base}...{head}",
-             "--jq", ".merge_base_commit.sha"], capture=True, quiet=True, allow_fail=True)
-    return r.stdout.strip() if r.returncode == 0 else ""
+    return repository_diff._gh_api(f"/repos/{repo}/compare/{base}...{head}?per_page=1",
+                                   ".merge_base_commit.sha")
+
+
+def prepare_review_source(repo, head, merge_base, work):
+    """One endpoint fetch supplies the canonical patch and exact source, without history."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not all(
+            isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, merge_base)):
+        raise RuntimeError("invalid repository or review comparison identity")
+    partial = work / "diff.txt.partial"
+    try:
+        with partial.open('wb') as out:
+            paths = repository_diff.git_diff(f"https://github.com/{repo}", merge_base, head,
+                                            diff_out=out, limit=None, fetch_limit=None,
+                                            source_dir=work / 'code')
+        os.replace(partial, work / 'diff.txt')
+        repository_diff.write_paths(work / 'paths.z', paths)
+        print(f"Prepared source and diff: {merge_base[:12]}..{head[:12]}", file=sys.stderr)
+    except OSError as error:
+        if error.errno in (errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EMFILE, errno.ENFILE):
+            raise repository_diff.PreparationUnavailable(f"host could not stage review source: {error}") from error
+        raise
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def rubrics_repo_sha(repo_dir):
@@ -540,6 +577,21 @@ def review_completed_before_preparation(repo_dir, repo, pr, head, store, board, 
 
 
 def main():
+    _install_claim_cleanup()
+    with contextlib.ExitStack() as cleanup:
+        try:
+            return _main(cleanup)
+        except repository_diff.PreparationUnavailable as error:
+            print(f"tauceti-review: preparation unavailable before inference: {error}", file=sys.stderr)
+            return PREPARATION_WAIT_EXIT
+        except RuntimeError as error:
+            print(f"tauceti-review: {error}", file=sys.stderr)
+            return 1
+        finally:
+            _release_active_claims()
+
+
+def _main(cleanup):
     ap = argparse.ArgumentParser(
         prog="tauceti-review",
         description="Run the Tau Ceti AI review on a PR using your own claude/codex subscription.")
@@ -629,6 +681,8 @@ def main():
     ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--conf")
     a = ap.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", a.repo) or not re.fullmatch(r"[1-9][0-9]*", a.pr):
+        die("review requires an owner/repository and a positive PR number")
 
     a.kiro_model = (a.kiro_model or "").strip()
     if not a.kiro_model or a.kiro_model.lower().startswith("auto"):
@@ -724,11 +778,15 @@ def main():
     work = pathlib.Path(a.workdir) if a.workdir else pathlib.Path(tempfile.mkdtemp(
         prefix=f"tauceti-review-{a.pr}-"))
     work.mkdir(parents=True, exist_ok=True)
+    if not a.keep and not a.workdir:
+        cleanup.callback(shutil.rmtree, work, ignore_errors=True)
     print(f"workspace: {work}", file=sys.stderr)
 
     # PR head, base, diff, and description (author-provided context, no more trusted than the
     # diff). The base/merge-base SHAs are provenance: they pin exactly which diff was reviewed.
     head, base = pr_ref_oids(a.repo, a.pr)
+    if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, base)):
+        die("PR metadata did not contain exact head/base commit identities")
     print(f"PR #{a.pr} head: {head[:12]}", file=sys.stderr)
     if a.expect_head and not (head.startswith(a.expect_head) or a.expect_head.startswith(head)):
         # No review or inference ran. Old workers still see a non-zero status;
@@ -808,18 +866,25 @@ def main():
     # (casefile.patch_digest) to decide whether an approval carries to a new head, so every path
     # must produce it identically. The helper ships beside this file, so a --rubrics-sha pin to an
     # older engine still gets it.
-    merge_base = merge_base_sha(a.repo, base, head)
-    if not merge_base:
-        # The merge gate matches a scoreboard to the merge base it records; a review without one
-        # could never merge, so stop before spending anything on it.
-        die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
-    diff = subprocess.run(
-        [sys.executable, str(pathlib.Path(__file__).resolve().parent / "pr_diff.py"),
-         "--repo", a.repo, "--pr", str(a.pr), "--head-sha", head,
-         "--merge-base-sha", merge_base, "--out", str(work / "diff.txt"),
-         "--paths-out", str(work / "paths.z")])
-    if diff.returncode != 0:
-        die(f"could not compute the diff of PR #{a.pr} ({diff.returncode})")
+    try:
+        merge_base = merge_base_sha(a.repo, base, head)
+        if not merge_base:
+            die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
+        prepare_review_source(a.repo, head, merge_base, work)
+    except RuntimeError as error:
+        if re.search(r"HTTP (?:404|422)|not our ref|unadvertised object", str(error), re.I):
+            current, current_base = pr_ref_oids(a.repo, a.pr)
+            if (current, current_base) != (head, base):
+                try:
+                    write_review_result(current, False, outcome="head-changed", expected_head=head)
+                except OSError as failure:
+                    print(f"tauceti-review: could not retain comparison-change result: {failure}", file=sys.stderr)
+                return HEAD_CHANGED_EXIT
+            # A known current GitHub head can precede Git transport propagation.
+            # Unknown/invalid comparisons keep the ordinary deterministic error.
+            if head in str(error) and re.search(r"not our ref|unadvertised object", str(error), re.I):
+                raise repository_diff.PreparationUnavailable(str(error)) from error
+        raise
     # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
     # Passed to the engine so the prompt can assert the code compiles; best-effort (a fetch failure
     # just leaves it blank, and the engine then injects nothing).
@@ -834,11 +899,6 @@ def main():
         f"# {meta.get('title','')}\n\n{meta.get('body','') or ''}\n")
 
     # Reviewer workspace: PR source at head, roadmap, optional Mathlib source. No .git, no creds.
-    run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.repo}",
-         str(work / "code")])
-    run(["git", "-C", str(work / "code"), "fetch", "-q", "--depth", "1", "origin", head], quiet=True)
-    run(["git", "-C", str(work / "code"), "checkout", "-q", head], quiet=True)
-    shutil.rmtree(work / "code" / ".git", ignore_errors=True)
     if a.roadmap_dir:   # pre-staged (e.g. mounted into a network-restricted bubble); copy, don't clone
         stage_tree(a.roadmap_dir, work / "roadmap")
     else:
@@ -930,6 +990,10 @@ def main():
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
           file=sys.stderr)
+    # Inference can create receipts in --fresh's workspace-local outbox. Keep
+    # the original post/inference-failure recovery semantics from this point;
+    # ordinary successful completion still removes the workspace below.
+    cleanup.pop_all()
     r = run(cmd, allow_fail=True, env=engine_env)
     # The engine aborts with PROVIDER_DOWN_EXIT when consecutive rubrics failed because the provider
     # itself is unusable (expired credential, exhausted subscription window). It has already said

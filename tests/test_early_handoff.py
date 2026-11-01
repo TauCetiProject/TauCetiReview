@@ -193,6 +193,7 @@ class CLITests(unittest.TestCase):
             stack.enter_context(patch.object(cli, 'fetch_thread_replies', called('replies', replies)))
             stack.enter_context(patch.object(cli, 'issue_comments', called('board', facts)))
             stack.enter_context(patch.object(cli, 'merge_base_sha', called('compare', 'b' * 40)))
+            stack.enter_context(patch.object(cli, 'prepare_review_source', called('source', None)))
             stack.enter_context(patch.object(cli, 'gh_json', called('pr-context', {})))
             stack.enter_context(patch.object(cli, 'rubrics_repo_sha', called('rubrics-sha', ('c' * 40, False))))
             stack.enter_context(patch.object(cli, 'rubrics_publication', called('rubrics-publication', (False, True))))
@@ -230,7 +231,7 @@ class CLITests(unittest.TestCase):
             events = self.invoke(**kwargs)
             self.assertIn('engine', events); self.assertEqual(events.count('replies'), 1)
             self.assertEqual(events.count('board'), 1)
-            self.assertIn('clone', events); self.assertIn('rubrics-publication', events)
+            self.assertIn('source', events); self.assertIn('rubrics-publication', events)
         for flags in (['--mode', 'manual'], ['--fresh']):
             events = self.invoke(replies={}, flags=flags)
             self.assertIn('engine', events); self.assertNotIn('probe', events)
