@@ -381,6 +381,35 @@ def test_review_error_exits_after_posting_and_coordination_skip_stays_successful
             assert events == ([] if skipped else ["review", "post"]), events
 
 
+def test_head_mismatch_is_nonzero_and_structured_before_inference():
+    for writable in (True, False):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            result = pathlib.Path(tmp) / 'outcome.json'
+            argv = ['tauceti-review', '42', '--reviewer', 'claude', '--no-archive',
+                    '--expect-head', 'a' * 40, '--workdir', tmp, '--store', tmp + '/store', '--submitted-by', 'tester']
+            stack.enter_context(patch.object(sys, 'argv', argv))
+            stack.enter_context(patch.dict(os.environ, {'TAUCETI_REVIEW_RESULT_FILE': str(result)}))
+            stack.enter_context(patch.object(cli, 'need'))
+            stack.enter_context(patch.object(cli.shutil, 'which', return_value='/bin/claude'))
+            stack.enter_context(patch.object(cli, 'resolve_repo_dir', return_value=pathlib.Path(tmp)))
+            stack.enter_context(patch.object(cli, 'pr_ref_oids', return_value=('b' * 40, 'c' * 40)))
+            stack.enter_context(patch.object(cli, 'coordinate', side_effect=AssertionError('claimed stale head')))
+            stack.enter_context(patch.object(cli, 'run', side_effect=AssertionError('unexpected subprocess')))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            if not writable:
+                stack.enter_context(patch.object(pathlib.Path, 'write_text', side_effect=OSError('disk full')))
+            try:
+                cli.main()
+            except SystemExit as error:
+                assert error.code == cli.HEAD_CHANGED_EXIT and error.code != 0
+            else:
+                raise AssertionError('review continued after mismatch')
+            if writable:
+                outcome = json.loads(result.read_text())
+                assert outcome == {'head_sha': 'b' * 40, 'changed': False,
+                                   'outcome': 'head-changed', 'expected_head': 'a' * 40}
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:
