@@ -39,6 +39,7 @@ def test_same_fetch_supplies_exact_patch_paths_and_source():
             git = pr_diff._git
             def offline(directory, args, *a, **kw):
                 if args[0] == 'fetch':
+                    assert a[1] is None and kw['config'] == ('http.lowSpeedLimit=1', 'http.lowSpeedTime=300')
                     raise pr_diff.PreparationUnavailable('connection reset')
                 return git(directory, args, *a, **kw)
             with patch.object(pr_diff, '_git', offline):
@@ -114,7 +115,7 @@ def test_transport_classification_keeps_deterministic_failures_distinct():
     for error, transient in [('HTTP 503', True), ('HTTP 429', True), ('HTTP 401', True),
             ('Could not resolve host', True), ('RPC failed; early EOF', True),
             ('error connecting to api.github.com', True), ('dial tcp: i/o timeout', True),
-            ('unexpected EOF', True), ('context deadline exceeded', True),
+            ('unexpected EOF', True), ('context deadline exceeded', True), ('Operation too slow', True),
             ('HTTP 404', False), ('HTTP 422', False), ('not our ref abc', False),
             ('malformed response', False)]:
         with patch.object(pr_diff.subprocess, 'run', return_value=types.SimpleNamespace(

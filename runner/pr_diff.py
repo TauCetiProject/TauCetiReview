@@ -94,7 +94,7 @@ def transport_unavailable(message):
         r"|could not resolve|couldn't connect|failed to connect|connection (?:reset|refused|timed out)"
         r"|timed out|TLS|SSL|authentication failed|could not read Username|rate limit|network is unreachable"
         r"|RPC failed|early EOF|remote end hung up|unexpected disconnect|HTTP/2.*stream"
-        r"|error connecting to|i/o timeout|unexpected EOF|context deadline exceeded"
+        r"|error connecting to|i/o timeout|unexpected EOF|context deadline exceeded|operation too slow"
         r"|no space left on device|disk quota exceeded|too many open files|input/output error",
         message, re.I))
 
@@ -130,7 +130,7 @@ def _du(path):
     return total
 
 
-def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=None):
+def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=None, config=()):
     """Run `git -C d args` with `stdin`, streaming stdout into `sink` (a binary file) up to `limit`
     bytes, killing git's whole process group at `timeout` or, when `disk_cap` is given, as soon as
     the repository directory `d` grows past it (checked every 0.1 s while git runs, so a fast
@@ -143,7 +143,8 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
         reader, owner = os.pipe()
         try:
             p = subprocess.Popen([sys.executable, '-c', _GIT_OWNER, str(reader), "git",
-                                  '-c', 'maintenance.autoDetach=false', '-c', 'gc.autoDetach=false', "-C", d, *args],
+                                  '-c', 'maintenance.autoDetach=false', '-c', 'gc.autoDetach=false',
+                                  *[a for value in config for a in ('-c', value)], "-C", d, *args],
                                  stdin=inp, stdout=subprocess.PIPE, stderr=err, env=env,
                                  start_new_session=True, pass_fds=(reader,))
         except OSError as e:
@@ -168,8 +169,9 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
                     kill(too_big)
                     return
 
-        timer = threading.Timer(timeout, kill, args=(timed_out,))
-        timer.start()
+        timer = threading.Timer(timeout, kill, args=(timed_out,)) if timeout is not None else None
+        if timer:
+            timer.start()
         watcher = threading.Thread(target=watch_disk, daemon=True)
         if disk_cap is not None:
             watcher.start()
@@ -195,7 +197,8 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
         finally:
             with lock:
                 done.set()
-            timer.cancel()
+            if timer:
+                timer.cancel()
             if watcher.is_alive():
                 watcher.join()
             p.wait()
@@ -252,7 +255,12 @@ def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES,
         _git(d, ["init", "-q", "--bare"], env, FETCH_TIMEOUT)
         _git(d, ["remote", "add", "origin", remote], env, FETCH_TIMEOUT)
         _git(d, ["fetch", "-q", "--no-tags", "--depth", "1", *([] if source_dir else ["--filter=blob:none"]),
-                 "origin", merge_base, head], env, FETCH_TIMEOUT, disk_cap=fetch_limit)
+                 "origin", merge_base, head], env, None if source_dir else FETCH_TIMEOUT,
+             disk_cap=fetch_limit,
+             # The old source clone had no whole-download deadline. Let a slow
+             # progressing snapshot finish; Git detects a stalled HTTP transfer
+             # and the existing round owner can still cancel the whole group.
+             config=("http.lowSpeedLimit=1", f"http.lowSpeedTime={FETCH_TIMEOUT}") if source_dir else ())
         names = _git(d, ["diff", "--name-only", "-z", "--no-renames", merge_base, head, "--"],
                      local, DIFF_TIMEOUT, limit=limit, disk_cap=fetch_limit)
         if diff_out is not None and source_dir is None:
