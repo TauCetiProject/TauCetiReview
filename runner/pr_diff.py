@@ -248,6 +248,7 @@ def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES,
     failures that a fleet caller should retry before inference."""
     if not (merge_base and head):
         raise RuntimeError("need both the merge base and the head SHA")
+    source_dir = os.path.abspath(source_dir) if source_dir is not None else None
     env = _git_env()
     local = {**env, "GIT_NO_LAZY_FETCH": "1"}
     parent = os.path.dirname(os.fspath(source_dir)) if source_dir is not None else None

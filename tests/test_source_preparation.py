@@ -111,6 +111,23 @@ def test_preparation_outage_retries_without_models_or_stale_workspace():
         assert not work.exists() and (store / 'outbox/receipt').exists()
 
 
+def test_relative_workspace_stages_source_at_the_requested_path():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        url, mb, head, _ = _fixture(root)
+        original = pr_diff.git_diff
+        cwd = pathlib.Path.cwd()
+        try:
+            os.chdir(root)
+            work = pathlib.Path('relative-work'); work.mkdir()
+            with patch.object(pr_diff, 'git_diff', lambda _url, *a, **kw: original(url, *a, **kw)):
+                cli.prepare_review_source('o/r', head, mb, work)
+            assert (work / 'code/TauCeti/F319.lean').is_file()
+            assert (work / 'diff.txt').is_file() and not (work / 'code/.git').exists()
+        finally:
+            os.chdir(cwd)
+
+
 def test_transport_classification_keeps_deterministic_failures_distinct():
     for error, transient in [('HTTP 503', True), ('HTTP 429', True), ('HTTP 401', True),
             ('Could not resolve host', True), ('RPC failed; early EOF', True),
