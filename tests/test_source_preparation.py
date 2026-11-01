@@ -2,6 +2,7 @@
 """Exact source/diff reuse and pre-inference recovery without models or network."""
 import contextlib
 import io
+import json
 import os
 import pathlib
 import signal
@@ -126,6 +127,46 @@ def test_relative_workspace_stages_source_at_the_requested_path():
             assert (work / 'diff.txt').is_file() and not (work / 'code/.git').exists()
         finally:
             os.chdir(cwd)
+
+
+def test_post_failure_retains_fresh_archive_receipts():
+    with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as stack:
+        root = pathlib.Path(d); work = root / 'work'
+        argv = ['tauceti-review', '7', '--reviewer', 'claude', '--submitted-by', 'tester',
+                '--fresh', '--post', '--no-sync', '--no-mathlib', '--no-coordinate']
+        stack.enter_context(patch.object(sys, 'argv', argv))
+        stack.enter_context(patch.dict(os.environ, {'TAUCETI_REVIEW_REF': '', 'TAUCETI_CLAUDE_MODEL': ''}))
+        stack.enter_context(patch.object(cli.tempfile, 'mkdtemp', return_value=str(work)))
+        stack.enter_context(patch.object(cli, 'need'))
+        stack.enter_context(patch.object(cli.shutil, 'which', return_value='/fake/claude'))
+        stack.enter_context(patch.object(cli, 'resolve_repo_dir', return_value=root))
+        stack.enter_context(patch.object(cli, 'pr_ref_oids', return_value=('a' * 40, 'b' * 40)))
+        stack.enter_context(patch.object(cli, 'merge_base_sha', return_value='c' * 40))
+        stack.enter_context(patch.object(cli, 'prepare_review_source'))
+        stack.enter_context(patch.object(cli, 'fetch_thread_replies', return_value=None))
+        stack.enter_context(patch.object(cli, 'issue_comments', return_value=[]))
+        stack.enter_context(patch.object(cli, 'gh_json', return_value={}))
+        stack.enter_context(patch.object(cli, 'rubrics_repo_sha', return_value=('d' * 40, False)))
+        stack.enter_context(patch.object(cli, 'rubrics_publication', return_value=(False, True)))
+        stack.enter_context(patch.object(cli, 'cli_sha', return_value=('e' * 40, False)))
+        def run(cmd, **kwargs):
+            if len(cmd) > 1 and pathlib.Path(cmd[1]).name == 'review.py':
+                (work / 'scoreboard.md').write_text('reviewed')
+                (work / 'post_plan.json').write_text(json.dumps({}))
+                (work / 'store/outbox').mkdir(parents=True)
+                (work / 'store/outbox/receipt').write_text('keep paid evidence')
+            elif len(cmd) > 1 and pathlib.Path(cmd[1]).name == 'post.py':
+                raise SystemExit(1)
+            return types.SimpleNamespace(returncode=0, stdout='test-token', stderr='')
+        stack.enter_context(patch.object(cli, 'run', side_effect=run))
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                cli.main()
+            except SystemExit as error:
+                assert error.code == 1
+            else:
+                raise AssertionError('post failure became success')
+        assert (work / 'store/outbox/receipt').read_text() == 'keep paid evidence'
 
 
 def test_transport_classification_keeps_deterministic_failures_distinct():

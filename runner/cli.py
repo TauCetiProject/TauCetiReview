@@ -990,6 +990,10 @@ def _main(cleanup):
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
           file=sys.stderr)
+    # Inference can create receipts in --fresh's workspace-local outbox. Keep
+    # the original post/inference-failure recovery semantics from this point;
+    # ordinary successful completion still removes the workspace below.
+    cleanup.pop_all()
     r = run(cmd, allow_fail=True, env=engine_env)
     # The engine aborts with PROVIDER_DOWN_EXIT when consecutive rubrics failed because the provider
     # itself is unusable (expired credential, exhausted subscription window). It has already said
