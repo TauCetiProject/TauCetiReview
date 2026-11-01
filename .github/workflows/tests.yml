@@ -34,6 +34,7 @@ jobs:
       - run: python tests/test_patch_digest.py
       - run: python tests/test_seed_approvals.py
       - run: python tests/test_pr_diff.py
+      - run: python tests/test_source_preparation.py
       - run: python tests/test_sweep.py
       - run: python tests/test_sweep_budget.py
       - run: python tests/test_direct_merge.py

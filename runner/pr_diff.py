@@ -22,10 +22,9 @@ rule, so the merge paths (merge-only, the sweep, review.py's merge decision) rea
 Renames are not detected for the list: a rename then lists as a deletion plus an addition, which is
 exactly the old and the new path the rename would contribute, and git needs only the trees for it.
 
-Bounded: every git call has a timeout, the diff and the path list are streamed with a hard byte
-limit, and everything downloaded (the two commits' trees, then exactly the changed files' blobs;
-git's lazy fetching is off) is capped, so a hostile or pathological PR fails clearly instead of
-hanging a job or filling a disk.
+Every git call retains its transport timeout and process-group cleanup. Diff-only workflow
+callers retain their existing byte-limit arguments; CLI source preparation streams without an
+application byte ceiling and fetches the two complete endpoint trees once. Lazy fetching is off.
 
 Security: nothing from the PR is executed. The fetch is anonymous HTTPS by SHA into a bare
 repository with no work tree. git runs with an allowlisted environment (no tokens, provider keys,
@@ -41,6 +40,8 @@ Flat imports only (run as a script with runner/ on sys.path, or imported by swee
 """
 import argparse
 import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -67,6 +68,36 @@ ENV_ALLOW = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "LANG",
              "http_proxy", "https_proxy", "no_proxy", "all_proxy",
              "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_EXEC_PATH")
 
+PREPARATION_WAIT_EXIT = 83
+
+# The parent's pipe owns this process group, including remote helpers. Unlike a
+# timer in the CLI, this guardian also observes SIGKILL/owner death on EOF.
+_GIT_OWNER = '''import os,signal,subprocess,sys,threading
+fd=int(sys.argv[1])
+def owner_gone():
+ while os.read(fd,1): pass
+ os.killpg(os.getpgrp(),signal.SIGKILL)
+threading.Thread(target=owner_gone,daemon=True).start()
+child=subprocess.Popen(sys.argv[2:])
+rc=child.wait()
+os._exit(rc if rc>=0 else 128-rc)
+'''
+
+
+class PreparationUnavailable(RuntimeError):
+    """A transport or host outage before inference; the fleet retries uncharged."""
+
+
+def transport_unavailable(message):
+    return bool(re.search(
+        r"HTTP (?:401|403|408|429|5\d\d)|(?:returned error:|error:)[ ]*(?:401|403|408|429|5\d\d)\b"
+        r"|could not resolve|couldn't connect|failed to connect|connection (?:reset|refused|timed out)"
+        r"|timed out|TLS|SSL|authentication failed|could not read Username|rate limit|network is unreachable"
+        r"|RPC failed|early EOF|remote end hung up|unexpected disconnect|HTTP/2.*stream"
+        r"|error connecting to|i/o timeout|unexpected EOF|context deadline exceeded"
+        r"|no space left on device|disk quota exceeded|too many open files|input/output error",
+        message, re.I))
+
 
 def _git_env():
     """Allowlisted environment for git: no credentials, no user/system config, no prompts."""
@@ -74,6 +105,11 @@ def _git_env():
     env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "LC_ALL": "C"})
     return env
+
+
+def host_resource_unavailable(message):
+    return bool(re.search(r"no space left on device|disk quota exceeded|too many open files|input/output error",
+                          message, re.I))
 
 
 def _killpg(p):
@@ -104,12 +140,17 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
     with tempfile.TemporaryFile() as err, tempfile.TemporaryFile() as inp:
         inp.write(stdin)
         inp.seek(0)
+        reader, owner = os.pipe()
         try:
-            p = subprocess.Popen(["git", "-C", d, *args], stdin=inp,
-                                 stdout=subprocess.PIPE, stderr=err, env=env,
-                                 start_new_session=True)
+            p = subprocess.Popen([sys.executable, '-c', _GIT_OWNER, str(reader), "git",
+                                  '-c', 'maintenance.autoDetach=false', '-c', 'gc.autoDetach=false', "-C", d, *args],
+                                 stdin=inp, stdout=subprocess.PIPE, stderr=err, env=env,
+                                 start_new_session=True, pass_fds=(reader,))
         except OSError as e:
+            os.close(owner)
             raise RuntimeError(f"cannot run git: {e}")
+        finally:
+            os.close(reader)
         timed_out, too_big, done = threading.Event(), threading.Event(), threading.Event()
         lock = threading.Lock()
 
@@ -139,7 +180,7 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
                 if not chunk:
                     break
                 total += len(chunk)
-                if total > limit:
+                if limit is not None and total > limit:
                     raise RuntimeError(f"git {name} output exceeds the {limit}-byte limit")
                 if sink is None:
                     out.append(chunk)
@@ -159,17 +200,20 @@ def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=
                 watcher.join()
             p.wait()
             p.stdout.close()
+            os.close(owner)
         if disk_cap is not None and _du(d) > disk_cap:
             too_big.set()   # grew past the cap between two checks
         if too_big.is_set():
             raise RuntimeError(f"git {name}: the objects downloaded exceed the {disk_cap}-byte "
                                "limit")
         if timed_out.is_set():
-            raise RuntimeError(f"git {name} timed out after {timeout}s")
+            error = PreparationUnavailable if name == 'fetch' else RuntimeError
+            raise error(f"git {name} timed out after {timeout}s")
         if p.returncode != 0:
             err.seek(0)
             msg = err.read()[-2000:].decode("utf-8", "replace").strip()
-            raise RuntimeError(f"git {name} failed ({p.returncode}): {msg}")
+            error = PreparationUnavailable if host_resource_unavailable(msg) or name == 'fetch' and transport_unavailable(msg) else RuntimeError
+            raise error(f"git {name} failed ({p.returncode}): {msg}")
         return b"".join(out)
 
 
@@ -188,35 +232,51 @@ def _changed_blobs(raw):
 
 
 def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES,
-             fetch_limit=MAX_FETCH_BYTES):
+             fetch_limit=MAX_FETCH_BYTES, source_dir=None):
     """Diff `merge_base..head` from a throwaway bare clone of `remote`. Only the two commits'
     trees (blobless, depth 1) are fetched, then, when `diff_out` is given, exactly the changed
     files' blobs, all under `fetch_limit` bytes in total. git never fetches lazily after that
     (GIT_NO_LAZY_FETCH), so nothing else can be downloaded. Writes the raw diff to the binary file
     `diff_out` if given and returns the changed paths (str, surrogate-escaped if not UTF-8).
-    Raises RuntimeError on failure."""
+    If source_dir is given, fetch both endpoint trees with their blobs once,
+    generate the identical patch, then check out the head there without Git
+    administration. None limits stream without an application byte ceiling.
+    Raises RuntimeError on failure, or PreparationUnavailable for transport/host
+    failures that a fleet caller should retry before inference."""
     if not (merge_base and head):
         raise RuntimeError("need both the merge base and the head SHA")
     env = _git_env()
     local = {**env, "GIT_NO_LAZY_FETCH": "1"}
-    with tempfile.TemporaryDirectory(prefix="pr-diff-") as d:
+    parent = os.path.dirname(os.fspath(source_dir)) if source_dir is not None else None
+    with tempfile.TemporaryDirectory(prefix="pr-diff-", dir=parent) as d:
         _git(d, ["init", "-q", "--bare"], env, FETCH_TIMEOUT)
         _git(d, ["remote", "add", "origin", remote], env, FETCH_TIMEOUT)
-        _git(d, ["fetch", "-q", "--no-tags", "--depth", "1", "--filter=blob:none",
+        _git(d, ["fetch", "-q", "--no-tags", "--depth", "1", *([] if source_dir else ["--filter=blob:none"]),
                  "origin", merge_base, head], env, FETCH_TIMEOUT, disk_cap=fetch_limit)
         names = _git(d, ["diff", "--name-only", "-z", "--no-renames", merge_base, head, "--"],
                      local, DIFF_TIMEOUT, limit=limit, disk_cap=fetch_limit)
-        if diff_out is not None:
+        if diff_out is not None and source_dir is None:
             raw = _git(d, ["diff", "--raw", "-z", "--no-renames", "--abbrev=40", merge_base,
                            head, "--"], local, DIFF_TIMEOUT, limit=limit, disk_cap=fetch_limit)
             blobs = _changed_blobs(raw)
             if blobs:
                 _git(d, ["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--stdin", "origin"],
                      env, FETCH_TIMEOUT, stdin=b"\n".join(blobs) + b"\n", disk_cap=fetch_limit)
+        if diff_out is not None:
             _git(d, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M",
                      f"--abbrev={INDEX_ABBREV}", "--src-prefix=a/", "--dst-prefix=b/",
                      merge_base, head, "--"], local, DIFF_TIMEOUT, sink=diff_out, limit=limit,
                  disk_cap=fetch_limit)
+        if source_dir is not None:
+            # Diff while HEAD is unborn and there is no worktree: PR attributes
+            # must not change the canonical patch. Only then materialize source.
+            os.mkdir(source_dir)
+            try:
+                _git(d, ["--work-tree", os.fspath(source_dir), "checkout", "--force", head, "--", "."],
+                     local, DIFF_TIMEOUT, limit=limit)
+            except BaseException:
+                shutil.rmtree(source_dir, ignore_errors=True)
+                raise
     return [p.decode("utf-8", "surrogateescape") for p in names.split(b"\0") if p]
 
 
@@ -225,9 +285,10 @@ def _gh_api(path, jq):
         r = subprocess.run(["gh", "api", path, "--jq", jq], capture_output=True, text=True,
                            timeout=FETCH_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
-        raise RuntimeError(f"gh api {path} failed: {e}")
+        raise PreparationUnavailable(f"gh api {path} failed: {e}")
     if r.returncode != 0 or not r.stdout.strip():
-        raise RuntimeError(f"gh api {path} failed ({r.returncode}): {r.stderr.strip()}")
+        error = PreparationUnavailable if transport_unavailable(r.stderr) else RuntimeError
+        raise error(f"gh api {path} failed ({r.returncode}): {r.stderr.strip()}")
     return r.stdout.strip()
 
 
