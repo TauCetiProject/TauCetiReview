@@ -46,6 +46,7 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
 
 PROVIDER_DOWN_EXIT = 3
 COORDINATED_ELSEWHERE_EXIT = 81
+HEAD_CHANGED_EXIT = 82
 
 REVIEW_REPO = os.environ.get("TAUCETI_REVIEW_REPO", "TauCetiProject/TauCetiReview")
 DEFAULT_CODE_REPO = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
@@ -379,13 +380,13 @@ SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
 
 
-def write_review_result(head, changed):
+def write_review_result(head, changed, **outcome):
     """A trusted per-invocation outcome for the driving worker; no API requests."""
     target = os.environ.get("TAUCETI_REVIEW_RESULT_FILE")
     if target:
         path = pathlib.Path(target)
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps({"head_sha": head, "changed": changed}))
+        tmp.write_text(json.dumps({"head_sha": head, "changed": changed, **outcome}))
         os.replace(tmp, path)
 
 
@@ -730,8 +731,17 @@ def main():
     head, base = pr_ref_oids(a.repo, a.pr)
     print(f"PR #{a.pr} head: {head[:12]}", file=sys.stderr)
     if a.expect_head and not (head.startswith(a.expect_head) or a.expect_head.startswith(head)):
-        die(f"PR #{a.pr} head is {head[:12]}, expected {a.expect_head[:12]}. The push may not have "
-            "propagated to the API yet; re-run in a moment to avoid reviewing a stale commit.")
+        # No review or inference ran. Old workers still see a non-zero status;
+        # new workers can repair shared discovery and select another candidate.
+        try:
+            write_review_result(head, False, outcome="head-changed", expected_head=a.expect_head)
+        except OSError as error:
+            print(f"tauceti-review: could not retain head-change result: {error}", file=sys.stderr)
+        if not a.keep and not a.workdir:
+            shutil.rmtree(work, ignore_errors=True)
+        print(f"tauceti-review: PR #{a.pr} head is {head[:12]}, expected {a.expect_head[:12]}; "
+              "select current work before reviewing", file=sys.stderr)
+        sys.exit(HEAD_CHANGED_EXIT)
 
     # De-contend concurrent reviewers BEFORE the expensive workspace setup + inference. Only for a
     # contributing run (one that posts or archives): a pure read-only dry run (--no-archive, no --post)
