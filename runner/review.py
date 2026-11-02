@@ -65,9 +65,10 @@ _ERROR_KINDS = (
                                      r"|token has been revoked|failed to authenticate", re.I)),
     # The subscription CLIs report an exhausted plan as prose, with no status code anywhere:
     # "You've hit your session limit · resets 9:30pm (UTC)", "You've hit your weekly limit",
-    # "You've hit your monthly spend limit". Every one of those is a wait, never a review.
+    # "You've hit your monthly spend limit". API billing refusals instead say
+    # "Credit balance is too low" (HTTP 400). Both mean wait, never review the PR.
     ("quota_exhausted", re.compile(r"hit your (?:session|weekly|monthly|usage)\b"
-                                   r"|usage limit reached|spend limit", re.I)),
+                                   r"|usage limit reached|spend limit|credit balance is too low", re.I)),
     ("rate_limited", re.compile(r"rate limit|too many requests|429", re.I)),
     ("overloaded", re.compile(r"overloaded|service unavailable|\b(?:502|503|529)\b", re.I)),
     ("timed_out", re.compile(r"timed? ?out|deadline exceeded|\b504\b", re.I)),
@@ -92,7 +93,7 @@ PROVIDER_DOWN_EXIT = 3
 _PROVIDER_DOWN_PHRASE = {
     "local_admission": "local Claude admission is unavailable",
     "not_authenticated": "reviewer authentication failed",
-    "quota_exhausted": "the provider's subscription window is exhausted",
+    "quota_exhausted": "the provider's quota or credit balance is exhausted",
     "rate_limited": "the provider is rate limiting this account",
     "provider_unavailable": "the review provider is unavailable",
 }

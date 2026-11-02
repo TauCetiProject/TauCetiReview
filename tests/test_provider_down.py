@@ -35,6 +35,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import review  # noqa: E402
+import reviewers  # noqa: E402
 
 fails = 0
 
@@ -61,6 +62,7 @@ def main():
         "You've hit your session limit · resets 9:30pm (UTC)": "quota_exhausted",
         "You've hit your weekly limit · resets 3am (UTC)": "quota_exhausted",
         "You've hit your monthly spend limit · raise it at claude.ai/settings/usage": "quota_exhausted",
+        "Credit balance is too low": "quota_exhausted",
     }
     for text, want in observed.items():
         got = review.error_kind(res(text=text))
@@ -81,6 +83,7 @@ def main():
         "rate limit handling is wrong",
         "this diff would let a caller exceed your spend limit",
         "unauthorized access is not checked",
+        "the credit balance is too low check needs a regression test",
     ):
         check(f"a clean-exit review is not an outage: {prose[:38]!r}",
               review.error_kind(res(text=prose, rc=0, is_error=False)) == "no_verdict")
@@ -92,6 +95,9 @@ def main():
     check("a native quota diagnosis remains more specific than HTTP 429",
           review.error_kind({"returncode": 1, "error_status": 429,
                              "error_message": "You've hit your session limit"}) == "quota_exhausted")
+    check("HTTP 400 alone does not imply exhausted credit",
+          review.error_kind({"returncode": 1, "error_status": 400,
+                             "error_message": "Invalid request"}) == "unknown_error")
 
     # --- 2) transient kinds do NOT trip the breaker -------------------------------------------
     for kind in ("overloaded", "timed_out", "transport", "model_unavailable", "unknown_error", "no_verdict"):
@@ -121,6 +127,31 @@ def main():
     one = ctx_for("claude")
     one.note_provider_down("claude", "quota_exhausted", 2)  # both attempts of one rubric
     check("one rubric's two attempts trip the breaker", one.provider_is_down())
+
+    # Claude Code 2.1.316 reports API billing failure with subtype="success", is_error=true,
+    # empty stderr and HTTP 400. Replay the native stream through the real adapter and breaker:
+    # the result must abort without publishing or completing a review round.
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "claude_credit_refusal_2_1_316.jsonl"
+    native = SimpleNamespace(returncode=1, stderr="", stdout=fixture.read_text())
+    credit = ctx_for("claude")
+    credit.a = SimpleNamespace(dry_run=False, pr=1)
+    credit.ledger = SimpleNamespace(persist=lambda: None)
+    credit.pr_state = {"pending_publication_head_sha": "deadbeef", "rounds": []}
+    with patch.object(reviewers, "sh", return_value=native):
+        for _ in range(2):
+            result = review.run_claude("review", ".", "opus", {})
+            kind = review.error_kind(result)
+            check("native API credit refusal is a provider quota outage", kind == "quota_exhausted")
+            check("native error text is not a model verdict", result["text"] == "")
+            credit.note_provider_down("claude", kind, 1)
+    check("native credit refusals trip the breaker", credit.provider_is_down())
+    with patch.object(review, "render_scoreboard", side_effect=AssertionError("must not publish")):
+        try:
+            review.abort_provider_down(credit)
+        except SystemExit as error:
+            check("credit refusal abort has the provider-down status", error.code == review.PROVIDER_DOWN_EXIT)
+    check("no publication survives credit refusal", "pending_publication_head_sha" not in credit.pr_state)
+    check("credit refusal does not complete a review round", not credit.pr_state["rounds"])
 
     # Run the real Claude adapter against a shim that refuses local admission. The engine must
     # abort before producing a post plan or incrementing the PR's completed review rounds.
