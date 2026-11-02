@@ -4,6 +4,13 @@ from pathlib import Path
 
 
 def diff_prompt(full, diff_file, tool_cwd, limit=120000):
+    """Return the inline excerpt and an optional complete-artifact notice.
+
+    Small diffs need no notice. For a truncated diff, try the original file,
+    then the same basename staged under ``tool_cwd``. Resolve symlinks and
+    require an in-workspace file whose text exactly matches ``full``; raise
+    ``ValueError`` if neither location supplies that complete review artifact.
+    """
     excerpt = full[:limit]
     if len(excerpt) == len(full):
         return excerpt, ""

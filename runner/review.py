@@ -925,9 +925,10 @@ def main():
     if a.reply_file and pathlib.Path(a.reply_file).exists():
         reply_text = pathlib.Path(a.reply_file).read_text()[:8000].strip()
 
-    # Base context shared by every rubric this invocation. The prompt diff is capped, so record
-    # both hashes: diff_sha256 is the full reviewed artifact, diff_prompt_sha256 what the
-    # reviewers actually saw. They differ only when diff_prompt_truncated.
+    # Base context shared by every rubric this invocation. Record both hashes:
+    # diff_sha256 covers the complete artifact available through the workspace,
+    # while diff_prompt_sha256 covers only the capped inline excerpt.
+    # They differ only when diff_prompt_truncated.
     diff_full = pathlib.Path(a.diff_file).read_text()
     from diff_context import diff_prompt
     diff, complete_diff_notice = diff_prompt(diff_full, a.diff_file, a.tool_cwd)
