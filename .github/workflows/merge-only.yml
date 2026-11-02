@@ -39,7 +39,7 @@ concurrency:
 
 jobs:
   merge:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'TauCetiProject/TauCeti' && fromJSON(format('["nscloud-ubuntu-24.04-amd64-2x4-with-features;job.priority=0","namespace-features:github.run-id={0}"]', github.run_id)) || 'ubuntu-latest' }}
     env:
       PR: ${{ inputs.pr }}
     steps:
