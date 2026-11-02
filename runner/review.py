@@ -929,7 +929,8 @@ def main():
     # both hashes: diff_sha256 is the full reviewed artifact, diff_prompt_sha256 what the
     # reviewers actually saw. They differ only when diff_prompt_truncated.
     diff_full = pathlib.Path(a.diff_file).read_text()
-    diff = diff_full[:120000]
+    from diff_context import diff_prompt
+    diff, complete_diff_notice = diff_prompt(diff_full, a.diff_file, a.tool_cwd)
     prov["diff_sha256"] = hashlib.sha256(diff_full.encode()).hexdigest()
     if len(diff_full) > len(diff):
         prov["diff_prompt_truncated"] = True
@@ -952,6 +953,7 @@ def main():
                     + ci_status_block(a.ci_build, head)
                     + (("\nSources you can grep:\n" + src) if src else "")
                     + desc_block
+                    + complete_diff_notice
                     + f"\n## Diff\n```diff\n{diff}\n```")
 
     # Author contests, computed BEFORE any run mutates the watermark: rubrics carrying a reply newer
