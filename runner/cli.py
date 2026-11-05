@@ -621,6 +621,11 @@ def _main(cleanup):
                     help="exact direct-Claude model; overrides TAUCETI_CLAUDE_MODEL. "
                          "Unset: keep the selected engine's default. Model must be priced in "
                          "runner/prices.json (e.g. claude-fable-5-1)")
+    ap.add_argument("--codex-model", default=os.environ.get("TAUCETI_CODEX_MODEL") or None,
+                    help="exact Codex model; overrides TAUCETI_CODEX_MODEL. Unset: keep the "
+                         "selected engine's default, which falls back to a cheaper model when the "
+                         "account cannot use it. Setting this pins the model and opts OUT of that "
+                         "fallback (e.g. gpt-6-astra)")
     ap.add_argument("--kiro-model", default="gpt-5.6-sol",
                     help="exact Kiro model (default: gpt-5.6-sol; e.g. claude-opus-5)")
     ap.add_argument("--no-mathlib", action="store_true",
@@ -692,6 +697,9 @@ def _main(cleanup):
     # truthy, so normalise here rather than letting it reach the engine and fail as an
     # unpriced model only after workspace setup and the Mathlib fetch.
     a.claude_model = (a.claude_model or "").strip() or None
+    # Same for TAUCETI_CODEX_MODEL, and here it matters more: forwarding any --codex-model to the
+    # engine opts it out of the unavailable-model fallback.
+    a.codex_model = (a.codex_model or "").strip() or None
 
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
     # host runs this after a --no-sync review (e.g. a bubble) to publish with its own creds. Loud:
@@ -986,6 +994,8 @@ def _main(cleanup):
            "--replies-json", str(replies_path), "--prior-scoreboard-json", str(prior_board_path)]
     if a.claude_model:
         cmd += ["--claude-model", a.claude_model]
+    if a.codex_model:
+        cmd += ["--codex-model", a.codex_model]
     if a.rubrics:
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
