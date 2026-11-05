@@ -149,6 +149,9 @@ def test_handoff():
     for rc, tail in [(1, json.dumps({'id': 11, 'in_reply_to_id': 42, 'body': 'contest'})),
                      (0, '{broken'), (0, 'null'), (0, '[]'),
                      (0, json.dumps({'body': 'missing id'})),
+                     (0, json.dumps({'id': True, 'body': 'bad id'})),
+                     (0, json.dumps({'id': 11, 'body': 'x', 'in_reply_to_id': '42'})),
+                     (0, json.dumps({'id': 11, 'body': 'x', 'user': 'name'})),
                      (0, json.dumps({'id': 11, 'body': {}})),
                      (0, json.dumps({'id': 11, 'body': {'bad': 'shape'}}))]:
         partial = json.dumps(root) + '\n' + tail
@@ -156,6 +159,12 @@ def test_handoff():
             assert cli.fetch_thread_replies('Owner/Repo', 1) is None
     with patch.object(cli, 'run', return_value=SimpleNamespace(returncode=0, stdout='')):
         assert cli.fetch_thread_replies('Owner/Repo', 1) == {}
+    nullable = [root, {'id': 5, 'body': None, 'user': None},
+                {'id': 12, 'in_reply_to_id': 42, 'body': None, 'user': None}]
+    with patch.object(cli, 'run', return_value=SimpleNamespace(
+            returncode=0, stdout='\n'.join(map(json.dumps, nullable)))):
+        fetched = cli.fetch_thread_replies('Owner/Repo', 1)
+    assert fetched['reuse'][0]['body'] == ''
     c = {'id': 7, 'user': {'login': 'reviewer'}, 'body': '<!--tauceti-scoreboard-->\n'
          '<!--tauceti-meta:v1 ' + json.dumps({'head_sha': tb.HEAD, 'states': {'reuse': 'green'},
                                            'replies_through': 10, 'rubrics_version': 'V'}) + '-->'}

@@ -403,7 +403,7 @@ def fetch_thread_replies(repo, pr):
     root_bodies = {}
     for c in comments:
         if c.get("in_reply_to_id") is None:
-            m = re.search(r"tauceti-rubric:([a-z][a-z-]*?)\s*-->", c.get("body", ""))
+            m = re.search(r"tauceti-rubric:([a-z][a-z-]*?)\s*-->", c.get("body") or "")
             if m:
                 root_rubric[c["id"]] = m.group(1)
                 root_bodies[c["id"]] = c.get("body") or ""
