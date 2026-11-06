@@ -628,7 +628,9 @@ def _main(cleanup):
                     help="exact Kiro model (default: gpt-5.6-sol; e.g. claude-opus-5)")
     ap.add_argument("--grok-model", default=os.environ.get("TAUCETI_GROK_MODEL") or None,
                     help="exact native Grok Build model; overrides TAUCETI_GROK_MODEL. "
-                         "Unset: keep the engine's default. Must be priced in runner/prices.json")
+                         "Unset: keep the engine's default (grok-4.7). A model absent from "
+                         "runner/prices.json is warned about and billed at its newest priced "
+                         "sibling's rates (or the default rate)")
     ap.add_argument("--no-mathlib", action="store_true",
                     help="skip fetching the pinned Mathlib source (faster; reuse checks weaker)")
     ap.add_argument("--roadmap-dir", default="",
@@ -699,6 +701,14 @@ def _main(cleanup):
     # unpriced model only after workspace setup and the Mathlib fetch.
     a.claude_model = (a.claude_model or "").strip() or None
     a.grok_model = (a.grok_model or "").strip() or None
+    # Validated (and later forwarded) only when the native grok is requested. TAUCETI_GROK_MODEL
+    # used to pin the OpenRouter grok, so an upgraded runner may still carry an x-ai id there; that
+    # must not break a claude/codex review, but a native grok review must fail here, before the
+    # workspace setup and Mathlib fetch, not in the engine.
+    grok_requested = "grok" in {p.strip() for p in a.reviewer.split(",")}
+    if grok_requested and a.grok_model and "/" in a.grok_model:
+        die(f"--grok-model {a.grok_model!r} is an OpenRouter id (set via --grok-model or "
+            "TAUCETI_GROK_MODEL); use --reviewer grok-openrouter for it, or a native id like grok-4.7")
 
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
     # host runs this after a --no-sync review (e.g. a bubble) to publish with its own creds. Loud:
@@ -1004,7 +1014,7 @@ def _main(cleanup):
            "--replies-json", str(replies_path), "--prior-scoreboard-json", str(prior_board_path)]
     if a.claude_model:
         cmd += ["--claude-model", a.claude_model]
-    if a.grok_model:
+    if a.grok_model and "grok" in avail:
         cmd += ["--grok-model", a.grok_model]
     if a.rubrics:
         cmd += ["--rubrics", a.rubrics]

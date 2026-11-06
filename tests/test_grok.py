@@ -235,7 +235,7 @@ def test_run_grok_nonzero_exit_keeps_tails():
 
 def test_engine_rejects_openrouter_id_for_native_grok():
     argv = ["review.py", "--pr", "1", "--rubrics-dir", "r", "--tool-cwd", "t", "--diff-file", "d",
-            "--store", "s", "--grok-model", "x-ai/grok-4.3"]
+            "--store", "s", "--providers", "grok", "--grok-model", "x-ai/grok-4.3"]
     old = sys.argv
     sys.argv = argv
     try:
@@ -248,21 +248,24 @@ def test_engine_rejects_openrouter_id_for_native_grok():
         sys.argv = old
 
 
-def test_missing_grok_login_is_that_reviewers_failure_not_a_crash():
+def _run_rubric(runner=None, env_error=None):
+    """Drive review.run_rubric once for a grok rubric with faked seams; return (result, stderr)."""
     import argparse
-    import types
-    import test_codex_fallback as tcf
+    import contextlib
+    import io
 
-    def no_login(provider, keys, subscription):
-        raise RuntimeError("no Grok subscription login at ~/.grok/auth.json; run `grok login` first")
+    def env_fn(provider, keys, subscription):
+        if env_error:
+            raise RuntimeError(env_error)
+        return {"HOME": "/nonexistent"}, None
 
-    def fake_runner(*a, **k):
+    def default_runner(*a, **k):
         raise AssertionError("runner must not run without a login")
 
     saved = {n: getattr(review, n) for n in
              ("reviewer_env", "cleanup_rev_home", "build_prompt", "build_reactivation_block",
               "extract_verdict", "update_case_file", "newest_reply_id")}
-    review.reviewer_env = no_login
+    review.reviewer_env = env_fn
     review.cleanup_rev_home = lambda *a, **k: None
     review.build_prompt = lambda *a, **k: "PROMPT"
     review.build_reactivation_block = lambda *a, **k: ""
@@ -276,20 +279,138 @@ def test_missing_grok_login_is_that_reviewers_failure_not_a_crash():
                            rubrics_repo="rr", rubrics_sha=None, rubrics_sha_approx=None)
     ledger = types.SimpleNamespace(set_spent=lambda *a, **k: None, persist=lambda: None)
     ctx = review.RunContext(a=a, state_map={}, reply_text="", base_context="", head="h" * 40,
-                            providers=["grok"], runners={"grok": (fake_runner, "grok-4.7")}, keys={},
-                            subscription=True, rubrics_version="v1", round_num=1, prov={"round": 1},
-                            diff_full="", outdir=outdir, day="2026-11-06", ledger=ledger, spent_today=0.0)
+                            providers=["grok"], runners={"grok": (runner or default_runner, "grok-4.7")},
+                            keys={}, subscription=True, rubrics_version="v1", round_num=1,
+                            prov={"round": 1}, diff_full="", outdir=outdir, day="2026-11-06",
+                            ledger=ledger, spent_today=0.0)
+    err = io.StringIO()
+    gha = os.environ.pop("GITHUB_ACTIONS", None)
     try:
-        review.run_rubric(ctx, "correctness")
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            review.run_rubric(ctx, "correctness")
     finally:
         for n, v in saved.items():
             setattr(review, n, v)
-    res = ctx.run_results[0]
+        if gha is not None:
+            os.environ["GITHUB_ACTIONS"] = gha
+    return ctx.run_results[0], err.getvalue()
+
+
+def test_missing_grok_login_is_that_reviewers_failure_not_a_crash():
+    res, _ = _run_rubric(env_error="no Grok subscription login at ~/.grok/auth.json; run `grok login` first")
     assert res["provider"] == "grok"
     assert res["returncode"] != 0 and res["is_error"] is True
     assert "grok login" in res["error_message"], res
     assert res["verdict_obj"] is None
     assert len(res["attempts"]) == 2 and all(x["error_kind"] == "not_authenticated" for x in res["attempts"]), res["attempts"]
+
+
+def _violating_runner(calls):
+    def runner(prompt, cwd, model, env):
+        calls.append(1)
+        widened = dict(_READ_TOOLS_EVENT, tools=["read_file", "list_dir", "grep", "use_tool"])
+        stream = _stream(widened, {"type": "text", "data": "v"}, _END)
+        original = reviewers.sh
+        reviewers.sh = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout=stream,
+                                                                stderr="progress chatter")
+        home = tempfile.mkdtemp()
+        try:
+            return reviewers.run_grok(prompt, cwd, model, {"HOME": home})
+        finally:
+            reviewers.sh = original
+            shutil.rmtree(home, ignore_errors=True)
+    return runner
+
+
+def test_tool_set_violation_is_classified():
+    out, _ = _run(_stream(dict(_READ_TOOLS_EVENT, tools=["read_file", "use_tool"]),
+                          {"type": "text", "data": "v"}, _END))
+    assert review.error_kind(out) == "tool_set_violation", review.error_kind(out)
+    # Only the runner's own diagnosis names it: provider stderr saying the same words does not.
+    forged = {"returncode": 0, "raw_stderr": out["error_message"]}
+    assert review.error_kind(forged) != "tool_set_violation"
+
+
+def test_tool_set_violation_is_not_retried_and_is_shown_locally():
+    calls = []
+    res, err = _run_rubric(runner=_violating_runner(calls))
+    assert len(calls) == 1, f"a tool-set violation must not be retried at full cost ({len(calls)} runs)"
+    assert [x["error_kind"] for x in res["attempts"]] == ["tool_set_violation"], res["attempts"]
+    assert "no verdict: tool_set_violation" in err, err
+    # grok's stderr holds only chatter; the operator still sees why (error_message names the tool).
+    assert "use_tool" in err, err
+
+
+def test_stderr_summary_falls_back_to_error_message():
+    assert review.stderr_summary({"raw_stderr": "", "error_message": "first\ngrok exposed use_tool"}) \
+        == "grok exposed use_tool"
+    assert review.stderr_summary({"raw_stderr": "real stderr", "error_message": "msg"}) == "real stderr"
+    assert review.stderr_summary({"raw_stderr": "", "error_message": None}) == ""
+
+
+def test_run_grok_maps_reasoning_tokens_for_reporting():
+    import pricing
+    out, _ = _run(_stream(_READ_TOOLS_EVENT, {"type": "text", "data": "v"}, _END))
+    t = pricing.usage_totals("grok", out["usage"])
+    assert t["reasoning_output_tokens"] == 50, t
+    assert t["output_tokens"] == 100, t  # reasoning is reported, never added to output
+    assert t["input_tokens"] == 3000 and t["fresh_input_tokens"] == 1000, t
+
+
+def test_run_grok_prices_a_run_without_an_end_event():
+    # A killed or truncated run still spent tokens: price the per-turn usage events.
+    turns = [{"type": "usage", "usage": {"input_tokens": 600, "output_tokens": 40,
+                                         "cache_read_input_tokens": 1000,
+                                         "cache_creation_input_tokens": 0, "reasoning_tokens": 20}},
+             {"type": "usage", "usage": {"input_tokens": 400, "output_tokens": 60,
+                                         "cache_read_input_tokens": 1000,
+                                         "cache_creation_input_tokens": 0, "reasoning_tokens": 30}}]
+    out, _ = _run(_stream(_READ_TOOLS_EVENT, *turns, {"type": "text", "data": "partial"}))
+    assert out["is_error"] is True
+    assert out["cost_usd"] == 0.0036, out.get("cost_usd")
+    assert out["usage"]["input_tokens"] == 1000 and out["usage"]["output_tokens"] == 100, out["usage"]
+    assert out["usage"]["cache_read_input_tokens"] == 2000, out["usage"]
+    # An end event whose modelUsage rows are unusable falls back to its top-level usage.
+    end = dict(_END, modelUsage={"grok-4.7-build": "garbage"})
+    out, _ = _run(_stream(_READ_TOOLS_EVENT, {"type": "text", "data": "v"}, end))
+    assert out["cost_usd"] == 0.0036, out.get("cost_usd")
+    # ...and an end event with no usable usage at all falls back to the per-turn events.
+    end = {"type": "end", "stopReason": "max_turns", "sessionId": "s1"}
+    out, _ = _run(_stream(_READ_TOOLS_EVENT, *turns, {"type": "text", "data": "v"}, end))
+    assert out["cost_usd"] == 0.0036, out.get("cost_usd")
+
+
+def _engine_reaches_dispatch(argv_extra):
+    """True when review.main() gets past argument validation (stopped at sweep_rev_homes)."""
+    from unittest.mock import patch
+
+    class Reached(Exception):
+        pass
+
+    def stop():
+        raise Reached
+
+    argv = ["review.py", "--pr", "1", "--rubrics-dir", "r", "--tool-cwd", "t", "--diff-file", "d",
+            "--store", "s", *argv_extra]
+    with patch.object(sys, "argv", argv), patch.object(review, "sweep_rev_homes", stop):
+        try:
+            review.main()
+        except Reached:
+            return True, None
+        except SystemExit as e:
+            return False, e.code
+    raise AssertionError("review.main() returned")
+
+
+def test_stale_grok_model_does_not_break_other_reviewers():
+    for model in ("x-ai/grok-4.3", "   "):
+        ok, code = _engine_reaches_dispatch(["--providers", "claude", "--grok-model", model])
+        assert ok, (model, code)
+        ok, code = _engine_reaches_dispatch(["--providers", "claude,codex", "--grok-model", model])
+        assert ok, (model, code)
+    # ...but it is still rejected the moment grok is actually requested.
+    ok, code = _engine_reaches_dispatch(["--providers", "claude,grok", "--grok-model", "x-ai/grok-4.3"])
+    assert not ok and "grok-openrouter" in str(code), code
 
 
 if __name__ == "__main__":

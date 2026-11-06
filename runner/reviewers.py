@@ -125,6 +125,10 @@ def exact_kiro_model(model):
 # effective tool set Grok reports is wider than GROK_READ_TOOLS anyway.
 GROK_READ_TOOLS = ("read_file", "grep", "list_dir")
 
+# The fixed prefix of run_grok's error_message for a widened tool set. review.error_kind keys the
+# non-retried `tool_set_violation` kind off it, read from error_message only (never from stderr).
+GROK_TOOL_VIOLATION = "grok exposed or called tools outside the read-only set"
+
 GROK_DENIED_TOOLS = ("run_terminal_cmd", "write", "search_replace", "web_search", "web_fetch",
                      "search_tool", "use_tool", "task", "todo_write", "lsp", "monitor", "workflow",
                      "enter_plan_mode", "image_gen")
@@ -745,7 +749,8 @@ def run_grok(prompt, cwd, model, env):
     Verdict text is the concatenated `data` of `text` events; `thought` events (reasoning) are
     never part of it. Spend comes from the terminal `end` event: cost_usd is computed from
     prices.json per `modelUsage` entry, and grok's own `total_cost_usd` is kept as
-    provider_cost_usd for cross-checking, as run_pi does."""
+    provider_cost_usd for cross-checking, as run_pi does. Without a usable `end` (a killed or
+    truncated run) the summed per-turn `usage` events are priced instead, so the spend is kept."""
     model = exact_grok_model(model)
     prompt_file = os.path.join(env["HOME"], "review-prompt.md")
     with open(prompt_file, "w", encoding="utf-8") as f:
@@ -761,6 +766,7 @@ def run_grok(prompt, cwd, model, env):
     r = sh(cmd, cwd=cwd, env=env)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     parts, end, err = [], None, None
+    turn_usage = {}  # summed per-turn `usage` events: the spend record when `end` never arrives
     unexpected = set()
     # The tool check must not pass on ABSENCE of evidence: a run is accepted only when Grok listed
     # its effective tool set at least once (the live stream does so from its first line) and every
@@ -789,6 +795,9 @@ def run_grok(prompt, cwd, model, env):
                 malformed_listing = True
                 continue
             listed = True
+            # Only `tools` is checked. `commands` are slash commands (compact, review, ...): in a
+            # headless --prompt-file run nothing types them, and any tool one would use still
+            # has to appear in `tools` or as a tool_call, which is checked.
             for tool in tools:
                 if tool not in GROK_READ_TOOLS:
                     unexpected.add(str(tool)[:40])
@@ -811,6 +820,12 @@ def run_grok(prompt, cwd, model, env):
             if entry is not None:
                 entry["ok"] = status == "completed"
                 successful += int(entry["ok"])
+        elif t == "usage":
+            u = ev.get("usage")
+            if isinstance(u, dict):
+                for k, v in u.items():
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        turn_usage[k] = turn_usage.get(k, 0) + v
         elif t == "end":
             end = ev
         elif t == "error":
@@ -819,20 +834,21 @@ def run_grok(prompt, cwd, model, env):
     out.update(text="".join(parts), session_id=None, usage=None, tool_trace=trace, tool_trace_meta={
         "total_calls": total, "successful_calls": successful,
         "trace_truncated": total > len(trace)})
-    if end is not None:
-        out["session_id"] = end.get("sessionId")
-        usage = end.get("usage") if isinstance(end.get("usage"), dict) else None
-        out["usage"] = usage
-        cost, inherited = _grok_cost(end.get("modelUsage"), usage, model)
-        if cost is not None:
-            out.update(cost_usd=cost, cost_estimated=True)
-        if inherited is not None:
-            out["price_inherited"] = inherited
-        if isinstance(end.get("total_cost_usd"), (int, float)):
-            out["provider_cost_usd"] = round(end["total_cost_usd"], 6)
+    # Spend: the end event's per-model rows, else its cumulative usage, else the per-turn usage
+    # events summed — so a killed or truncated run (no `end`) still records what it spent.
+    fin = end or {}
+    usage = fin.get("usage") if isinstance(fin.get("usage"), dict) and fin["usage"] else (turn_usage or None)
+    out["session_id"] = fin.get("sessionId")
+    out["usage"] = usage
+    cost, inherited = _grok_cost(fin.get("modelUsage"), usage, model)
+    if cost is not None:
+        out.update(cost_usd=cost, cost_estimated=True)
+    if inherited is not None:
+        out["price_inherited"] = inherited
+    if isinstance(fin.get("total_cost_usd"), (int, float)) and not isinstance(fin["total_cost_usd"], bool):
+        out["provider_cost_usd"] = round(fin["total_cost_usd"], 6)
     if unexpected:
-        err = ("grok exposed or called tools outside the read-only set: "
-               + ", ".join(sorted(unexpected)))
+        err = f"{GROK_TOOL_VIOLATION}: " + ", ".join(sorted(unexpected))
     elif err is None and (malformed_listing or not listed):
         # After a provider `error` event that message is the more useful diagnosis (an auth
         # failure may end the stream before any listing); the run fails either way.
@@ -856,8 +872,9 @@ def _grok_cost(model_usage, usage, model):
 
     Per `modelUsage` entry (grok reports the model that actually served, e.g. `grok-4.7-build` for
     `-m grok-4.7`): fresh input + cache reads at the cache rate + output. `inputTokens` is fresh
-    input only, so nothing is double-counted. Falls back to the top-level `usage` at the requested
-    model's rates when `modelUsage` is absent; returns `(None, None)` when there is nothing to price."""
+    input only, so nothing is double-counted. Falls back to `usage` (the end event's cumulative
+    usage, or the summed per-turn usage) at the requested model's rates when `modelUsage` is absent
+    or has no usable row; returns `(None, None)` when there is nothing to price."""
     def n(d, k):
         v = d.get(k)
         return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
@@ -867,7 +884,7 @@ def _grok_cost(model_usage, usage, model):
         for mid, u in model_usage.items():
             if isinstance(u, dict):
                 rows.append((mid, n(u, "inputTokens"), n(u, "cacheReadInputTokens"), n(u, "outputTokens")))
-    elif usage:
+    if not rows and usage:
         rows.append((model, n(usage, "input_tokens"), n(usage, "cache_read_input_tokens"),
                      n(usage, "output_tokens")))
     if not rows:

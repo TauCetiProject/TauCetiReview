@@ -21,8 +21,10 @@ KIRO_MODEL = "gpt-5.6-sol"
 
 # Native Grok Build is an explicit-only reviewer (provider `grok`), distinct from the
 # pi/OpenRouter route (`grok-openrouter`). Only TAUCETI_GROK_MODEL overrides it: bare
-# GROK_MODEL belongs to the OpenRouter route.
-GROK_MODEL = os.environ.get("TAUCETI_GROK_MODEL") or "grok-4.7"
+# GROK_MODEL belongs to the OpenRouter route. Stripped, so an empty CI variable means "unset".
+# Before the native reviewer existed this variable pinned the OpenRouter grok, so a runner may still
+# carry an x-ai id here; the engine and CLI reject that only when the native grok is requested.
+GROK_MODEL = (os.environ.get("TAUCETI_GROK_MODEL") or "").strip() or "grok-4.7"
 
 # OpenRouter models driven through the `pi` agent (badlogic/pi-mono): a third reviewer
 # family alongside claude/codex, selectable as --providers/--reviewer deepseek|minimax.
@@ -196,6 +198,11 @@ def usage_totals(provider, usage):
     Claude and pi report fresh input separately from cache reads (and Claude cache writes).
     Codex reports total input with cached input as a subset. Keep the raw per-run usage intact;
     this view is for display and aggregate token accounting, not provider billing.
+
+    Provider "grok" is separate for both of its meanings: native Grok Build (fresh input plus
+    `cache_read_input_tokens`) and the records written before the rename, when "grok" was the
+    pi/OpenRouter route (fresh input plus `cached_input_tokens`). Native Grok reports reasoning as
+    `reasoning_tokens`, already inside `output_tokens`; it is mapped here for reporting only.
     """
     usage = usage if isinstance(usage, dict) else {}
 
@@ -206,14 +213,16 @@ def usage_totals(provider, usage):
     inp = count("input_tokens")
     cached = count("cache_read_input_tokens") if "cache_read_input_tokens" in usage else count("cached_input_tokens")
     written = count("cache_creation_input_tokens") if "cache_creation_input_tokens" in usage else count("cache_write_input_tokens")
-    separate = (provider in {"claude", "sonnet"} or provider in OPENROUTER_MODELS
+    separate = (provider in {"claude", "sonnet", "grok"} or provider in OPENROUTER_MODELS
                 or "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage)
     total = inp + cached + written if separate else inp
     fresh = inp if separate else max(0, inp - cached - written)
     return {"input_tokens": total, "fresh_input_tokens": fresh,
             "cached_input_tokens": cached, "cache_creation_input_tokens": written,
             "output_tokens": count("output_tokens"),
-            "reasoning_output_tokens": count("reasoning_output_tokens")}
+            "reasoning_output_tokens": (count("reasoning_output_tokens")
+                                        if "reasoning_output_tokens" in usage
+                                        else count("reasoning_tokens"))}
 
 
 def sum_usage(run_results):

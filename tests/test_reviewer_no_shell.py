@@ -103,6 +103,12 @@ def comma_values(argv, flag):
 GROK_FORBIDDEN = {"run_terminal_cmd", "write", "search_replace", "web_search", "web_fetch",
                   "search_tool", "use_tool", "task"}
 
+# The exact denylist the design fixes. Pinned by equality, not superset: dropping an entry, or
+# adding one silently, is a reviewed change to the boundary and must update this list.
+GROK_DENYLIST = {"run_terminal_cmd", "write", "search_replace", "web_search", "web_fetch",
+                 "search_tool", "use_tool", "task", "todo_write", "lsp", "monitor", "workflow",
+                 "enter_plan_mode", "image_gen"}
+
 
 def check_grok():
     argv = grok_argv()
@@ -113,6 +119,8 @@ def check_grok():
           set(comma_values(argv, "--tools") or []) == read == {"read_file", "grep", "list_dir"})
     check("grok: the denylist covers shell, write, web, MCP meta-tools and subagents",
           denied >= GROK_FORBIDDEN)
+    check(f"grok: the denylist is exactly the pinned set ({sorted(denied ^ GROK_DENYLIST)} differ)",
+          denied == GROK_DENYLIST and len(reviewers.GROK_DENIED_TOOLS) == len(GROK_DENYLIST))
     check("grok: --disallowed-tools passes the whole denylist",
           "--disallowed-tools" in argv
           and argv[argv.index("--disallowed-tools") + 1] == ",".join(reviewers.GROK_DENIED_TOOLS))

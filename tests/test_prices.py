@@ -290,6 +290,32 @@ def test_openrouter_grok_is_renamed():
         importlib.reload(pricing)
 
 
+
+def test_native_grok_model_env():
+    # Only TAUCETI_GROK_MODEL picks the native model; bare GROK_MODEL is the OpenRouter route's,
+    # and a whitespace-only value (an empty CI variable) means "unset", not a model id.
+    import importlib
+    import os
+    from unittest.mock import patch
+    keys = ("TAUCETI_GROK_MODEL", "GROK_MODEL")
+    try:
+        for env, expected in (
+            ({}, "grok-4.7"),
+            ({"TAUCETI_GROK_MODEL": "grok-4.6"}, "grok-4.6"),
+            ({"TAUCETI_GROK_MODEL": "  grok-4.6 "}, "grok-4.6"),
+            ({"TAUCETI_GROK_MODEL": "grok-4.6", "GROK_MODEL": "grok-9"}, "grok-4.6"),
+            ({"GROK_MODEL": "grok-9"}, "grok-4.7"),
+            ({"TAUCETI_GROK_MODEL": "   "}, "grok-4.7"),
+        ):
+            with patch.dict(os.environ, env, clear=False):
+                for k in keys:
+                    if k not in env:
+                        os.environ.pop(k, None)
+                importlib.reload(pricing)
+                assert pricing.GROK_MODEL == expected, (env, pricing.GROK_MODEL)
+    finally:
+        importlib.reload(pricing)
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:
