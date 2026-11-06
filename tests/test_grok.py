@@ -192,8 +192,30 @@ def test_run_grok_fails_closed_on_unexpected_tools():
     assert "env" not in out["error_message"].replace("run_terminal_cmd", "")
 
 
+def test_run_grok_fails_closed_without_a_tool_listing():
+    # No available_commands at all (renamed event, schema change, truncated stream): the effective
+    # tool set is unproven, so the run is a failure even with a normal end and a verdict.
+    verdict = {"type": "text", "data": "TAUCETI-VERDICT {\"ok\": true}"}
+    out, _ = _run(_stream(verdict, _END))
+    assert out["returncode"] == 0
+    assert "available_commands" in out.get("error_message", ""), out.get("error_message")
+    assert out["is_error"] is True and out["text"] == ""
+    assert "raw_stdout" in out
+    # A listing whose `tools` is not a list proves nothing either, and taints the run even when
+    # a well-formed listing also appears.
+    malformed = {"type": "available_commands", "tools": {"read_file": {}}}
+    for stream in (_stream(malformed, verdict, _END),
+                   _stream(_READ_TOOLS_EVENT, malformed, verdict, _END)):
+        out, _ = _run(stream)
+        assert "available_commands" in out.get("error_message", ""), out.get("error_message")
+        assert out["is_error"] is True and out["text"] == ""
+
+
 def test_run_grok_error_event_is_a_failure():
     out, _ = _run(_stream({"type": "text", "data": "partial"}, {"type": "error", "message": "boom"}))
+    assert out["error_message"] == "boom", out  # an early provider error beats "no tool listing"
+    out, _ = _run(_stream(_READ_TOOLS_EVENT, {"type": "text", "data": "partial"},
+                          {"type": "error", "message": "boom"}))
     assert out["error_message"] == "boom", out
     assert "raw_stdout" in out
     assert out["is_error"] is True

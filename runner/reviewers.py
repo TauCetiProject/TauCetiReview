@@ -738,8 +738,9 @@ def run_grok(prompt, cwd, model, env):
     `streaming-json` rather than `json`, because only the stream shows which tools Grok actually
     exposed (`available_commands`) and called (`tool_call`); that is what lets this fail closed.
     A run whose effective tool set, or any call, falls outside GROK_READ_TOOLS is a failure even if
-    it exited 0 with a well-formed answer: `is_error` is set and `text` is emptied, which is what
-    review.py's has_verdict/_cli_reports_failure reject on. The returncode is left as grok's own.
+    it exited 0 with a well-formed answer, and so is one that never lists a well-formed tool set:
+    `is_error` is set and `text` is emptied, which is what review.py's
+    has_verdict/_cli_reports_failure reject on. The returncode is left as grok's own.
 
     Verdict text is the concatenated `data` of `text` events; `thought` events (reasoning) are
     never part of it. Spend comes from the terminal `end` event: cost_usd is computed from
@@ -761,6 +762,11 @@ def run_grok(prompt, cwd, model, env):
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     parts, end, err = [], None, None
     unexpected = set()
+    # The tool check must not pass on ABSENCE of evidence: a run is accepted only when Grok listed
+    # its effective tool set at least once (the live stream does so from its first line) and every
+    # listing was a well-formed list. A renamed event, a schema change, or a stream truncated
+    # before the listing leaves the tool set unproven, and that is a failure too.
+    listed, malformed_listing = False, False
     names = {}  # toolCallId -> trace entry
     trace, total, successful = [], 0, 0
     for line in r.stdout.splitlines():
@@ -779,7 +785,11 @@ def run_grok(prompt, cwd, model, env):
                 parts.append(ev["data"])
         elif t == "available_commands":
             tools = ev.get("tools")
-            for tool in (tools if isinstance(tools, list) else []):
+            if not isinstance(tools, list):
+                malformed_listing = True
+                continue
+            listed = True
+            for tool in tools:
                 if tool not in GROK_READ_TOOLS:
                     unexpected.add(str(tool)[:40])
         elif t == "tool_call":
@@ -823,6 +833,12 @@ def run_grok(prompt, cwd, model, env):
     if unexpected:
         err = ("grok exposed or called tools outside the read-only set: "
                + ", ".join(sorted(unexpected)))
+    elif err is None and (malformed_listing or not listed):
+        # After a provider `error` event that message is the more useful diagnosis (an auth
+        # failure may end the stream before any listing); the run fails either way.
+        err = ("grok's available_commands " + ("listed tools in an unexpected shape"
+                                               if malformed_listing else "event never appeared")
+               + "; its effective tool set is unproven")
     elif err is None and end is None:
         err = f"no end event in a {len(r.stdout)}-byte streaming-json stream"
     elif err is None and r.returncode != 0:
