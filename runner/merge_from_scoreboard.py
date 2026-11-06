@@ -22,83 +22,20 @@ import argparse
 import os
 import json
 import pathlib
-import re
 import subprocess
 import sys
 
 from merge import read_paths
-from review import DEFAULT_RUBRICS, decide_merge
-
-SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
-META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
-# A rendered scoreboard row: | <icon> | [rubric](url) | <state word> | `judge` | summary |
-TABLE_ROW_RE = re.compile(r"^\|[^|]*\|\s*\[?([a-z0-9-]+)\]?[^|]*\|\s*([^|]+?)\s*\|", re.M)
-WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
-              "blocked": "blocking_block", "stale (re-run pending)": "stale",
-              "not yet run": "absent", "error": "error"}
+from handoff import DEFAULT_RUBRICS
+from admission_policy import (SCOREBOARD_MARKER, META_RE, TABLE_ROW_RE, WORD_STATE,
+                              parse_meta, states_from_table as policy_states_from_table, current_scoreboards,
+                              latest_current_scoreboard, load_comments,
+                              decide_from_comments as evaluate_admission)
 
 
 if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
     from tauceti_tools.project import bootstrap
     bootstrap()
-
-def parse_meta(body):
-    m = META_RE.findall(body or "")
-    if not m:
-        return None
-    try:
-        d = json.loads(m[-1].strip())
-        return d if isinstance(d, dict) else None
-    except json.JSONDecodeError:
-        return None
-
-
-def states_from_table(body):
-    """Fallback for comments whose meta predates `states`: derive per-rubric state from the table."""
-    out = {}
-    for rubric, word in TABLE_ROW_RE.findall(body or ""):
-        w = word.strip().lower()
-        if rubric in DEFAULT_RUBRICS and w in WORD_STATE:
-            out[rubric] = WORD_STATE[w]
-    return out
-
-
-def current_scoreboards(comments, head_sha):
-    """Valid scoreboard comments for this exact head. There is deliberately no author access bar:
-    ordinary contributors' posted reviews count, just as they did in the original merge gate."""
-    out = []
-    for comment in comments:
-        body = comment.get("body") or ""
-        if SCOREBOARD_MARKER not in body:
-            continue
-        meta = parse_meta(body)
-        if meta and meta.get("head_sha") == head_sha:
-            out.append((comment, meta))
-    return out
-
-
-def latest_current_scoreboard(comments, head_sha):
-    """The newest completed scoreboard for this exact head.
-
-    Review init posts an in-progress scoreboard before running models. Ignore those while any
-    completed scoreboard exists: starting a second review must not temporarily replace a green
-    completed verdict with an empty in-progress one. If init is the only current-head scoreboard,
-    retain it and fail closed from its states. Comments normally arrive in creation order; use their
-    update timestamp first and their input position as a deterministic fallback/tie-break.
-    """
-    boards = current_scoreboards(comments, head_sha)
-    if not boards:
-        return None
-    completed = [b for b in boards if b[1].get("mode") != "init"]
-    candidates = completed or boards
-
-    def order(item):
-        index, (comment, meta) = item
-        timestamp = (comment.get("updated_at") or comment.get("created_at")
-                     or meta.get("ts") or "")
-        return timestamp, index
-
-    return max(enumerate(candidates), key=order)[1]
 
 
 # docbuild/docs/references.bib is the bibliography doc-gen4 resolves docstring citations
@@ -110,82 +47,18 @@ DEFAULT_ALLOW = [os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/"
                  "docbuild/docs/references.bib"]
 
 
-def load_comments(text):
-    """Parse a comments file that is either a single JSON array or JSONL (one comment object per line
-    — what `gh api --paginate --jq '.[]|...'` emits across pages, so all comments are seen, not just
-    page 1). Distinguish by the leading bracket: a single JSONL line is itself valid JSON (a dict), so
-    a plain json.loads would silently drop it."""
-    if text.lstrip()[:1] == "[":
-        try:
-            data = json.loads(text)
-            return data if isinstance(data, list) else []
-        except json.JSONDecodeError:
-            return []
-    out = []
-    for line in text.splitlines():
-        line = line.strip()
-        if line:
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return out
+def states_from_table(body):
+    """Preserve configured rubric names for legacy rendered scoreboards."""
+    return policy_states_from_table(body, DEFAULT_RUBRICS)
 
 
 def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_guard,
-                         merge_path_prefix=os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + "/", merge_allow_file=None, scope="", now=None,
-                         merge_base_sha=""):
-    """The gate shared by merge-only and the sweep.
-
-    A verdict is bound to the diff it judged, which `head_sha` alone does not pin: retargeting the
-    PR or rewriting the base branch changes the diff under the same head. The diff is fully
-    determined by (merge base, head), and every scoreboard records the merge base it reviewed
-    against (`merge_base_sha`, from the same compare API the merge job asks), so the newest
-    completed scoreboard counts only if that equals `merge_base_sha`, the merge base now. It is
-    stable while the base branch merely advances. A scoreboard without it, or an unknown current
-    merge base, fails closed. `paths` are the PR's changed paths, machine-read
-    (runner/pr_diff.py), never parsed from the patch text.
-
-    `review_safe` is intentionally separate from `merge`: the reconciler should dequeue a PR when
-    its review state becomes unsafe, but should leave a human-queued PR alone when only the automatic
-    path/build policy refuses it. Returns {"review_safe", "merge", "reason", "head_sha"}.
-    """
-    allow = DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file
-    if not required:
-        return {"review_safe": False, "merge": False,
-                "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
-    latest = latest_current_scoreboard(comments, head_sha)
-    if latest is None:
-        return {"review_safe": False, "merge": False,
-                "reason": "no scoreboard comment for the current head; refusing",
-                "head_sha": head_sha}
-    board, meta = latest
-    if meta.get("mode") == "init":
-        # Posted before any model ran this round; whatever states it renders, no verdict for this
-        # head has been completed. Fail closed regardless of the states.
-        return {"review_safe": False, "merge": False,
-                "reason": "no completed scoreboard for the current head yet; waiting",
-                "head_sha": head_sha}
-    if not merge_base_sha or meta.get("merge_base_sha") != merge_base_sha:
-        return {"review_safe": False, "merge": False,
-                "reason": (f"the newest completed scoreboard reviewed the diff from merge base "
-                           f"{(meta.get('merge_base_sha') or 'unrecorded')[:12]}, but the merge "
-                           f"base is now {(merge_base_sha or 'unknown')[:12]}; refusing"),
-                "head_sha": head_sha}
-    raw = meta.get("states")
-    if not isinstance(raw, dict) or not raw:
-        raw = states_from_table(board.get("body"))  # old comment: derive from rendered table
-    states = {r: (raw.get(r) or "absent") for r in required}
-    if not all(states[r] == "green" for r in required):
-        return {"review_safe": False, "merge": False,
-                "reason": "the newest completed scoreboard for the current head is not all-green; "
-                          "refusing",
-                "head_sha": head_sha}
-    states = {r: "green" for r in required}
-    candidates = sorted(required)
-    merge_ok, reason = decide_merge(states, candidates, True, set(paths), head_sha,
-                                    merge_path_prefix, allow, bump_guard, ci_build, scope)
-    return {"review_safe": True, "merge": merge_ok, "reason": reason, "head_sha": head_sha}
+                         merge_path_prefix=os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + "/",
+                         merge_allow_file=None, scope="", now=None, merge_base_sha=""):
+    """CLI configuration adapter for the shared, pure admission evaluator."""
+    return evaluate_admission(comments, head_sha, required, paths, ci_build, bump_guard,
+                              merge_path_prefix, DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file,
+                              scope, now, merge_base_sha)
 
 
 def resolve_commit_status(repo, head_sha, context):
