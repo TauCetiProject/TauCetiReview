@@ -27,9 +27,11 @@ from verdict import is_unresolved, posts_review_thread, state_of
 # Rubrics run in this order, and a `block` halts the round, so the block-capable integrity
 # angles go first, fail-fast style: ordered by observed block rate over cost (ledger data —
 # correctness and reuse block as often as scope but cost a third as much; attribution has
-# not blocked yet). The non-blocking style angles follow in their README order.
+# not blocked yet). The non-blocking style angles follow in their README order; the
+# quality-pass angle, which only checks the author's self-report, runs last.
 DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
-                   "generality", "placement", "naming", "documentation", "proof-quality"]
+                   "generality", "placement", "naming", "documentation", "proof-quality",
+                   "quality-pass"]
 DEFAULT_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]")) or DEFAULT_RUBRICS
 
 def thread_action_rubrics(candidates, ran, state_map, head):
