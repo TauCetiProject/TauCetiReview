@@ -386,14 +386,24 @@ def fetch_thread_replies(repo, pr):
         line = line.strip()
         if line:
             try:
-                comments.append(json.loads(line))
+                comment = json.loads(line)
             except json.JSONDecodeError:
-                continue
+                return None  # A partial history cannot establish that there is no contest.
+            if (not isinstance(comment, dict)
+                    or type(comment.get("id")) is not int or comment["id"] <= 0
+                    or "body" not in comment
+                    or (comment["body"] is not None and not isinstance(comment["body"], str))
+                    or (comment.get("in_reply_to_id") is not None
+                        and type(comment["in_reply_to_id"]) is not int)
+                    or (comment.get("user") is not None
+                        and not isinstance(comment["user"], dict))):
+                return None
+            comments.append(comment)
     root_rubric = {}
     root_bodies = {}
     for c in comments:
         if c.get("in_reply_to_id") is None:
-            m = re.search(r"tauceti-rubric:([a-z][a-z-]*?)\s*-->", c.get("body", ""))
+            m = re.search(r"tauceti-rubric:([a-z][a-z-]*?)\s*-->", c.get("body") or "")
             if m:
                 root_rubric[c["id"]] = m.group(1)
                 root_bodies[c["id"]] = c.get("body") or ""
@@ -839,6 +849,8 @@ def _main(cleanup):
         replies_path.write_text(json.dumps(replies))
     else:
         replies_path.unlink(missing_ok=True)
+        print("Thread reply history unavailable; cannot establish that there is no new contest.",
+              file=sys.stderr)
     # Another reviewer's newest scoreboard, whose approvals the engine seeds as stale (♻️) where this
     # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
     prior_board = None
