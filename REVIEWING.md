@@ -99,7 +99,7 @@ Add `--post` to publish. Useful flags:
 | `--mode manual` | re-run every rubric. The default, `commit`, reuses a completed published review of the current head across workers. A new unanswered author contest reopens its rubric while retaining the other published decisions. Missing history still permits ordinary investigation. Incomplete or different-head reviews retain the existing stale-approval and review rules |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |
-| `--auth api` | use the matching `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `KIRO_API_KEY` instead of a browser login |
+| `--auth api` | use the matching `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIRO_API_KEY`, or (for `--reviewer grok`) `XAI_API_KEY` instead of a browser login |
 | `--keep` | keep the temporary workspace for inspection |
 
 ## What it does
