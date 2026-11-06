@@ -24,6 +24,7 @@ Exit 0 = all assertions hold; 1 = a mismatch.
 
 import pathlib
 import sys
+import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import reviewers  # noqa: E402
@@ -73,6 +74,56 @@ def flag_values(argv, flag):
     return out
 
 
+def grok_argv():
+    seen = {}
+
+    class R:
+        returncode, stdout, stderr = 0, "", ""
+
+    orig = reviewers.sh
+    reviewers.sh = lambda argv, **kw: (seen.update(argv=list(argv)), R)[1]
+    try:
+        with tempfile.TemporaryDirectory() as home:
+            reviewers.run_grok("prompt", ".", "grok-4.7", {"HOME": home})
+    finally:
+        reviewers.sh = orig
+    return seen["argv"]
+
+
+def comma_values(argv, flag):
+    """Grok takes ONE comma-joined value per flag, unlike claude's space-separated list."""
+    if flag not in argv:
+        return None
+    return [t.strip() for t in argv[argv.index(flag) + 1].split(",") if t.strip()]
+
+
+# Grok Build's ids for everything that runs, writes, delegates, or reaches the network. `use_tool`
+# is the MCP meta-tool dispatcher: a live streaming-json probe showed `--tools read_file,grep,list_dir`
+# alone still exposed it, so it must be explicitly denied.
+GROK_FORBIDDEN = {"run_terminal_cmd", "write", "search_replace", "web_search", "web_fetch",
+                  "search_tool", "use_tool", "task"}
+
+
+def check_grok():
+    argv = grok_argv()
+    read = set(reviewers.GROK_READ_TOOLS)
+    denied = set(reviewers.GROK_DENIED_TOOLS)
+    check("grok: the built-in tool set is restricted", "--tools" in argv)
+    check(f"grok: ...to exactly read/search/list ({comma_values(argv, '--tools')})",
+          set(comma_values(argv, "--tools") or []) == read == {"read_file", "grep", "list_dir"})
+    check("grok: the denylist covers shell, write, web, MCP meta-tools and subagents",
+          denied >= GROK_FORBIDDEN)
+    check("grok: --disallowed-tools passes the whole denylist",
+          "--disallowed-tools" in argv
+          and argv[argv.index("--disallowed-tools") + 1] == ",".join(reviewers.GROK_DENIED_TOOLS))
+    check("grok: no read tool is also denied", not (read & denied))
+    check("grok: no forbidden tool is in the read set", not (read & GROK_FORBIDDEN))
+    for danger in ("--always-approve", "--trust", "bypassPermissions"):
+        check(f"grok: the launch does not pass {danger}", danger not in argv)
+    check("grok: permission mode is dontAsk",
+          "--permission-mode" in argv and argv[argv.index("--permission-mode") + 1] == "dontAsk")
+
+
 def main():
     argv = captured_argv()
 
@@ -94,6 +145,8 @@ def main():
     for danger in ("--dangerously-skip-permissions", "--permission-mode"):
         check(f"the launch does not pass {danger}", danger not in argv)
     check("slash commands stay disabled", "--disable-slash-commands" in argv)
+
+    check_grok()
 
     print("FAIL" if fails else "PASS")
     return 1 if fails else 0

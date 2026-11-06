@@ -117,6 +117,42 @@ def exact_kiro_model(model):
     return model
 
 
+# A grok reviewer's tool set: read, search, list — Grok Build's own ids. --tools alone is not a
+# boundary: per its docs an unrecognised --tools entry leaves the other tools available (a typo
+# fails open) and MCP meta-tools stay unless denied, and a live streaming-json probe (grok 1.0.77,
+# 2026-11-06) showed `--tools read_file,grep,list_dir` still exposing `use_tool`, the MCP
+# dispatcher. So every non-read tool is also denied by name, and run_grok fails closed if the
+# effective tool set Grok reports is wider than GROK_READ_TOOLS anyway.
+GROK_READ_TOOLS = ("read_file", "grep", "list_dir")
+
+GROK_DENIED_TOOLS = ("run_terminal_cmd", "write", "search_replace", "web_search", "web_fetch",
+                     "search_tool", "use_tool", "task", "todo_write", "lsp", "monitor", "workflow",
+                     "enter_plan_mode", "image_gen")
+
+# Always-on for grok: no telemetry or trace upload (the review transcript includes the files it
+# read), no auto-update, experiments or memory, and none of the Claude/Cursor compatibility loaders
+# that would read agents/rules/skills/MCP servers/hooks from ~/.claude or ~/.cursor. HOME is
+# throwaway, so the last group is belt-and-braces. Never GROK_FOLDER_TRUST, never --trust: the PR
+# checkout must stay an untrusted folder so its AGENTS.md/CLAUDE.md/hooks/MCP config do not load.
+GROK_ENV = {
+    "GROK_TELEMETRY_TRACE_UPLOAD": "0", "GROK_TELEMETRY_ENABLED": "0", "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1", "GROK_FEEDBACK_ENABLED": "0", "GROK_DISABLE_AUTOUPDATER": "1",
+    "GROK_DISABLE_EXPERIMENTS": "1", "GROK_MEMORY": "0",
+    **{f"GROK_{tool}_{kind}_ENABLED": "false"
+       for tool in ("CLAUDE", "CURSOR") for kind in ("AGENTS", "RULES", "SKILLS", "MCPS", "HOOKS")},
+}
+
+# Grok's --max-turns. None of the other reviewers caps turns at all: run_claude (`claude -p`),
+# run_codex (`codex exec`), run_kiro and run_pi pass no turn limit, and review.py sets no
+# per-attempt timeout, so their only effective budget is the job's wall clock (no timeout-minutes
+# in the review workflows, i.e. GitHub's 360-minute default; REV_HOME_MAX_AGE_S assumes the same
+# 6 h). Grok needs SOME number for a bounded headless run, so this is set far above what a rubric
+# needs — a rubric that reads a few dozen files and greps a few dozen more is well under 100
+# turns — to keep it at least as generous as the others in practice while still stopping a
+# runaway loop.
+GROK_MAX_TURNS = 200
+
+
 def exact_grok_model(model):
     """Return a native Grok model id or reject the dispatch."""
     model = (model or "").strip()
@@ -200,6 +236,26 @@ def reviewer_env(provider, keys, subscription=False):
         # reviewer has nothing else to leak, and a read-only tool set (PI_TOOLS, no bash) means
         # it has no shell to leak it with. Residual matches the others: it can read its own key.
         env["OPENROUTER_API_KEY"] = keys.get("openrouter", "")
+    elif provider == "grok":
+        # Grok Build reads GROK_HOME (default ~/.grok) for its login, config, memory and sessions.
+        # Point it inside the throwaway HOME and seed ONLY the OAuth credential, so none of the
+        # runner's own config.toml, skills, MCP servers or memory reach the review. Unlike claude
+        # and codex there is deliberately NO fallback to the real ~/.grok: that directory is the
+        # runner's whole personal Grok config, so a missing login fails the attempt instead.
+        grok_home = os.path.join(home, ".grok")
+        os.makedirs(grok_home, exist_ok=True)
+        env["GROK_HOME"] = grok_home
+        env.update(GROK_ENV)
+        if subscription:
+            src = os.path.expanduser("~/.grok/auth.json")
+            if not os.path.isfile(src):
+                cleanup_rev_home(home)
+                raise RuntimeError(f"no Grok subscription login at {src}; run `grok login` first")
+            dst = os.path.join(grok_home, "auth.json")
+            shutil.copyfile(src, dst)
+            os.chmod(dst, 0o600)
+        else:
+            env["XAI_API_KEY"] = (keys.get("xai", "") or "").strip()
     else:
         codex_home = os.path.join(home, ".codex")
         os.makedirs(codex_home, exist_ok=True)  # codex requires CODEX_HOME to already exist
@@ -670,6 +726,143 @@ def run_kiro(prompt, cwd, model, env):
     if r.returncode != 0 or not r.stdout.strip():
         out["raw_stdout"] = r.stdout[-3000:]
     return out
+
+
+def run_grok(prompt, cwd, model, env):
+    """Run one exact native Grok Build model with read-only filesystem tools.
+
+    Headless grok does not read a piped stdin prompt, so the rendered prompt goes to a file inside
+    the reviewer's throwaway HOME (not argv: a large diff can exceed the OS limit; not /tmp: it
+    lives and dies with the rev home) and is passed with --prompt-file.
+
+    `streaming-json` rather than `json`, because only the stream shows which tools Grok actually
+    exposed (`available_commands`) and called (`tool_call`); that is what lets this fail closed.
+    A run whose effective tool set, or any call, falls outside GROK_READ_TOOLS is a failure even if
+    it exited 0 with a well-formed answer: `is_error` is set and `text` is emptied, which is what
+    review.py's has_verdict/_cli_reports_failure reject on. The returncode is left as grok's own.
+
+    Verdict text is the concatenated `data` of `text` events; `thought` events (reasoning) are
+    never part of it. Spend comes from the terminal `end` event: cost_usd is computed from
+    prices.json per `modelUsage` entry, and grok's own `total_cost_usd` is kept as
+    provider_cost_usd for cross-checking, as run_pi does."""
+    model = exact_grok_model(model)
+    prompt_file = os.path.join(env["HOME"], "review-prompt.md")
+    with open(prompt_file, "w", encoding="utf-8") as f:
+        f.write(prompt)
+    cmd = ["grok", "--prompt-file", prompt_file,
+           "-m", model,
+           "--output-format", "streaming-json",
+           "--tools", ",".join(GROK_READ_TOOLS),
+           "--disallowed-tools", ",".join(GROK_DENIED_TOOLS),
+           "--disable-web-search", "--no-subagents", "--no-plan", "--no-memory",
+           "--permission-mode", "dontAsk",
+           "--max-turns", str(GROK_MAX_TURNS)]
+    r = sh(cmd, cwd=cwd, env=env)
+    out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
+    parts, end, err = [], None, None
+    unexpected = set()
+    names = {}  # toolCallId -> trace entry
+    trace, total, successful = [], 0, 0
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        t = ev.get("type")
+        if t == "text":
+            if isinstance(ev.get("data"), str):
+                parts.append(ev["data"])
+        elif t == "available_commands":
+            tools = ev.get("tools")
+            for tool in (tools if isinstance(tools, list) else []):
+                if tool not in GROK_READ_TOOLS:
+                    unexpected.add(str(tool)[:40])
+        elif t == "tool_call":
+            # Only the tool's name is recorded. rawInput is the model's own words (a path, a
+            # pattern, or a command it was denied) and the trace is published; see run_claude.
+            name = str(ev.get("toolName") or "?")[:40]
+            if name not in GROK_READ_TOOLS:
+                unexpected.add(name)
+            total += 1
+            entry = {"tool": name}
+            if len(trace) < _MAX_TOOL_TRACE:
+                trace.append(entry)
+            names[ev.get("toolCallId")] = entry
+        elif t == "tool_call_update":
+            status = ev.get("status")
+            if status is None:
+                continue  # an intermediate update; only a terminal status says how the call went
+            entry = names.pop(ev.get("toolCallId"), None)
+            if entry is not None:
+                entry["ok"] = status == "completed"
+                successful += int(entry["ok"])
+        elif t == "end":
+            end = ev
+        elif t == "error":
+            if err is None:
+                err = ev.get("message") if isinstance(ev.get("message"), str) else json.dumps(ev)[:500]
+    out.update(text="".join(parts), session_id=None, usage=None, tool_trace=trace, tool_trace_meta={
+        "total_calls": total, "successful_calls": successful,
+        "trace_truncated": total > len(trace)})
+    if end is not None:
+        out["session_id"] = end.get("sessionId")
+        usage = end.get("usage") if isinstance(end.get("usage"), dict) else None
+        out["usage"] = usage
+        cost, inherited = _grok_cost(end.get("modelUsage"), usage, model)
+        if cost is not None:
+            out.update(cost_usd=cost, cost_estimated=True)
+        if inherited is not None:
+            out["price_inherited"] = inherited
+        if isinstance(end.get("total_cost_usd"), (int, float)):
+            out["provider_cost_usd"] = round(end["total_cost_usd"], 6)
+    if unexpected:
+        err = ("grok exposed or called tools outside the read-only set: "
+               + ", ".join(sorted(unexpected)))
+    elif err is None and end is None:
+        err = f"no end event in a {len(r.stdout)}-byte streaming-json stream"
+    elif err is None and r.returncode != 0:
+        err = f"grok exited {r.returncode}"
+    if err is not None:
+        # Fail closed: nothing from this run may be read as a verdict.
+        out.update(is_error=True, text="", error_message=err)
+    if err is not None or not out["text"]:
+        out["raw_stdout"] = r.stdout[-3000:]
+    return out
+
+
+def _grok_cost(model_usage, usage, model):
+    """`(cost_usd, price_inherited)` for one grok run, from prices.json.
+
+    Per `modelUsage` entry (grok reports the model that actually served, e.g. `grok-4.7-build` for
+    `-m grok-4.7`): fresh input + cache reads at the cache rate + output. `inputTokens` is fresh
+    input only, so nothing is double-counted. Falls back to the top-level `usage` at the requested
+    model's rates when `modelUsage` is absent; returns `(None, None)` when there is nothing to price."""
+    def n(d, k):
+        v = d.get(k)
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+    rows = []
+    if isinstance(model_usage, dict) and model_usage:
+        for mid, u in model_usage.items():
+            if isinstance(u, dict):
+                rows.append((mid, n(u, "inputTokens"), n(u, "cacheReadInputTokens"), n(u, "outputTokens")))
+    elif usage:
+        rows.append((model, n(usage, "input_tokens"), n(usage, "cache_read_input_tokens"),
+                     n(usage, "output_tokens")))
+    if not rows:
+        return None, None
+    cost, inherited = 0.0, None
+    for mid, inp, cached, outp in rows:
+        pin, pout, pcache, inh = rates(mid)
+        cost += (inp * pin + cached * pcache + outp * pout) / 1e6
+        if inherited is None and inh is not None:
+            inherited = inh
+    return round(cost, 6), inherited
 
 
 
