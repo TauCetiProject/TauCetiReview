@@ -11,6 +11,7 @@ import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import reviewers  # noqa: E402
+import review  # noqa: E402
 
 
 def test_exact_grok_model():
@@ -231,6 +232,64 @@ def test_run_grok_nonzero_exit_keeps_tails():
     assert out["raw_stderr"] == "auth failed"
     assert out["raw_stdout"] == "not json\n"
     assert out.get("error_message")
+
+def test_engine_rejects_openrouter_id_for_native_grok():
+    argv = ["review.py", "--pr", "1", "--rubrics-dir", "r", "--tool-cwd", "t", "--diff-file", "d",
+            "--store", "s", "--grok-model", "x-ai/grok-4.3"]
+    old = sys.argv
+    sys.argv = argv
+    try:
+        review.main()
+    except SystemExit as e:
+        assert "grok-openrouter" in str(e.code), e.code
+    else:
+        raise AssertionError("engine accepted an OpenRouter id for native grok")
+    finally:
+        sys.argv = old
+
+
+def test_missing_grok_login_is_that_reviewers_failure_not_a_crash():
+    import argparse
+    import types
+    import test_codex_fallback as tcf
+
+    def no_login(provider, keys, subscription):
+        raise RuntimeError("no Grok subscription login at ~/.grok/auth.json; run `grok login` first")
+
+    def fake_runner(*a, **k):
+        raise AssertionError("runner must not run without a login")
+
+    saved = {n: getattr(review, n) for n in
+             ("reviewer_env", "cleanup_rev_home", "build_prompt", "build_reactivation_block",
+              "extract_verdict", "update_case_file", "newest_reply_id")}
+    review.reviewer_env = no_login
+    review.cleanup_rev_home = lambda *a, **k: None
+    review.build_prompt = lambda *a, **k: "PROMPT"
+    review.build_reactivation_block = lambda *a, **k: ""
+    review.extract_verdict = lambda text, marker: None
+    review.update_case_file = lambda *a, **k: {"author_replies": []}
+    review.newest_reply_id = lambda *a, **k: None
+    outdir = pathlib.Path(tempfile.mkdtemp())
+    a = argparse.Namespace(mode="commit", reply_rubric=None, rubrics_dir="/tmp", tool_cwd="/tmp",
+                           code_path="code", repo="r", pr=1, archive_dir=None, dry_run=True, arm="production",
+                           auth="subscription", submitted_by=None, base_sha=None, merge_base_sha=None,
+                           rubrics_repo="rr", rubrics_sha=None, rubrics_sha_approx=None)
+    ledger = types.SimpleNamespace(set_spent=lambda *a, **k: None, persist=lambda: None)
+    ctx = review.RunContext(a=a, state_map={}, reply_text="", base_context="", head="h" * 40,
+                            providers=["grok"], runners={"grok": (fake_runner, "grok-4.7")}, keys={},
+                            subscription=True, rubrics_version="v1", round_num=1, prov={"round": 1},
+                            diff_full="", outdir=outdir, day="2026-11-06", ledger=ledger, spent_today=0.0)
+    try:
+        review.run_rubric(ctx, "correctness")
+    finally:
+        for n, v in saved.items():
+            setattr(review, n, v)
+    res = ctx.run_results[0]
+    assert res["provider"] == "grok"
+    assert res["returncode"] != 0 and res["is_error"] is True
+    assert "grok login" in res["error_message"], res
+    assert res["verdict_obj"] is None
+    assert len(res["attempts"]) == 2 and all(x["error_kind"] == "not_authenticated" for x in res["attempts"]), res["attempts"]
 
 
 if __name__ == "__main__":

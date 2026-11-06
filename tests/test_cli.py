@@ -137,6 +137,76 @@ def test_grok_openrouter_is_selectable_by_new_name():
     assert "--providers" in cmd, cmd
     assert cmd[cmd.index("--providers") + 1] == "grok-openrouter", cmd
 
+class _GrokEngineCalled(Exception):
+    def __init__(self, cmd):
+        self.cmd = cmd
+
+
+def _drive_grok_cli(env_model, flags, with_login):
+    """Run cli.main() for --reviewer grok with a fake HOME; return (engine cmd or None, stderr)."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        if len(cmd) > 1 and pathlib.Path(cmd[1]).name == "review.py":
+            calls.append(cmd)
+            raise _GrokEngineCalled(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    err = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home, \
+            contextlib.ExitStack() as stack:
+        if with_login:
+            (pathlib.Path(home) / ".grok").mkdir()
+            (pathlib.Path(home) / ".grok" / "auth.json").write_text("{}")
+        argv = ["tauceti-review", "1", "--reviewer", "grok", "--no-archive",
+                "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
+                "--submitted-by", "test-reviewer", "--max-rounds-per-day", "1", *flags]
+        stack.enter_context(patch.object(sys, "argv", argv))
+        stack.enter_context(patch.dict(os.environ, {"TAUCETI_GROK_MODEL": env_model, "HOME": home}))
+        stack.enter_context(patch.object(cli, "run", fake_run))
+        stack.enter_context(patch.object(cli, "need"))
+        stack.enter_context(patch.object(cli.shutil, "which",
+                                         side_effect=lambda name: "/bin/grok" if name == "grok" else None))
+        stack.enter_context(patch.object(cli.subprocess, "run", return_value=types.SimpleNamespace(
+            returncode=0, stdout=b"diff --git a/x.lean b/x.lean\n+x\n", stderr=b"")))
+        stack.enter_context(patch.object(cli, "resolve_repo_dir",
+                                         return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
+        stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
+        stack.enter_context(patch.object(cli, "gh_json", return_value={}))
+        stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
+        stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
+        stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
+        stack.enter_context(patch.object(cli, "prepare_review_source"))
+        stack.enter_context(contextlib.redirect_stderr(err))
+        try:
+            cli.main()
+        except _GrokEngineCalled as call:
+            return call.cmd, err.getvalue()
+        except SystemExit:
+            return None, err.getvalue()
+    raise AssertionError("cli.main() returned without calling the engine or exiting")
+
+
+def test_grok_model_reaches_engine_only_when_set():
+    cases = [
+        ("", [], None),
+        ("   ", [], None),
+        ("grok-4.6", [], "grok-4.6"),
+        ("grok-4.6", ["--grok-model", "grok-4.7"], "grok-4.7"),
+    ]
+    for env_model, flags, expected in cases:
+        cmd, _ = _drive_grok_cli(env_model, flags, with_login=True)
+        assert cmd is not None, (env_model, flags)
+        actual = cmd[cmd.index("--grok-model") + 1] if "--grok-model" in cmd else None
+        assert actual == expected, (env_model, flags, cmd)
+        assert cmd[cmd.index("--providers") + 1] == "grok", cmd
+
+
+def test_grok_without_login_dies_before_review():
+    cmd, err = _drive_grok_cli("", [], with_login=False)
+    assert cmd is None, "engine must not run without a grok login"
+    assert "grok login" in err, err
+
 
 def test_unresolved_merge_base_stops_before_the_diff_or_review():
     # A scoreboard without a merge base can never pass the merge gate, so nothing may be spent.

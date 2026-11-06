@@ -21,13 +21,13 @@ from dataclasses import dataclass, field
 from ledger import Ledger
 from handoff import (DEFAULT_RUBRICS, can_reuse_completed_review, has_unhandled_contest,
                      thread_action_rubrics)
-from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, sum_usage, warn_unpriced
+from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, GROK_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, sum_usage, warn_unpriced
 # Re-exported for merge_from_scoreboard (changed_paths/decide_merge/DEFAULT_RUBRICS) and the price
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge, read_paths
-from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
+from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_grok_model, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_grok, run_kiro, run_pi, sweep_rev_homes
 from casefile import (build_reactivation_block, carry_forward, normalize_finding_path, patch_digest,
                       pick_anchor, seed_stale_approvals, update_case_file)
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
@@ -62,7 +62,7 @@ def public_record(value):
 _ERROR_KINDS = (
     ("local_admission", re.compile(r"^tauceti-local-admission:", re.M)),
     ("not_authenticated", re.compile(r"not logged in|/login|invalid authentication|unauthorized|401"
-                                     r"|token has been revoked|failed to authenticate", re.I)),
+                                     r"|token has been revoked|failed to authenticate|run `grok login`", re.I)),
     # The subscription CLIs report an exhausted plan as prose, with no status code anywhere:
     # "You've hit your session limit · resets 9:30pm (UTC)", "You've hit your weekly limit",
     # "You've hit your monthly spend limit". Every one of those is a wait, never a review.
@@ -358,11 +358,18 @@ def run_rubric(ctx, rubric):
 
     def attempt():
         t = time.monotonic()
-        env, rev_home = reviewer_env(provider, keys, subscription)
         try:
-            r = fn(prompt, a.tool_cwd, model, env)
-        finally:
-            cleanup_rev_home(rev_home)   # throwaway HOME, one per attempt — don't accumulate
+            env, rev_home = reviewer_env(provider, keys, subscription)
+        except RuntimeError as e:
+            # A missing credential (e.g. no `grok login`) is this reviewer's failure, not the
+            # engine's: record it as a failed attempt so the round's normal failure handling runs.
+            r = {"returncode": 1, "text": "", "is_error": True, "error_message": str(e),
+                 "raw_stderr": "", "cost_usd": 0.0}
+        else:
+            try:
+                r = fn(prompt, a.tool_cwd, model, env)
+            finally:
+                cleanup_rev_home(rev_home)   # throwaway HOME, one per attempt — don't accumulate
         # Keep each attempt's execution facts: the retry path returns only the last result, but the
         # first attempt's spend/usage/failure is provenance too. error_kind rides along because it is
         # the only field that says *why* an attempt failed: a total auth failure otherwise reads as
@@ -652,9 +659,11 @@ def main():
                          "used as chosen.")
     ap.add_argument("--kiro-model", default=KIRO_MODEL,
                     help=f"exact Kiro reviewer model (default: {KIRO_MODEL}); Kiro is explicit-only")
+    ap.add_argument("--grok-model", default=GROK_MODEL,
+                    help=f"exact native Grok Build reviewer model (default: {GROK_MODEL}); grok is explicit-only")
     ap.add_argument("--providers", default="claude,codex",
                     help="comma-separated reviewers to draw from: claude, codex, and any "
-                         "Kiro (explicit-only), and any OpenRouter model in OPENROUTER_MODELS "
+                         "Kiro and native Grok Build (grok), both explicit-only, and any OpenRouter model in OPENROUTER_MODELS "
                          "(deepseek, minimax, grok-openrouter — via the `pi` "
                          "agent, needs OPENROUTER_API_KEY). A rubric's prior provider is kept only "
                          "if still listed; otherwise it is re-drawn from this set")
@@ -665,7 +674,7 @@ def main():
                          "subscription: inherit the environment so a locally logged-in `claude` / "
                          "`codex` reviews on the runner's own subscription (no API key, no spend)")
     ap.add_argument("--keys-dir", default="",
-                    help="dir with files 'anthropic', 'openai', 'kiro', and/or 'openrouter'; each key is "
+                    help="dir with files 'anthropic', 'openai', 'kiro', 'xai', and/or 'openrouter'; each key is "
                          "passed only to the matching reviewer subprocess and never kept in this "
                          "process's env (OPENROUTER_API_KEY also falls back to the ambient env)")
     ap.add_argument("--comment-file", default="",
@@ -700,6 +709,7 @@ def main():
     a = ap.parse_args()
     try:
         a.kiro_model = exact_kiro_model(a.kiro_model)
+        a.grok_model = exact_grok_model(a.grok_model)
         reject_retired_opus(a.claude_model)
     except ValueError as e:
         sys.exit(str(e))
@@ -722,11 +732,12 @@ def main():
 
     subscription = a.auth == "subscription"
     if subscription:  # no keys: reviewers use the runner's logged-in claude/codex subscription
-        keys = {"anthropic": "", "openai": "", "kiro": (os.environ.get("KIRO_API_KEY", "") or "").strip()}
+        keys = {"anthropic": "", "openai": "", "kiro": (os.environ.get("KIRO_API_KEY", "") or "").strip(),
+                "xai": ""}  # grok uses its copied OAuth login; XAI_API_KEY must not leak in
     elif a.keys_dir:
         kd = pathlib.Path(a.keys_dir)
         keys = {}
-        for name in ("anthropic", "openai", "kiro", "openrouter"):
+        for name in ("anthropic", "openai", "kiro", "xai", "openrouter"):
             f = kd / name
             keys[name] = f.read_text().strip() if f.exists() else ""
             # Read into memory then remove from disk: no key should sit on a filesystem a
@@ -737,6 +748,8 @@ def main():
         keys = {"anthropic": os.environ.get("ANTHROPIC_API_KEY", ""),
                 "openai": os.environ.get("OPENAI_API_KEY", ""),
                 "kiro": (os.environ.get("KIRO_API_KEY", "") or "").strip()}
+    if not subscription and not keys.get("xai"):
+        keys["xai"] = (os.environ.get("XAI_API_KEY", "") or "").strip()
 
     # OpenRouter (the pi reviewers) has no subscription/OAuth path — its credential is always an
     # API key. Prefer a keys-dir file if CI supplied one (read + removed above); otherwise take it
@@ -1003,6 +1016,7 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
     runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model or CODEX_MODEL),
                "kiro": (run_kiro, a.kiro_model),
+               "grok": (run_grok, a.grok_model),
                # sonnet is the same claude CLI runner pinned to Sonnet — a cheaper claude-family
                # A/B arm, selected explicitly (never auto-drawn) via --reviewer sonnet.
                "sonnet": (run_claude, SONNET_MODEL)}
@@ -1019,7 +1033,7 @@ def main():
     # Kiro's subscription CLI exposes neither token counts nor a per-call USD
     # price. It is deliberately recorded at $0 rather than assigned a fictional
     # API price, so arbitrary exact Kiro model pins do not belong in this guard.
-    dispatchable = {runners[p][1] for p in providers if p != "kiro"}
+    dispatchable = {runners[p][1] for p in providers if p != "kiro"}  # grok's model is priced, so included
     if "codex" in providers:
         dispatchable.add(CODEX_FALLBACK_MODEL)
     warn_unpriced(dispatchable)
