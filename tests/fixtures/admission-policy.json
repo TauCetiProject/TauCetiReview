@@ -1,0 +1,841 @@
+{
+  "source": "TauCetiReview@2b4a9560bfc197a6e7b24c19d6da62b88addf4d3",
+  "cases": [
+    {
+      "name": "approved",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "missing_build",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "build is not green on HEAD (=missing); refusing to merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "failed_build",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "FAILURE",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "build is not green on HEAD (=FAILURE); refusing to merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "missing_scope",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "trusted CI scope status is not green on HEAD (=missing); refusing to merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "pending_scope",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "PENDING",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "trusted CI scope status is not green on HEAD (=PENDING); refusing to merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "outside_scope",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "scripts/ci.py"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "PR touches paths outside TauCeti/ (allowed extras: ['TauCeti.lean', 'docbuild/docs/references.bib', 'lake-manifest.json', 'lean-toolchain']); needs human merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "lakefile_refused",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "lakefile.toml"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "PR touches paths outside TauCeti/ (allowed extras: ['TauCeti.lean', 'docbuild/docs/references.bib', 'lake-manifest.json', 'lean-toolchain']); needs human merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "empty_paths",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "PR touches paths outside TauCeti/ (allowed extras: ['TauCeti.lean', 'docbuild/docs/references.bib', 'lake-manifest.json', 'lean-toolchain']); needs human merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "pin_missing_guard",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "lean-toolchain"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "PR changes a Lake pin but bump-guard is not green (=missing); needs human merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "pin_forward",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "lean-toolchain"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "SUCCESS",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "root_module",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "bibliography",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "docbuild/docs/references.bib"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "empty_rubrics",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "no rubric set; refusing to merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "no_scoreboard",
+      "inputs": {
+        "comments": [],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "no scoreboard comment for the current head; refusing",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "wrong_head",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "no scoreboard comment for the current head; refusing",
+        "head_sha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "name": "missing_base",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": ""
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "the newest completed scoreboard reviewed the diff from merge base bbbbbbbbbbbb, but the merge base is now unknown; refusing",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "rewritten_base",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "cccccccccccccccccccccccccccccccccccccccc"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "the newest completed scoreboard reviewed the diff from merge base bbbbbbbbbbbb, but the merge base is now cccccccccccc; refusing",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "init_only",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"init\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "no completed scoreboard for the current head yet; waiting",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "blocking_review",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"blocking_request\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "the newest completed scoreboard for the current head is not all-green; refusing",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "partial_review",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "the newest completed scoreboard for the current head is not all-green; refusing",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "init_after_completed",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          },
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"init\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-02T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "newer_blocking",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          },
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"blocking_block\"}}-->",
+            "updated_at": "2026-11-02T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "the newest completed scoreboard for the current head is not all-green; refusing",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "newer_approve",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-02T00:00:00Z"
+          },
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"reuse\": \"blocking_block\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/Example.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "nondefault_root",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "Example/Foo.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "merge_path_prefix": "Example/",
+        "merge_allow_file": [
+          "Example.lean"
+        ]
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; Example/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "lookalike_root_refused",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCetix/Other.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": false,
+        "reason": "PR touches paths outside TauCeti/ (allowed extras: ['TauCeti.lean', 'docbuild/docs/references.bib', 'lake-manifest.json', 'lean-toolchain']); needs human merge",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "newline_path",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\", \"states\": {\"correctness\": \"green\", \"reuse\": \"green\"}}-->",
+            "updated_at": "2026-11-01T00:00:00Z"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/a\nb.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "legacy_rendered",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\"}-->\n| 🟢 | [correctness](url) | approved | judge | reason |\n| 🟢 | [reuse](url) | approved | judge | reason |"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/A.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "legacy_unconfigured_rubric",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\"}-->\n| 🟢 | [custom-rubric](url) | approved | judge | reason |"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "custom-rubric"
+        ],
+        "paths": [
+          "TauCeti/A.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "the newest completed scoreboard for the current head is not all-green; refusing",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  ],
+  "configuration": {
+    "merge_path_prefix": "TauCeti/",
+    "merge_allow_file": [
+      "TauCeti.lean",
+      "lake-manifest.json",
+      "lean-toolchain",
+      "docbuild/docs/references.bib"
+    ],
+    "table_rubrics": [
+      "correctness",
+      "reuse",
+      "scope",
+      "attribution",
+      "api-design",
+      "generality",
+      "placement",
+      "naming",
+      "documentation",
+      "proof-quality"
+    ]
+  }
+}
