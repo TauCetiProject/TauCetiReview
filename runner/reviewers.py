@@ -117,6 +117,16 @@ def exact_kiro_model(model):
     return model
 
 
+def exact_grok_model(model):
+    """Return a native Grok model id or reject the dispatch."""
+    model = (model or "").strip()
+    if not model:
+        raise ValueError("Grok needs an exact model id")
+    if "/" in model:
+        raise ValueError(f"{model!r} is an OpenRouter id; use the grok-openrouter reviewer for it")
+    return model
+
+
 def reject_retired_opus(model):
     """Reject the superseded Opus generation for both direct Claude and Kiro."""
     if (model or "").strip().lower() in {"claude-opus-4.8", "claude-opus-4-8"}:

@@ -19,6 +19,11 @@ CODEX_FALLBACK_MODEL = "gpt-5.6-terra"
 # entitled Kiro model with --kiro-model.
 KIRO_MODEL = "gpt-5.6-sol"
 
+# Native Grok Build is an explicit-only reviewer (provider `grok`), distinct from the
+# pi/OpenRouter route (`grok-openrouter`). Only TAUCETI_GROK_MODEL overrides it: bare
+# GROK_MODEL belongs to the OpenRouter route.
+GROK_MODEL = os.environ.get("TAUCETI_GROK_MODEL") or "grok-4.7"
+
 # OpenRouter models driven through the `pi` agent (badlogic/pi-mono): a third reviewer
 # family alongside claude/codex, selectable as --providers/--reviewer deepseek|minimax.
 # Pay-per-token, so they run only when explicitly named — never auto-drawn. Add a row here
@@ -90,7 +95,7 @@ SONNET_MODEL = "claude-sonnet-4-6"
 
 
 
-def dispatch_models(claude_model=CLAUDE_MODEL, codex_model=CODEX_MODEL):
+def dispatch_models(claude_model=CLAUDE_MODEL, codex_model=CODEX_MODEL, grok_model=GROK_MODEL):
     """Every model id the engine can dispatch — the set that must be priced. Includes the codex
     fallback, since the seamless downgrade in run_one can route any codex run to it."""
     return {
@@ -98,6 +103,7 @@ def dispatch_models(claude_model=CLAUDE_MODEL, codex_model=CODEX_MODEL):
         codex_model,
         CODEX_FALLBACK_MODEL,
         SONNET_MODEL,
+        grok_model,
         *OPENROUTER_MODELS.values(),
     }
 
