@@ -22,18 +22,11 @@ current-head scoreboard never names a blocker that lacks its contestable inline 
 import argparse, datetime, hashlib, json, os, pathlib, random, re, shutil, subprocess, sys, time
 
 import archive
+from ledger import atomic_write_json
 
 REPLY_MARKER_RE = re.compile(r"<!--tauceti-reply:([a-z][a-z-]*):through:(\d+)-->")
 RUBRIC_MARKER_RE = re.compile(r"<!--tauceti-rubric:([a-z][a-z-]*)-->")
 META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
-
-
-def atomic_write_json(path, value):
-    """Replace a JSON file atomically, so a killed poster leaves either ledger version intact."""
-    path = pathlib.Path(path)
-    tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
-    tmp.write_text(json.dumps(value, indent=2))
-    os.replace(tmp, path)
 
 
 def _comment_json_lines(stdout):
