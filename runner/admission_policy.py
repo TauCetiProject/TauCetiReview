@@ -13,9 +13,12 @@ TABLE_ROW_RE = re.compile(r"^\|[^|]*\|\s*\[?([a-z0-9-]+)\]?[^|]*\|\s*([^|]+?)\s*
 WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
-DEFAULT_RUBRICS = ("correctness", "reuse", "scope", "attribution", "api-design",
-                   "generality", "placement", "naming", "documentation", "proof-quality")
-DEFAULT_ALLOW = ("TauCeti.lean", "lake-manifest.json", "lean-toolchain", "docbuild/docs/references.bib")
+
+def default_allow_files(lean_root):
+    # The bibliography is read only by the pages build. TauCeti's trusted scope guard
+    # allows it too; both gates must agree. Lakefiles are deliberately excluded.
+    return [lean_root.replace(".", "/") + ".lean", "lake-manifest.json", "lean-toolchain",
+            "docbuild/docs/references.bib"]
 
 
 def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump_guard, ci_build,
@@ -61,7 +64,7 @@ def parse_meta(body):
     except json.JSONDecodeError:
         return None
 
-def states_from_table(body, rubrics=DEFAULT_RUBRICS):
+def states_from_table(body, rubrics):
     """Fallback for comments whose meta predates `states`: derive per-rubric state from the table."""
     out = {}
     for rubric, word in TABLE_ROW_RE.findall(body or ""):
@@ -127,8 +130,8 @@ def load_comments(text):
                 continue
     return out
 
-def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_guard,
-                         merge_path_prefix="TauCeti/", merge_allow_file=None, scope="", now=None,
+def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_guard, *,
+                         merge_path_prefix, merge_allow_file, table_rubrics, scope="", now=None,
                          merge_base_sha=""):
     """The gate shared by merge-only and the sweep.
 
@@ -145,7 +148,7 @@ def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_gua
     its review state becomes unsafe, but should leave a human-queued PR alone when only the automatic
     path/build policy refuses it. Returns {"review_safe", "merge", "reason", "head_sha"}.
     """
-    allow = DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file
+    allow = merge_allow_file
     if not required:
         return {"review_safe": False, "merge": False,
                 "reason": "no rubric set; refusing to merge", "head_sha": head_sha}
@@ -169,7 +172,9 @@ def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_gua
                 "head_sha": head_sha}
     raw = meta.get("states")
     if not isinstance(raw, dict) or not raw:
-        raw = states_from_table(board.get("body"), required)  # old comment: derive from rendered table
+        # The CLI historically filters legacy tables by configured rubrics, which can
+        # differ from its explicit --rubrics selection. Preserve that distinction.
+        raw = states_from_table(board.get("body"), table_rubrics)
     states = {r: (raw.get(r) or "absent") for r in required}
     if not all(states[r] == "green" for r in required):
         return {"review_safe": False, "merge": False,

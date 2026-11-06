@@ -760,6 +760,82 @@
         "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
         "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
+    },
+    {
+      "name": "legacy_rendered",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\"}-->\n| 🟢 | [correctness](url) | approved | judge | reason |\n| 🟢 | [reuse](url) | approved | judge | reason |"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "correctness",
+          "reuse"
+        ],
+        "paths": [
+          "TauCeti/A.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": true,
+        "merge": true,
+        "reason": "all rubrics green on aaaaaaa; TauCeti/+root only",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "legacy_unconfigured_rubric",
+      "inputs": {
+        "comments": [
+          {
+            "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 {\"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"merge_base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"mode\": \"commit\"}-->\n| 🟢 | [custom-rubric](url) | approved | judge | reason |"
+          }
+        ],
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "required": [
+          "custom-rubric"
+        ],
+        "paths": [
+          "TauCeti/A.lean"
+        ],
+        "ci_build": "SUCCESS",
+        "bump_guard": "",
+        "scope": "SUCCESS",
+        "merge_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": {
+        "review_safe": false,
+        "merge": false,
+        "reason": "the newest completed scoreboard for the current head is not all-green; refusing",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
     }
-  ]
+  ],
+  "configuration": {
+    "merge_path_prefix": "TauCeti/",
+    "merge_allow_file": [
+      "TauCeti.lean",
+      "lake-manifest.json",
+      "lean-toolchain",
+      "docbuild/docs/references.bib"
+    ],
+    "table_rubrics": [
+      "correctness",
+      "reuse",
+      "scope",
+      "attribution",
+      "api-design",
+      "generality",
+      "placement",
+      "naming",
+      "documentation",
+      "proof-quality"
+    ]
+  }
 }

@@ -25,26 +25,18 @@ import pathlib
 import subprocess
 import sys
 
-from merge import read_paths
-from handoff import DEFAULT_RUBRICS
-from admission_policy import (SCOREBOARD_MARKER, META_RE, TABLE_ROW_RE, WORD_STATE,
-                              parse_meta, states_from_table as policy_states_from_table, current_scoreboards,
-                              latest_current_scoreboard, load_comments,
-                              decide_from_comments as evaluate_admission)
-
-
 if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
     from tauceti_tools.project import bootstrap
     bootstrap()
 
+from merge import read_paths
+from handoff import DEFAULT_RUBRICS
+from admission_policy import (SCOREBOARD_MARKER, META_RE, TABLE_ROW_RE, WORD_STATE,
+                              parse_meta, states_from_table as policy_states_from_table, current_scoreboards,
+                              latest_current_scoreboard, load_comments, default_allow_files,
+                              decide_from_comments as evaluate_admission)
 
-# docbuild/docs/references.bib is the bibliography doc-gen4 resolves docstring citations
-# against, so a docstring citing a work no one has entered renders as a bare bracketed key.
-# Filling it in is the same work as writing the docstring. It is BibTeX read only by the pages
-# build — never by Lake or the review harness — so nothing here executes it. TauCeti's own scope
-# guard allows the same single path; both gates must agree for such a PR to merge.
-DEFAULT_ALLOW = [os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + ".lean", "lake-manifest.json", "lean-toolchain",
-                 "docbuild/docs/references.bib"]
+DEFAULT_ALLOW = default_allow_files(os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti"))
 
 
 def states_from_table(body):
@@ -57,8 +49,10 @@ def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_gua
                          merge_allow_file=None, scope="", now=None, merge_base_sha=""):
     """CLI configuration adapter for the shared, pure admission evaluator."""
     return evaluate_admission(comments, head_sha, required, paths, ci_build, bump_guard,
-                              merge_path_prefix, DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file,
-                              scope, now, merge_base_sha)
+                              merge_path_prefix=merge_path_prefix,
+                              merge_allow_file=DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file,
+                              table_rubrics=DEFAULT_RUBRICS, scope=scope, now=now,
+                              merge_base_sha=merge_base_sha)
 
 
 def resolve_commit_status(repo, head_sha, context):
