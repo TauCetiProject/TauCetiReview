@@ -655,7 +655,7 @@ def main():
     ap.add_argument("--providers", default="claude,codex",
                     help="comma-separated reviewers to draw from: claude, codex, and any "
                          "Kiro (explicit-only), and any OpenRouter model in OPENROUTER_MODELS "
-                         "(deepseek, minimax — via the `pi` "
+                         "(deepseek, minimax, grok-openrouter — via the `pi` "
                          "agent, needs OPENROUTER_API_KEY). A rubric's prior provider is kept only "
                          "if still listed; otherwise it is re-drawn from this set")
     ap.add_argument("--auto-subset", action="store_true",

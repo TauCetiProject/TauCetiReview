@@ -34,8 +34,8 @@ OPENROUTER_MODELS = {
                  or "deepseek/deepseek-v4-pro"),
     "minimax": (os.environ.get("TAUCETI_MINIMAX_MODEL") or os.environ.get("MINIMAX_MODEL")
                 or "minimax/minimax-m3"),
-    "grok": (os.environ.get("TAUCETI_GROK_MODEL") or os.environ.get("GROK_MODEL")
-             or "x-ai/grok-4.3"),
+    "grok-openrouter": (os.environ.get("TAUCETI_GROK_OPENROUTER_MODEL")
+                        or os.environ.get("GROK_MODEL") or "x-ai/grok-4.3"),
 }
 
 # Model pricing is loaded from prices.json (the single source of truth — edit there, never here).

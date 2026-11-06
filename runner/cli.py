@@ -611,9 +611,10 @@ def _main(cleanup):
                          "(default: dry run — print the review, post nothing)")
     ap.add_argument("--reviewer", default="",
                     help="restrict to these reviewers (comma-separated: claude, codex, kiro, sonnet, "
-                         "deepseek, minimax, grok). sonnet is the claude CLI pinned to Sonnet; "
-                         "deepseek/minimax/grok run an OpenRouter model through the `pi` agent and "
-                         "need `pi` on PATH + OPENROUTER_API_KEY. sonnet/deepseek/minimax/grok are "
+                         "deepseek, minimax, grok-openrouter). sonnet is the claude CLI pinned to "
+                         "Sonnet; deepseek/minimax/grok-openrouter run an OpenRouter model through "
+                         "the `pi` agent and need `pi` on PATH + OPENROUTER_API_KEY. "
+                         "sonnet/deepseek/minimax/grok-openrouter are explicit-only (never auto-drawn). "
                          "kiro uses an exact --kiro-model and is explicit-only (never auto-drawn). "
                          "Default: every auto-drawn reviewer you "
                          "have available (claude, codex)")
@@ -749,24 +750,24 @@ def _main(cleanup):
     )
     if "kiro" in want and kiro_ok and "kiro" not in avail:
         avail.append("kiro")
-    # OpenRouter reviewers (DeepSeek/MiniMax/Grok, driven by the `pi` agent) are pay-per-token, so
+    # OpenRouter reviewers (DeepSeek/MiniMax/Grok via OpenRouter, driven by the `pi` agent) are pay-per-token, so
     # they are NEVER drawn by default — they join the pool ONLY when you name them in --reviewer
     # (the budget gate: no auto-dispatch), and then only if `pi` and OPENROUTER_API_KEY are present.
     if shutil.which("pi") and os.environ.get("OPENROUTER_API_KEY"):
-        avail += [p for p in ("deepseek", "minimax", "grok") if p in want and p not in avail]
+        avail += [p for p in ("deepseek", "minimax", "grok-openrouter") if p in want and p not in avail]
     if not avail:
         if a.auth == "subscription":
             die("need at least one of `claude` / `codex` on PATH (and logged in), an explicit "
                 "`--reviewer kiro` with `kiro-cli`, or `pi` + "
-                "OPENROUTER_API_KEY and `--reviewer deepseek|minimax` for an OpenRouter review. "
+                "OPENROUTER_API_KEY and `--reviewer deepseek|minimax|grok-openrouter` for an OpenRouter review. "
                 "Install the Claude Code and/or Codex CLI, or pass --auth api.")
         die("--auth api needs ANTHROPIC_API_KEY / OPENAI_API_KEY, or `pi` + OPENROUTER_API_KEY "
-            "and `--reviewer deepseek|minimax`, in the environment.")
+            "and `--reviewer deepseek|minimax|grok-openrouter`, in the environment.")
     if want:
         avail = [p for p in avail if p in want]
         if not avail:
             die(f"--reviewer {a.reviewer} matches none of the available reviewers (Kiro needs "
-                "`kiro-cli` and, for --auth api, KIRO_API_KEY; a DeepSeek/MiniMax reviewer needs "
+                "`kiro-cli` and, for --auth api, KIRO_API_KEY; a DeepSeek/MiniMax/Grok (OpenRouter) reviewer needs "
                 "`pi` on PATH + OPENROUTER_API_KEY).")
     providers = ",".join(avail)
     print(f"reviewers: {providers}", file=sys.stderr)

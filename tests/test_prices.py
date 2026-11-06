@@ -260,6 +260,29 @@ def test_priced_model_reports_no_inheritance():
     assert pricing.rates(review.CLAUDE_MODEL)[3] is None
 
 
+def test_openrouter_grok_is_renamed():
+    import importlib
+    import os
+    from unittest.mock import patch
+    assert "grok" not in pricing.OPENROUTER_MODELS
+    assert "grok-openrouter" in pricing.OPENROUTER_MODELS
+    keys = ("TAUCETI_GROK_OPENROUTER_MODEL", "GROK_MODEL")
+    try:
+        for env, expected in (
+            ({}, "x-ai/grok-4.3"),
+            ({"TAUCETI_GROK_OPENROUTER_MODEL": "x-ai/grok-9", "GROK_MODEL": "x-ai/grok-8"}, "x-ai/grok-9"),
+            ({"GROK_MODEL": "x-ai/grok-8"}, "x-ai/grok-8"),
+        ):
+            with patch.dict(os.environ, env, clear=False):
+                for k in keys:
+                    if k not in env:
+                        os.environ.pop(k, None)
+                importlib.reload(pricing)
+                assert pricing.OPENROUTER_MODELS["grok-openrouter"] == expected, (env, pricing.OPENROUTER_MODELS)
+    finally:
+        importlib.reload(pricing)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:
