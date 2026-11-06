@@ -55,6 +55,7 @@ import time
 import backend
 import api_budget
 from merge_from_scoreboard import decide_from_comments
+from admission_policy import REBASE_MARKER_RE, STALLED_MARKER_RE, rebase_request_heads
 from pr_diff import pr_diff
 from review import DEFAULT_RUBRICS
 
@@ -83,8 +84,6 @@ EXHAUSTED_LABEL = "queue-exhausted"
 KEEP_LABELS = {"keep", "hold", "wip", "human", "do-not-close"}
 NEEDS_REBASE_LABEL = "needs-rebase"
 EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
-REBASE_MARKER_RE = re.compile(r"^<!--tauceti-rebase:v1 ([0-9a-f]{40})-->$", re.M)
-STALLED_MARKER_RE = re.compile(r"^<!--tauceti-merge-stalled:v1 ([0-9a-f]{40})-->$", re.M)
 STALLED_COMMENT = (
     "Merge-queue recovery for head `{sha}`: repeated queue evictions, but this branch already "
     "includes current `main`. Diagnose and repair the integration failure; rebasing alone will "
@@ -99,15 +98,6 @@ REBASE_COMMENT = (
     "Workers predating this handoff support need a TauCetiWorker update and restart. "
     "The fork push credential must permit workflow changes inherited from main. "
     "Add `keep` to pause recovery.\n\n<!--tauceti-rebase:v1 {head}-->")
-
-
-def rebase_request_heads(comments, *, stalled=False):
-    """Only trusted sweep/Bors Apps can issue head-bound handoffs to contributor workers."""
-    marker = STALLED_MARKER_RE if stalled else REBASE_MARKER_RE
-    return {head for c in comments if c.get("author") in {"tauceti-review-bot[bot]", "tau-ceti-bors[bot]"}
-            and (c.get("body") or "").startswith("Merge-queue recovery for head `")
-            for head in marker.findall(c.get("body") or "")}
-
 
 
 def gh(args):
