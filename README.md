@@ -28,7 +28,7 @@ see [`rubrics/README.md`](rubrics/README.md) for the list and which angles can b
 Tau Ceti has a metered-API CI review workflow, but production review generation is currently
 disabled there to conserve that budget. Reviews instead come from the trusted operator-run worker
 and from ad hoc command-line runs. A trusted contributor can run the same engine on their **own
-Claude / Codex / Kiro subscription** with the `tauceti-review` CLI — no API bill. See
+Claude / Codex / Kiro / Grok subscription** with the `tauceti-review` CLI — no API bill. See
 [REVIEWING.md](REVIEWING.md):
 
 ```bash

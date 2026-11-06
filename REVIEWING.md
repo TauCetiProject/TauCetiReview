@@ -96,6 +96,7 @@ Add `--post` to publish. Useful flags:
 | `--reviewer claude\|codex\|kiro\|grok\|sonnet\|deepseek\|minimax\|grok-openrouter` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). Direct `claude` defaults to exact `claude-opus-5-5`; override with `--claude-model`. `kiro` is explicit-only and always uses the exact `--kiro-model`. `sonnet` is the `claude` CLI pinned to Sonnet. `grok` is native Grok Build: needs the `grok` CLI on PATH plus `grok login` (or `XAI_API_KEY` with `--auth api`), uses `--grok-model` / `TAUCETI_GROK_MODEL` (default `grok-4.7`), and is explicit-only. It runs with read tools only (`read_file,grep,list_dir`) and an explicit denylist that includes the `use_tool` MCP meta-tool (which `--tools` alone leaves exposed); the run fails closed if Grok lists or calls any tool outside the read set, or never lists its tools. Telemetry and trace uploads are disabled via env. Subscription mode copies only `~/.grok/auth.json` into a throwaway HOME. Grok's self-reported cost is about 0.34x our list-price estimate on subscription. **Renamed:** `--reviewer grok` used to mean the OpenRouter model; that is now `grok-openrouter` (`TAUCETI_GROK_OPENROUTER_MODEL`, then `GROK_MODEL`, default `x-ai/grok-4.3`). A rubric pinned to provider `grok` in an old ledger now re-runs on Grok Build when `grok` is listed. `deepseek`/`minimax`/`grok-openrouter` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. All but `claude`/`codex` are explicit-only (never auto-drawn) |
 | `--claude-model MODEL` | exact direct-Claude model ID, also configurable through `TAUCETI_CLAUDE_MODEL` for managed workers. The flag takes precedence. Unset: use the selected engine's default. A model with no entry in `runner/prices.json` still runs, billed at the newest rate on its own model line; its exact ID is recorded in review provenance |
 | `--kiro-model MODEL` | exact Kiro model ID; defaults to `gpt-5.6-sol`. Use `claude-opus-5` for Kiro's current Opus |
+| `--grok-model MODEL` | exact native Grok Build model ID, also configurable through `TAUCETI_GROK_MODEL`. The flag takes precedence. Unset: `grok-4.7`. Used only with `--reviewer grok`: an OpenRouter id (`x-ai/...`) is rejected then, and ignored for every other reviewer (`TAUCETI_GROK_MODEL` used to pin the OpenRouter grok, so a stale value does not break a claude/codex review). A model with no entry in `runner/prices.json` still runs, billed at the newest rate on its own model line |
 | `--mode manual` | re-run every rubric. The default, `commit`, reuses a completed published review of the current head across workers. A new unanswered author contest reopens its rubric while retaining the other published decisions. Missing history still permits ordinary investigation. Incomplete or different-head reviews retain the existing stale-approval and review rules |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |
@@ -108,10 +109,11 @@ Add `--post` to publish. Useful flags:
 2. Fetches the head and merge-base commits shallowly once, generating the canonical patch and
    exact-head source from those objects. Builds the read-only reviewer workspace: the source, roadmap
    repo, and (unless `--no-mathlib`) the pinned Mathlib source for `reuse`/`naming` to grep.
-3. Runs each rubric through `claude -p`, `codex exec`, exact-model `kiro-cli chat`, or the `pi`
-   agent against OpenRouter, **read-only** (`Read`/`Grep`/`Glob`, or pi's `read`/`grep`/`ls` —
-   no shell, no writes). In `--auth subscription` mode Claude, Codex, and Kiro use the logged-in
-   subscription; the OpenRouter reviewers are pay-per-token and use
+3. Runs each rubric through `claude -p`, `codex exec`, exact-model `kiro-cli chat`, headless
+   Grok Build (`grok --prompt-file`), or the `pi` agent against OpenRouter, **read-only**
+   (`Read`/`Grep`/`Glob`, Grok's `read_file`/`grep`/`list_dir`, or pi's `read`/`grep`/`ls` —
+   no shell, no writes). In `--auth subscription` mode Claude, Codex, Kiro, and Grok use the
+   logged-in subscription (`grok login`); the OpenRouter reviewers are pay-per-token and use
    `OPENROUTER_API_KEY`. Each reviewer runs in a **clean room**: a throwaway HOME seeded with only
    its own credential, so it ignores your personal `CLAUDE.md` / `AGENTS.md`, skills, plugins, and
    settings (and those are disabled outright). The review depends on the rubrics and the PR, not
