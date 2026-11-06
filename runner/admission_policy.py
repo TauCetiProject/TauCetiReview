@@ -9,10 +9,26 @@ import re
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 META_RE = re.compile(r"<!--tauceti-meta:v1 (.*?)-->", re.S)
+REBASE_MARKER_RE = re.compile(r"^<!--tauceti-rebase:v1 ([0-9a-f]{40})-->$", re.M)
+STALLED_MARKER_RE = re.compile(r"^<!--tauceti-merge-stalled:v1 ([0-9a-f]{40})-->$", re.M)
 TABLE_ROW_RE = re.compile(r"^\|[^|]*\|\s*\[?([a-z0-9-]+)\]?[^|]*\|\s*([^|]+?)\s*\|", re.M)
 WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
+
+
+def rebase_request_heads(comments, *, stalled=False):
+    """Existing trusted, head-bound recovery holds, shared by sweep and service intake.
+
+    These are recovery instructions, independently of the intentionally unrestricted authorship
+    of review scoreboards. Accept the sweep's compact comment shape or raw REST issue comments.
+    """
+    marker = STALLED_MARKER_RE if stalled else REBASE_MARKER_RE
+    return {head for c in comments
+            if (c.get("author") or (c.get("user") or {}).get("login"))
+               in {"tauceti-review-bot[bot]", "tau-ceti-bors[bot]"}
+            and (c.get("body") or "").startswith("Merge-queue recovery for head `")
+            for head in marker.findall(c.get("body") or "")}
 
 def default_allow_files(lean_root):
     # The bibliography is read only by the pages build. TauCeti's trusted scope guard

@@ -13,6 +13,16 @@ from runner import admission_policy as policy
 
 
 class AdmissionPolicyTests(unittest.TestCase):
+    def test_trusted_recovery_holds_keep_their_head_and_author_binding(self):
+        head = "a" * 40
+        for stalled, marker in ((False, "tauceti-rebase"), (True, "tauceti-merge-stalled")):
+            body = f"Merge-queue recovery for head `{head}`: repair needed\n\n<!--{marker}:v1 {head}-->"
+            for author in ("tauceti-review-bot[bot]", "tau-ceti-bors[bot]"):
+                self.assertEqual(policy.rebase_request_heads([{"author": author, "body": body}], stalled=stalled), {head})
+                self.assertEqual(policy.rebase_request_heads([{"user": {"login": author}, "body": body}], stalled=stalled), {head})
+            self.assertEqual(policy.rebase_request_heads([{"author": "contributor", "body": body}], stalled=stalled), set())
+            self.assertEqual(policy.rebase_request_heads([{"author": "tau-ceti-bors[bot]", "body": "prefix " + body}], stalled=stalled), set())
+
     def test_pinned_production_decisions(self):
         fixture = json.loads((ROOT / "tests/fixtures/admission-policy.json").read_text())
         self.assertIn("2b4a9560", fixture["source"])
