@@ -67,8 +67,8 @@ def test_price_windows_are_well_formed():
 
 def _write_fields(model):
     """The cache-write rate fields `model`'s provider bills by, and nothing else: Anthropic prices
-    a write by its TTL, OpenAI prices one write rate, and the OpenRouter route reports no writes."""
-    if "/" in model:
+    a write by its TTL, OpenAI prices one write rate, and neither the OpenRouter route nor xAI's native API bills writes."""
+    if "/" in model or model.startswith("grok-"):
         return ()
     return ("cache_write_5m", "cache_write_1h") if model.startswith("claude-") else ("cache_write",)
 
@@ -158,6 +158,8 @@ def test_the_rates_in_force_are_the_providers_list_prices():
         "deepseek/deepseek-v4-pro": (0.435, 0.87, 0.004),
         "minimax/minimax-m3":       (0.3,   1.2,  0.3),
         "x-ai/grok-4.3":            (1.25,  2.5,  1.25),
+        "grok-4.7":                 (2.0,   6.0,  0.5),
+        "grok-4.7-build":           (2.0,   6.0,  0.5),
     }
     assert sorted(expected) == sorted(review._PRICE_WINDOWS), (
         "a model was added to or removed from prices.json without updating this list: "
@@ -259,6 +261,60 @@ def test_priced_model_reports_no_inheritance():
     assert pricing.rates(review.CODEX_MODEL)[3] is None
     assert pricing.rates(review.CLAUDE_MODEL)[3] is None
 
+
+def test_native_grok_is_dispatchable_and_priced():
+    assert pricing.GROK_MODEL in pricing.dispatch_models()
+    assert pricing.rates("grok-4.7")[3] is None
+
+
+def test_openrouter_grok_is_renamed():
+    import importlib
+    import os
+    from unittest.mock import patch
+    assert "grok" not in pricing.OPENROUTER_MODELS
+    assert "grok-openrouter" in pricing.OPENROUTER_MODELS
+    keys = ("TAUCETI_GROK_OPENROUTER_MODEL", "GROK_MODEL")
+    try:
+        for env, expected in (
+            ({}, "x-ai/grok-4.3"),
+            ({"TAUCETI_GROK_OPENROUTER_MODEL": "x-ai/grok-9", "GROK_MODEL": "x-ai/grok-8"}, "x-ai/grok-9"),
+            ({"GROK_MODEL": "x-ai/grok-8"}, "x-ai/grok-8"),
+        ):
+            with patch.dict(os.environ, env, clear=False):
+                for k in keys:
+                    if k not in env:
+                        os.environ.pop(k, None)
+                importlib.reload(pricing)
+                assert pricing.OPENROUTER_MODELS["grok-openrouter"] == expected, (env, pricing.OPENROUTER_MODELS)
+    finally:
+        importlib.reload(pricing)
+
+
+
+def test_native_grok_model_env():
+    # Only TAUCETI_GROK_MODEL picks the native model; bare GROK_MODEL is the OpenRouter route's,
+    # and a whitespace-only value (an empty CI variable) means "unset", not a model id.
+    import importlib
+    import os
+    from unittest.mock import patch
+    keys = ("TAUCETI_GROK_MODEL", "GROK_MODEL")
+    try:
+        for env, expected in (
+            ({}, "grok-4.7"),
+            ({"TAUCETI_GROK_MODEL": "grok-4.6"}, "grok-4.6"),
+            ({"TAUCETI_GROK_MODEL": "  grok-4.6 "}, "grok-4.6"),
+            ({"TAUCETI_GROK_MODEL": "grok-4.6", "GROK_MODEL": "grok-9"}, "grok-4.6"),
+            ({"GROK_MODEL": "grok-9"}, "grok-4.7"),
+            ({"TAUCETI_GROK_MODEL": "   "}, "grok-4.7"),
+        ):
+            with patch.dict(os.environ, env, clear=False):
+                for k in keys:
+                    if k not in env:
+                        os.environ.pop(k, None)
+                importlib.reload(pricing)
+                assert pricing.GROK_MODEL == expected, (env, pricing.GROK_MODEL)
+    finally:
+        importlib.reload(pricing)
 
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

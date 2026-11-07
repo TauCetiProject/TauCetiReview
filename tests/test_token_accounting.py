@@ -35,6 +35,25 @@ def test_provider_totals():
     assert usage_totals("claude", {"input_tokens": 0, "cache_read_input_tokens": 500})["input_tokens"] == 500
 
 
+def test_old_pi_era_grok_record():
+    # Before `grok` became native Grok Build, provider "grok" was the pi/OpenRouter route, whose
+    # usage reports fresh input and cached input separately (pi semantics, not codex's subset).
+    old = {"input_tokens": 1000, "cached_input_tokens": 5000, "output_tokens": 200}
+    t = usage_totals("grok", old)
+    assert (t["input_tokens"], t["fresh_input_tokens"], t["cached_input_tokens"]) == (6000, 1000, 5000), t
+    assert usage_totals("grok-openrouter", old) == t
+
+
+def test_native_grok_reasoning_is_reported_not_added():
+    native = {"input_tokens": 877, "cache_read_input_tokens": 6784, "cache_creation_input_tokens": 0,
+              "output_tokens": 186, "reasoning_tokens": 130, "total_tokens": 7847}
+    t = usage_totals("grok", native)
+    assert t["reasoning_output_tokens"] == 130, t
+    assert t["output_tokens"] == 186 and t["input_tokens"] == 877 + 6784, t
+    # A provider that reports reasoning under the established key keeps it.
+    assert usage_totals("codex", {"output_tokens": 9, "reasoning_output_tokens": 4})["reasoning_output_tokens"] == 4
+
+
 def test_comment_and_ledger():
     cf = {"rubric": "placement", "provider": "claude", "model": "claude-fable-5-1",
           "usage": CLAUDE, "verdict": "request_changes"}
@@ -79,6 +98,8 @@ def test_cost_report_ingestion():
 
 
 if __name__ == "__main__":
-    for test in (test_provider_totals, test_comment_and_ledger, test_cost_report_ingestion):
+    for test in (test_provider_totals, test_old_pi_era_grok_record,
+                 test_native_grok_reasoning_is_reported_not_added, test_comment_and_ledger,
+                 test_cost_report_ingestion):
         test()
         print(f"ok  {test.__name__}")
