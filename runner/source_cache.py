@@ -30,7 +30,11 @@ URL = "https://github.com/leanprover-community/mathlib4"
 # Match the existing shared-repository publication-age policy, not time since use.
 PUBLICATION_AGE = 86400
 PIN = re.compile(r"[0-9a-f]{40}")
-OWNER = dict(version=1, uid=os.getuid(), repository=URL)
+OWNER = dict(version=1, uid=getattr(os, "getuid", lambda: None)(), repository=URL)
+
+
+def _supported():
+    return fcntl is not None and hasattr(os, "getuid") and hasattr(os, "O_NOFOLLOW")
 
 
 def _notice(error):
@@ -50,11 +54,13 @@ def _root(directory, *, create=False):
     if create:
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
     _directory(root)
+    if root.stat().st_mode & 0o022:
+        raise ValueError("source cache must not be writable by other users")
     # An empty ownership directory is an atomic record: no partially written JSON
     # or temporary file can prevent recovery after a crash during initialization.
     marker = root / ("owner-" + str(os.getuid()))
     if not marker.exists() and create:
-        if any(root.iterdir()):
+        if any(root.iterdir()) and not marker.is_dir():
             raise ValueError(f"refusing to adopt nonempty source cache: {root}")
         marker.mkdir(exist_ok=True, mode=0o700)
         _sync(root)
@@ -121,7 +127,7 @@ def borrowed(directory, pin):
     source = None
     root = None
     try:
-        if directory and PIN.fullmatch(pin):
+        if directory and _supported() and PIN.fullmatch(pin):
             root = _root(directory)
             held.enter_context(_lock(root, pin))
             entry = root / pin
@@ -146,7 +152,7 @@ def borrowed(directory, pin):
 
 def publish(directory, pin, checkout):
     """Best effort seeding from an already fetched private exact checkout; no network."""
-    if not directory or not PIN.fullmatch(pin):
+    if not directory or not _supported() or not PIN.fullmatch(pin):
         return
     try:
         head = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
@@ -200,7 +206,7 @@ def publish(directory, pin, checkout):
 def collect(directory, *, now=None, dry=False):
     """Collect owned, unleased old publications and interrupted staging/trash."""
     result = dict(removed=[], protected=[], errors=[])
-    if not directory:
+    if not directory or not _supported():
         return result
     try:
         root = _root(directory)

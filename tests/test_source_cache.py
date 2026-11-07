@@ -238,6 +238,30 @@ c.publish(sys.argv[1],sys.argv[2],Path(sys.argv[3]))
                 self.assertIsNone(source)
         self.assertFalse((Path.cwd() / 'relative/path').exists())
 
+    def test_unsupported_platform_and_unsafe_root_use_private_preparation(self):
+        with patch.object(cache, 'fcntl', None):
+            cache.publish(self.directory, self.second, self.repo)
+            self.assertEqual(cache.collect(self.directory)['errors'], [])
+            with cache.borrowed(self.directory, self.second) as source:
+                self.assertIsNone(source)
+        self.assertFalse(self.root.exists())
+        self.root.mkdir(); self.root.chmod(0o777)
+        with contextlib.redirect_stderr(io.StringIO()):
+            cache.publish(self.directory, self.second, self.repo)
+        self.assertFalse((self.root / self.second).exists())
+        self.root.chmod(0o700)
+
+    def test_partial_copy_cleanup_outage_is_pre_inference_preparation_wait(self):
+        self.publish(self.first)
+        manifest = self.base / 'lake-manifest.json'
+        manifest.write_text(json.dumps(dict(packages=[dict(name='mathlib', rev=self.first)])))
+        def fail(src, dst):
+            dst.mkdir()
+            raise OSError(errno.EIO, 'copy fixture')
+        with patch.object(source_tree, 'copy_tree', fail), patch.object(cli.shutil, 'rmtree', side_effect=OSError(errno.EIO, 'cleanup fixture')), patch.object(cli, 'run', side_effect=AssertionError('fetch launched over partial input')), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(cli.repository_diff.PreparationUnavailable):
+                cli.prepare_mathlib_source(manifest, self.base / 'incomplete', self.directory)
+
     def test_copy_is_private_writable_and_has_byte_copy_fallback(self):
         self.publish(self.first)
         source = self.root / self.first / 'source'

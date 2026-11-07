@@ -128,8 +128,12 @@ def prepare_mathlib_source(manifest, destination, cache_dir):
                 source_tree.copy_tree(cached, destination)
             except OSError as error:
                 print(f"tauceti-review: cached source copy unavailable: {error}; fetching privately", file=sys.stderr)
-                if destination.exists():
-                    shutil.rmtree(destination)
+                try:
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                except OSError as cleanup_error:
+                    raise repository_diff.PreparationUnavailable(
+                        f"could not remove incomplete Mathlib input: {cleanup_error}") from cleanup_error
                 cached = None
     if cached is None:
         run(["git", "init", "-q", str(destination)], quiet=True)
