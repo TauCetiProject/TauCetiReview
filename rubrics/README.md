@@ -30,6 +30,7 @@ Blocking angles are integrity checks. The rest use `request_changes` for fixable
 
 `quality-pass` is different from the others: it asks the author, not the reviewer, to do the
 work. The author runs the checklist in [`quality-pass.md`](quality-pass.md) over its own diff
-(deduplication, weaker hypotheses, proofs of at most 50 lines, elaboration speed, tidying) and
+(deduplication against Mathlib, Tau Ceti and its open pull requests, weaker hypotheses,
+proofs of at most 50 lines, elaboration speed, tidying) and
 reports each step in the PR description; the angle passes once every step is reported and
 nothing reported is plainly contradicted by the diff.

@@ -21,7 +21,7 @@ with one line per item:
 ```text
 ## Quality pass
 Q1: changed — deleted `foo_bar`, a restatement of Mathlib `Foo.bar`; uses repointed
-Q2: checked — no change (searched TauCeti/ for the defining formula of `baz`)
+Q2: checked — no change (searched TauCeti/ and the open PRs for the defining formula of `baz`)
 Q3: changed — dropped `[NeZero n]` from `qux` (derived from `hn : 1 < n`)
 Q4: n/a — no `variable` instances
 ...
@@ -36,10 +36,21 @@ constants of the conclusion, try `exact?`/`apply?`). If one exists, delete yours
 every call site. A new name for a Mathlib lemma, or a one-line wrapper around one, is a duplicate.
 A lemma about a Tau Ceti definition, or an `instance` registering a Mathlib theorem, is not.
 
-**Q2. Deduplicate against Tau Ceti.** Search `TauCeti/` for the same object or lemma: grep the
-defining formula and the key constants, not only the name. Look for a second construction of
-something another file already builds, a block copied from a sibling file, and a lemma re-derived
-locally that is already imported. Reuse or generalise the existing one instead.
+**Q2. Deduplicate against Tau Ceti, on `main` and in its open pull requests.** Search `TauCeti/`
+for the same object or lemma: grep the defining formula and the key constants, not only the name.
+Look for a second construction of something another file already builds, a block copied from a
+sibling file, and a lemma re-derived locally that is already imported. Reuse or generalise the
+existing one instead.
+
+Then do the same against the open pull requests to Tau Ceti, the work not on `main` yet: search
+their titles and descriptions for your declarations' names and the key constants of your
+statements, list the open pull requests that touch the same files or directories, and read the
+diff of any that might add the same thing (for instance `gh pr list --repo TauCetiProject/TauCeti
+--state open --search "<name> in:title,body"`, then `gh pr diff` on each candidate). If one adds
+it, do not add a second copy. When it came first or is the better one, drop yours, or build on it
+once it has merged (never stack on it). When yours is the better one, say so on both pull
+requests, each linking the other, so that a person or the reviewers can choose. The note on Q2
+says what you searched, on `main` and in the open pull requests.
 
 **Q3. Weaken hypotheses.** For every hypothesis and instance binder of every theorem, including
 those pulled in from `variable` lines:
@@ -118,7 +129,8 @@ hypotheses are not contradictory, and the conclusion is not trivially true.
   toolchain bumps) may answer every item `n/a`.
 - `request_changes` when:
   - the section is missing;
-  - an item is missing or has no note;
+  - an item is missing or has no note, or Q2's note does not say the open pull requests were
+    searched;
   - or a line is plainly contradicted by the diff, which you can see without judgement. For
     example, Q5 says no proof is over 50 lines but the diff adds one (count it), or Q8 says no
     leftovers but the diff adds a `#check`.
