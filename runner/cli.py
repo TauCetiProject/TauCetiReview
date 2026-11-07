@@ -32,6 +32,7 @@ import pathlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -88,6 +89,21 @@ def need(tool, hint):
         die(f"`{tool}` not found on PATH. {hint}")
 
 
+def copy_source_file(src, dst):
+    """Make a private copy, sharing CoW extents on Linux filesystems that support it."""
+    if sys.platform == "linux" and stat.S_ISREG(os.stat(src).st_mode):
+        import fcntl
+
+        try:
+            with open(src, "rb") as source, open(dst, "wb") as target:
+                fcntl.ioctl(target.fileno(), getattr(fcntl, "FICLONE", 0x40049409), source.fileno())  # Linux FICLONE
+            shutil.copystat(src, dst)
+            return dst
+        except OSError:
+            pass
+    return shutil.copy2(src, dst)
+
+
 def stage_tree(src, dst, *, ignore_extra=()):
     """Copy a pre-staged input tree (roadmap / Mathlib) into the workspace. symlinks=True so a symlink
     in the staged tree is copied AS a symlink, never dereferenced — a malicious/stray link can't pull
@@ -99,7 +115,7 @@ def stage_tree(src, dst, *, ignore_extra=()):
     if src_p == dst_p or dst_p.is_relative_to(src_p) or src_p.is_relative_to(dst_p):
         die(f"staged source/dest overlap: {src_p} vs {dst_p}")
     try:
-        shutil.copytree(src_p, dst_p, symlinks=True,
+        shutil.copytree(src_p, dst_p, symlinks=True, copy_function=copy_source_file,
                         ignore=shutil.ignore_patterns(".git", *ignore_extra))
     except (OSError, shutil.Error) as e:
         die(f"failed to stage {src_p} -> {dst_p}: {e}")

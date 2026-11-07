@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exact source/diff reuse and pre-inference recovery without models or network."""
 import contextlib
+import errno
 import io
 import json
 import os
@@ -17,6 +18,81 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'runner'
 import cli
 import pr_diff
 from test_pr_diff import _fixture, _diff, _git
+
+
+def test_staged_copy_preserves_isolation_metadata_symlinks_and_exclusions():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d); src = root / 'src'; src.mkdir()
+        (src / 'module.lean').write_text('original source\n')
+        (src / 'script').write_text('executable source\n'); (src / 'script').chmod(0o755)
+        (src / 'link').symlink_to('module.lean')
+        (src / 'external').symlink_to('/outside/source')
+        for name in ('.git', '.lake', 'build', '.cache', '.elan'):
+            (src / name).mkdir(); (src / name / 'excluded').write_text('skip')
+        dst = root / 'private'
+        cli.stage_tree(src, dst, ignore_extra=('.lake', 'build', '.cache', '.elan'))
+        assert (dst / 'script').stat().st_mode & 0o111
+        assert (dst / 'module.lean').stat().st_ino != (src / 'module.lean').stat().st_ino
+        assert os.readlink(dst / 'link') == 'module.lean'
+        assert os.readlink(dst / 'external') == '/outside/source'
+        assert not any((dst / name).exists() for name in ('.git', '.lake', 'build', '.cache', '.elan'))
+        (dst / 'module.lean').write_text('private changes\n')
+        assert (src / 'module.lean').read_text() == 'original source\n'
+        (src / 'script').unlink()
+        assert (dst / 'script').read_text() == 'executable source\n'
+
+
+def test_unsupported_reflink_falls_back_after_partial_destination():
+    if sys.platform != 'linux':
+        return
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d); src = root / 'source'; dst = root / 'copy'
+        src.write_bytes(b'complete bytes'); src.chmod(0o755)
+        def unavailable(target, *_):
+            os.write(target, b'partial destination with trailing bytes')
+            raise OSError(errno.EXDEV, 'different filesystems')
+        with patch('fcntl.ioctl', side_effect=unavailable):
+            cli.copy_source_file(src, dst)
+        assert dst.read_bytes() == src.read_bytes()
+        assert dst.stat().st_mode == src.stat().st_mode
+
+
+def test_staged_named_pipe_fails_without_waiting_for_a_writer():
+    if not hasattr(os, 'mkfifo'):
+        return
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d); src = root / 'source'; src.mkdir()
+        os.mkfifo(src / 'pipe')
+        result = subprocess.run(
+            [sys.executable, '-c', 'import cli,sys; cli.stage_tree(sys.argv[1],sys.argv[2])', str(src), str(root / 'copy')],
+            env={**os.environ, 'PYTHONPATH': str(pathlib.Path(cli.__file__).parent)},
+            capture_output=True, text=True, timeout=5)
+        assert result.returncode != 0 and 'named pipe' in result.stderr
+
+
+def test_real_reflink_copy_when_the_filesystem_supports_it():
+    if sys.platform != 'linux':
+        return
+    import fcntl
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d); src = root / 'source'; dst = root / 'copy'
+        src.write_bytes(os.urandom(65536)); src.chmod(0o755)
+        try:
+            with src.open('rb') as incoming, (root / 'probe').open('wb') as outgoing:
+                fcntl.ioctl(outgoing.fileno(), 0x40049409, incoming.fileno())
+        except OSError:
+            print('SKIP: temporary filesystem does not support FICLONE')
+            return
+        real_clone = fcntl.ioctl
+        calls = []
+        def clone(*args):
+            result = real_clone(*args); calls.append(result); return result
+        with patch('fcntl.ioctl', side_effect=clone):
+            cli.copy_source_file(src, dst)
+        assert calls == [0] and dst.read_bytes() == src.read_bytes()
+        assert src.stat().st_ino != dst.stat().st_ino and dst.stat().st_mode == src.stat().st_mode
+        dst.write_text('private mutation')
+        assert src.stat().st_size == 65536
 
 
 def test_same_fetch_supplies_exact_patch_paths_and_source():
