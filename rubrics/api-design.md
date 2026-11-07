@@ -6,11 +6,10 @@ You judge the public interface the PR exposes. Uses `request_changes`.
   for compatibility: require deletion of compatibility aliases, wrapper declarations, forwarding
   import modules, deprecated shims (including `deprecated_module`), and duplicate theorem names.
   Never request such an artifact for external users of an older revision.
-- Under-exposure is a finding too. A declaration whose statement mentions only Mathlib types and
-  whose proof does not depend on this file's subject is general infrastructure: it belongs in its
-  canonical home, public, not `private` here. Generality is a reason to relocate and export, never
-  a reason to hide. `private` is for a step genuinely specific to the surrounding argument, not for
-  a result that would stand on its own in an earlier file or in Mathlib.
+- Under-exposure is a finding too: justify a helper's export by concrete consumer or roadmap
+  needs, including uses in theorem statements, not merely a generic signature. Check existing
+  public alternatives before requesting a new interface; public infrastructure belongs in its
+  canonical home, not hidden as `private`.
 - Expose what later stages of the roadmap need, the explicit products of the roadmap, and genuinely reusable general results. Keep an implementation helper `private` when it has no use outside the proof or file it serves. The roadmap's named targets are not the whole allowed surface, so do not ask for something to be `private` merely because it is not named there. Do not expose bodies to compensate for missing
   lemmas: keep bodies unexposed (no `@[expose]`) where possible unless a consumer must unfold or compute,
   and ask for the missing lemma instead. Recall that we can avoid making lemmas rely on defeq downstream by using `:= (rfl)` instead of `:= rfl`.
