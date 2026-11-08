@@ -18,7 +18,7 @@ jobs:
           python-version: "3.11"
       # Install the pinned shared configuration, byte-compile, then run price-coverage
       # checks (every dispatchable model must be priced; prices.json must be well-formed).
-      - run: python -m pip install "tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@ea62fea3a5411a746a10f5d5f7f6466b98c368ba"
+      - run: python -m pip install "tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@fddd772584e81a08d56ea573169f37411f01a201"
       - run: python -m py_compile runner/*.py
       - run: python tests/test_ledger.py
       - run: python tests/test_cli.py
