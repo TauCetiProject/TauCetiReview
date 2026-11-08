@@ -16,9 +16,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Install the pinned shared configuration, byte-compile, then run price-coverage
+      # Install the package and its pinned shared configuration, byte-compile, then run price-coverage
       # checks (every dispatchable model must be priced; prices.json must be well-formed).
-      - run: python -m pip install "tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@cc55ea7cbd272d688189c09230497d6a9f9ff101"
+      - run: python -m pip install .
       - run: python -m py_compile runner/*.py
       - run: python tests/test_ledger.py
       - run: python tests/test_cli.py
@@ -29,6 +29,7 @@ jobs:
       - run: python tests/test_post.py
       - run: python tests/test_billing.py
       - run: python tests/test_unchanged_review.py
+      - run: python tests/test_prompt_refs.py
       - run: python tests/test_completed_handoff.py
       - run: python tests/test_early_handoff.py
       - run: python tests/test_thread_states.py
