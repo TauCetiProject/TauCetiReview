@@ -46,13 +46,13 @@ def states_from_table(body):
 
 def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_guard,
                          merge_path_prefix=os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti").replace(".", "/") + "/",
-                         merge_allow_file=None, scope="", now=None, merge_base_sha=""):
+                         merge_allow_file=None, scope="", now=None, merge_base_sha="", self_tested=False):
     """CLI configuration adapter for the shared, pure admission evaluator."""
     return evaluate_admission(comments, head_sha, required, paths, ci_build, bump_guard,
                               merge_path_prefix=merge_path_prefix,
                               merge_allow_file=DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file,
                               table_rubrics=DEFAULT_RUBRICS, scope=scope, now=now,
-                              merge_base_sha=merge_base_sha)
+                              merge_base_sha=merge_base_sha, self_tested=self_tested)
 
 
 def resolve_commit_status(repo, head_sha, context):

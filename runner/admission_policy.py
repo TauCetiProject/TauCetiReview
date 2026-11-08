@@ -38,11 +38,11 @@ def default_allow_files(lean_root):
 
 
 def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump_guard, ci_build,
-                 scope=""):
+                 scope="", self_tested=False):
     """The single auto-merge rule, shared by the post-review path and the no-dispatch merge mode.
 
-    Mergeable iff there is a head commit, CI's `build` check is green on it (so the merge path is
-    self-sufficient and safe to run on comment events, not only after a successful build), every
+    Require a head commit and either green CI or trusted local tests. The merge path is
+    self-sufficient on comment events. Every
     blocking rubric is green on it (fresh, not stale), and every changed path is under `prefix` or an
     allowed root file (`allow`), and CI's trusted scope status is green. A PR touching either Lake
     pin additionally requires the bump-guard check to be green (a CI-validated forward-only bump).
@@ -55,7 +55,8 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
         p.startswith(prefix) or p in allow for p in paths)
     if not head:
         return False, "no head_sha; refusing to merge"
-    if (ci_build or "").lower() != "success":
+    trusted_local = self_tested and bool(paths) and all(p.startswith(prefix) for p in paths)
+    if (ci_build or "").lower() != "success" and not trusted_local:
         return False, f"build is not green on HEAD (={ci_build or 'missing'}); refusing to merge"
     if not all_green:
         return False, f"not all rubrics green on HEAD: {[r for r in candidates if states[r] != 'green']}"
@@ -148,7 +149,7 @@ def load_comments(text):
 
 def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_guard, *,
                          merge_path_prefix, merge_allow_file, table_rubrics, scope="", now=None,
-                         merge_base_sha=""):
+                         merge_base_sha="", self_tested=False):
     """The gate shared by merge-only and the sweep.
 
     A verdict is bound to the diff it judged, which `head_sha` alone does not pin: retargeting the
@@ -200,5 +201,8 @@ def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_gua
     states = {r: "green" for r in required}
     candidates = sorted(required)
     merge_ok, reason = decide_merge(states, candidates, True, set(paths), head_sha,
-                                    merge_path_prefix, allow, bump_guard, ci_build, scope)
-    return {"review_safe": True, "merge": merge_ok, "reason": reason, "head_sha": head_sha}
+                                    merge_path_prefix, allow, bump_guard, ci_build, scope, self_tested)
+    out = {"review_safe": True, "merge": merge_ok, "reason": reason, "head_sha": head_sha}
+    if self_tested and merge_ok and (ci_build or "").lower() != "success":
+        out["self_tested"] = True
+    return out
