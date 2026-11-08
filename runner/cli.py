@@ -656,16 +656,19 @@ def _main(cleanup):
                          "manual: force a full re-review of every rubric")
     ap.add_argument("--auth", default="subscription", choices=["subscription", "api"],
                     help="subscription (default): use your logged-in claude/codex; api: use "
-                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment (billed)")
+                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY / XAI_API_KEY from the environment (billed)")
     ap.add_argument("--post", action="store_true",
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")
     ap.add_argument("--reviewer", default="",
-                    help="restrict to these reviewers (comma-separated: claude, codex, kiro, sonnet, "
-                         "deepseek, minimax, grok). sonnet is the claude CLI pinned to Sonnet; "
-                         "deepseek/minimax/grok run an OpenRouter model through the `pi` agent and "
-                         "need `pi` on PATH + OPENROUTER_API_KEY. sonnet/deepseek/minimax/grok are "
+                    help="restrict to these reviewers (comma-separated: claude, codex, kiro, grok, sonnet, "
+                         "deepseek, minimax, grok-openrouter). sonnet is the claude CLI pinned to "
+                         "Sonnet; deepseek/minimax/grok-openrouter run an OpenRouter model through "
+                         "the `pi` agent and need `pi` on PATH + OPENROUTER_API_KEY. "
+                         "sonnet/deepseek/minimax/grok-openrouter are explicit-only (never auto-drawn). "
                          "kiro uses an exact --kiro-model and is explicit-only (never auto-drawn). "
+                         "grok is native Grok Build (needs `grok` on PATH + `grok login`, or XAI_API_KEY "
+                         "with --auth api), uses --grok-model, and is explicit-only. "
                          "Default: every auto-drawn reviewer you "
                          "have available (claude, codex)")
     ap.add_argument("--claude-model", default=os.environ.get("TAUCETI_CLAUDE_MODEL") or None,
@@ -674,6 +677,11 @@ def _main(cleanup):
                          "runner/prices.json (e.g. claude-fable-5-1)")
     ap.add_argument("--kiro-model", default="gpt-5.6-sol",
                     help="exact Kiro model (default: gpt-5.6-sol; e.g. claude-opus-5)")
+    ap.add_argument("--grok-model", default=os.environ.get("TAUCETI_GROK_MODEL") or None,
+                    help="exact native Grok Build model; overrides TAUCETI_GROK_MODEL. "
+                         "Unset: keep the engine's default (grok-4.7). A model absent from "
+                         "runner/prices.json is warned about and billed at its newest priced "
+                         "sibling's rates (or the default rate)")
     ap.add_argument("--no-mathlib", action="store_true",
                     help="skip fetching the pinned Mathlib source (faster; reuse checks weaker)")
     ap.add_argument("--roadmap-dir", default="",
@@ -745,6 +753,15 @@ def _main(cleanup):
     # truthy, so normalise here rather than letting it reach the engine and fail as an
     # unpriced model only after workspace setup and the Mathlib fetch.
     a.claude_model = (a.claude_model or "").strip() or None
+    a.grok_model = (a.grok_model or "").strip() or None
+    # Validated (and later forwarded) only when the native grok is requested. TAUCETI_GROK_MODEL
+    # used to pin the OpenRouter grok, so an upgraded runner may still carry an x-ai id there; that
+    # must not break a claude/codex review, but a native grok review must fail here, before the
+    # workspace setup and Mathlib fetch, not in the engine.
+    grok_requested = "grok" in {p.strip() for p in a.reviewer.split(",")}
+    if grok_requested and a.grok_model and "/" in a.grok_model:
+        die(f"--grok-model {a.grok_model!r} is an OpenRouter id (set via --grok-model or "
+            "TAUCETI_GROK_MODEL); use --reviewer grok-openrouter for it, or a native id like grok-4.7")
 
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
     # host runs this after a --no-sync review (e.g. a bubble) to publish with its own creds. Loud:
@@ -802,24 +819,35 @@ def _main(cleanup):
     )
     if "kiro" in want and kiro_ok and "kiro" not in avail:
         avail.append("kiro")
-    # OpenRouter reviewers (DeepSeek/MiniMax/Grok, driven by the `pi` agent) are pay-per-token, so
+    # Native Grok Build: pay-per-use or subscription-credit backed, so explicit-only. Subscription
+    # mode needs the CLI's OAuth login file; --auth api needs XAI_API_KEY.
+    grok_ok = shutil.which("grok") and (
+        (a.auth == "subscription" and os.path.isfile(os.path.expanduser("~/.grok/auth.json")))
+        or (a.auth == "api" and (os.environ.get("XAI_API_KEY") or "").strip())
+    )
+    if "grok" in want and grok_ok and "grok" not in avail:
+        avail.append("grok")
+    # OpenRouter reviewers (DeepSeek/MiniMax/Grok via OpenRouter, driven by the `pi` agent) are pay-per-token, so
     # they are NEVER drawn by default — they join the pool ONLY when you name them in --reviewer
     # (the budget gate: no auto-dispatch), and then only if `pi` and OPENROUTER_API_KEY are present.
     if shutil.which("pi") and os.environ.get("OPENROUTER_API_KEY"):
-        avail += [p for p in ("deepseek", "minimax", "grok") if p in want and p not in avail]
+        avail += [p for p in ("deepseek", "minimax", "grok-openrouter") if p in want and p not in avail]
     if not avail:
         if a.auth == "subscription":
             die("need at least one of `claude` / `codex` on PATH (and logged in), an explicit "
-                "`--reviewer kiro` with `kiro-cli`, or `pi` + "
-                "OPENROUTER_API_KEY and `--reviewer deepseek|minimax` for an OpenRouter review. "
+                "`--reviewer kiro` with `kiro-cli`, an explicit `--reviewer grok` with `grok` + "
+                "`grok login`, or `pi` + "
+                "OPENROUTER_API_KEY and `--reviewer deepseek|minimax|grok-openrouter` for an OpenRouter review. "
                 "Install the Claude Code and/or Codex CLI, or pass --auth api.")
-        die("--auth api needs ANTHROPIC_API_KEY / OPENAI_API_KEY, or `pi` + OPENROUTER_API_KEY "
-            "and `--reviewer deepseek|minimax`, in the environment.")
+        die("--auth api needs ANTHROPIC_API_KEY / OPENAI_API_KEY, `--reviewer grok` with `grok` + "
+            "XAI_API_KEY, or `pi` + OPENROUTER_API_KEY "
+            "and `--reviewer deepseek|minimax|grok-openrouter`, in the environment.")
     if want:
         avail = [p for p in avail if p in want]
         if not avail:
             die(f"--reviewer {a.reviewer} matches none of the available reviewers (Kiro needs "
-                "`kiro-cli` and, for --auth api, KIRO_API_KEY; a DeepSeek/MiniMax reviewer needs "
+                "`kiro-cli` and, for --auth api, KIRO_API_KEY; grok needs `grok` and `grok login` "
+                "(or XAI_API_KEY with --auth api); a DeepSeek/MiniMax/Grok (OpenRouter) reviewer needs "
                 "`pi` on PATH + OPENROUTER_API_KEY).")
     providers = ",".join(avail)
     print(f"reviewers: {providers}", file=sys.stderr)
@@ -1025,6 +1053,8 @@ def _main(cleanup):
            "--replies-json", str(replies_path), "--prior-scoreboard-json", str(prior_board_path)]
     if a.claude_model:
         cmd += ["--claude-model", a.claude_model]
+    if a.grok_model and "grok" in avail:
+        cmd += ["--grok-model", a.grok_model]
     if a.rubrics:
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",

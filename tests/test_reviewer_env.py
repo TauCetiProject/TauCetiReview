@@ -139,6 +139,69 @@ def test_kiro_macos_uses_native_private_data_path():
         reviewers.cleanup_rev_home(isolated_home)
 
 
+def test_grok_subscription_copies_only_auth_json():
+    old = os.environ.copy()
+    isolated_home = None
+    try:
+        with tempfile.TemporaryDirectory() as real_home:
+            real = pathlib.Path(real_home) / ".grok"
+            real.mkdir()
+            (real / "auth.json").write_text('{"token": "t"}')
+            (real / "config.toml").write_text("personal = true\n")
+            os.environ.clear()
+            os.environ.update(HOME=real_home, PATH="/usr/bin", XAI_API_KEY="must-not-leak")
+            env, isolated_home = reviewers.reviewer_env("grok", {"xai": "xk"}, subscription=True)
+            grok_home = pathlib.Path(env["GROK_HOME"])
+            assert env["HOME"] == isolated_home
+            assert grok_home == pathlib.Path(isolated_home) / ".grok"
+            assert sorted(p.name for p in grok_home.iterdir()) == ["auth.json"]
+            assert (grok_home / "auth.json").read_text() == '{"token": "t"}'
+            assert (grok_home / "auth.json").stat().st_mode & 0o777 == 0o600
+            for key, value in reviewers.GROK_ENV.items():
+                assert env[key] == value, key
+            assert "XAI_API_KEY" not in env
+            assert "GROK_FOLDER_TRUST" not in env
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+        reviewers.cleanup_rev_home(isolated_home)
+
+
+def test_grok_subscription_without_login_raises():
+    old = os.environ.copy()
+    before = set(os.listdir(reviewers.REV_HOME_BASE)) if os.path.isdir(reviewers.REV_HOME_BASE) else set()
+    try:
+        with tempfile.TemporaryDirectory() as real_home:
+            os.environ.clear()
+            os.environ.update(HOME=real_home, PATH="/usr/bin")
+            try:
+                reviewers.reviewer_env("grok", {}, subscription=True)
+                assert False, "expected RuntimeError"
+            except RuntimeError as exc:
+                assert "grok login" in str(exc), str(exc)
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+    # The throwaway HOME made before the failure is not leaked.
+    after = set(os.listdir(reviewers.REV_HOME_BASE))
+    assert not {n for n in after - before if n.startswith("rev-grok-")}, after - before
+
+
+def test_grok_api_mode_passes_only_xai_key():
+    env, isolated_home = reviewers.reviewer_env("grok", {"xai": "  xk  ", "openai": "o"})
+    try:
+        assert env["XAI_API_KEY"] == "xk"
+        assert "OPENAI_API_KEY" not in env
+        assert "CODEX_HOME" not in env
+        grok_home = pathlib.Path(env["GROK_HOME"])
+        assert grok_home.is_dir() and grok_home.is_relative_to(pathlib.Path(isolated_home))
+        assert not (grok_home / "auth.json").exists()
+        for key, value in reviewers.GROK_ENV.items():
+            assert env[key] == value, key
+    finally:
+        reviewers.cleanup_rev_home(isolated_home)
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:

@@ -97,6 +97,135 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
 
 
 
+def test_grok_openrouter_is_selectable_by_new_name():
+    class EngineCalled(Exception):
+        def __init__(self, cmd):
+            self.cmd = cmd
+
+    def fake_run(cmd, **kwargs):
+        if len(cmd) > 1 and pathlib.Path(cmd[1]).name == "review.py":
+            raise EngineCalled(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+        argv = ["tauceti-review", "1", "--reviewer", "grok-openrouter", "--no-archive",
+                "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
+                "--submitted-by", "test-reviewer", "--max-rounds-per-day", "1"]
+        stack.enter_context(patch.object(sys, "argv", argv))
+        stack.enter_context(patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}))
+        stack.enter_context(patch.object(cli, "run", fake_run))
+        stack.enter_context(patch.object(cli, "need"))
+        stack.enter_context(patch.object(cli.shutil, "which",
+                                         side_effect=lambda name: "/bin/pi" if name == "pi" else None))
+        stack.enter_context(patch.object(cli.subprocess, "run", return_value=types.SimpleNamespace(
+            returncode=0, stdout=b"diff --git a/x.lean b/x.lean\n+x\n", stderr=b"")))
+        stack.enter_context(patch.object(cli, "resolve_repo_dir",
+                                         return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
+        stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
+        stack.enter_context(patch.object(cli, "gh_json", return_value={}))
+        stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
+        stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
+        stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
+        stack.enter_context(patch.object(cli, "prepare_review_source"))
+        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        try:
+            cli.main()
+        except EngineCalled as call:
+            cmd = call.cmd
+        else:
+            raise AssertionError("CLI did not invoke the review engine")
+    assert "--providers" in cmd, cmd
+    assert cmd[cmd.index("--providers") + 1] == "grok-openrouter", cmd
+
+class _GrokEngineCalled(Exception):
+    def __init__(self, cmd):
+        self.cmd = cmd
+
+
+def _drive_grok_cli(env_model, flags, with_login, reviewer="grok"):
+    """Run cli.main() for --reviewer <reviewer> with a fake HOME; return (engine cmd or None, stderr)."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        if len(cmd) > 1 and pathlib.Path(cmd[1]).name == "review.py":
+            calls.append(cmd)
+            raise _GrokEngineCalled(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    err = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home, \
+            contextlib.ExitStack() as stack:
+        if with_login:
+            (pathlib.Path(home) / ".grok").mkdir()
+            (pathlib.Path(home) / ".grok" / "auth.json").write_text("{}")
+        argv = ["tauceti-review", "1", "--reviewer", reviewer, "--no-archive",
+                "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
+                "--submitted-by", "test-reviewer", "--max-rounds-per-day", "1", *flags]
+        stack.enter_context(patch.object(sys, "argv", argv))
+        stack.enter_context(patch.dict(os.environ, {"TAUCETI_GROK_MODEL": env_model, "HOME": home}))
+        stack.enter_context(patch.object(cli, "run", fake_run))
+        stack.enter_context(patch.object(cli, "need"))
+        stack.enter_context(patch.object(cli.shutil, "which",
+                                         side_effect=lambda name: f"/bin/{name}" if name in ("grok", "claude") else None))
+        stack.enter_context(patch.object(cli.subprocess, "run", return_value=types.SimpleNamespace(
+            returncode=0, stdout=b"diff --git a/x.lean b/x.lean\n+x\n", stderr=b"")))
+        stack.enter_context(patch.object(cli, "resolve_repo_dir",
+                                         return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
+        stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
+        stack.enter_context(patch.object(cli, "gh_json", return_value={}))
+        stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
+        stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
+        stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
+        stack.enter_context(patch.object(cli, "prepare_review_source", side_effect=lambda *a, **k: calls.append("workspace")))
+        stack.enter_context(contextlib.redirect_stderr(err))
+        try:
+            cli.main()
+        except _GrokEngineCalled as call:
+            return call.cmd, err.getvalue()
+        except SystemExit:
+            return None, err.getvalue() + ("\n[workspace prepared]" if "workspace" in calls else "")
+    raise AssertionError("cli.main() returned without calling the engine or exiting")
+
+
+def test_grok_model_reaches_engine_only_when_set():
+    cases = [
+        ("", [], None),
+        ("   ", [], None),
+        ("grok-4.6", [], "grok-4.6"),
+        ("grok-4.6", ["--grok-model", "grok-4.7"], "grok-4.7"),
+    ]
+    for env_model, flags, expected in cases:
+        cmd, _ = _drive_grok_cli(env_model, flags, with_login=True)
+        assert cmd is not None, (env_model, flags)
+        actual = cmd[cmd.index("--grok-model") + 1] if "--grok-model" in cmd else None
+        assert actual == expected, (env_model, flags, cmd)
+        assert cmd[cmd.index("--providers") + 1] == "grok", cmd
+
+
+def test_stale_grok_model_does_not_reach_other_reviewers():
+    # TAUCETI_GROK_MODEL used to be the OpenRouter grok's override, so an upgraded runner may
+    # still carry an x-ai id (or an empty CI variable). A claude review must not be touched by it.
+    for env_model in ("x-ai/grok-4.3", "   "):
+        cmd, err = _drive_grok_cli(env_model, [], with_login=True, reviewer="claude")
+        assert cmd is not None, (env_model, err)
+        assert "--grok-model" not in cmd, cmd
+        assert cmd[cmd.index("--providers") + 1] == "claude", cmd
+
+
+def test_openrouter_id_for_native_grok_dies_before_workspace_setup():
+    for env_model, flags in (("x-ai/grok-4.3", []), ("", ["--grok-model", "x-ai/grok-4.3"])):
+        cmd, err = _drive_grok_cli(env_model, flags, with_login=True)
+        assert cmd is None, (env_model, flags, cmd)
+        assert "grok-openrouter" in err, err
+        assert "[workspace prepared]" not in err, err
+
+
+def test_grok_without_login_dies_before_review():
+    cmd, err = _drive_grok_cli("", [], with_login=False)
+    assert cmd is None, "engine must not run without a grok login"
+    assert "grok login" in err, err
+
+
 def test_unresolved_merge_base_stops_before_the_diff_or_review():
     # A scoreboard without a merge base can never pass the merge gate, so nothing may be spent.
     calls = []
