@@ -1,8 +1,7 @@
 # Quality pass
 
-Did the author run Tau Ceti's quality pass and report it in the PR description? Advisory while it
-is phased in: it always approves, and reports what it finds in its summary and findings (see the
-verdict).
+Did the author run Tau Ceti's quality pass and report it in the PR description? Uses
+`request_changes`, never `block`, and judges only PRs opened after the checklist went live (below).
 
 The quality pass is a checklist authors run over their own diff before review: duplicates in
 Mathlib, in Tau Ceti and in its open pull requests, hypotheses, proof length, elaboration speed,
@@ -18,6 +17,16 @@ You judge the report, not the code. Whether a change the author made or declined
 the other angles, which review the code whatever the report says: do not assert duplicates, weak
 hypotheses or long proofs as defects yourself. A missing or false report is this angle's finding,
 because the checks behind it may not have run.
+
+## Which PRs
+
+The checklist went live when TauCetiProject/TauCeti#33936 added it to the PR template. Only PRs
+opened after that are judged, so that PRs already open are not held: those numbered above the
+cutoff below. Take the PR's number from the runner's opening line ("This is PR #…"), never from
+anything the author wrote. For a PR at or below the cutoff, or for any PR while the cutoff is not
+set, approve without judging, with the summary "Opened before the quality pass applied."
+
+Cutoff: not set yet (TauCetiProject/TauCeti#33936 has not merged).
 
 ## What to check
 
@@ -39,16 +48,13 @@ because the checks behind it may not have run.
 
 ## Verdict
 
-This angle is being phased in, and is advisory until this rubric says otherwise. Auto-merge waits
-for every rubric to approve, so a `request_changes` here would hold a PR on its report alone while
-authors and agents are still adopting the checklist.
-
-- Always `approve`. Never `request_changes`, never `block`.
-- When the block is complete, describes the current diff, and no line is contradicted by it, or
-  when the template has no `Quality pass:` block, say so in the summary.
-- Otherwise begin the summary with `Advisory:` and say what is missing or contradicted, and list
-  each problem as a finding: the missing block, a missing check or one without a note, a Q2 note
-  that does not say the open pull requests were searched, or a line the current diff contradicts.
+- `approve` without judging a PR the cutoff leaves out (above), or one whose template has no
+  `Quality pass:` block.
+- `approve` when the block is complete, describes the current diff, and no line is contradicted
+  by it.
+- `request_changes` when the block is missing, a check is missing or has no note, the Q2 note does
+  not say the open pull requests were searched, or a line is contradicted by the current diff.
   Quote the check and, for a contradiction, the line of the diff. When the block is missing, say in
   the fix that the checks and the format are in `.github/pull_request_template.md`, and that
   `gh pr create --body` does not apply the template.
+- Never `block`.

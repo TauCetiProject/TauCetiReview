@@ -34,5 +34,6 @@ their own diff before review and report each check in the description. The angle
 report is complete, kept current as the PR changes, and not contradicted by the diff, so a PR that
 arrives with it done passes without a round trip. It adds to the other angles rather than replacing
 them: in a pre-launch test on 16 merged PRs, the checklist and a plain review each caught defects
-the other missed. While it is phased in it is advisory: it always approves, and says in its summary
-what is missing.
+the other missed. It judges only PRs opened after the checklist reached the template
+(TauCetiProject/TauCeti#33936), so PRs already open are not held: the rubric records the cutoff PR
+number.
