@@ -654,9 +654,15 @@ def _main(cleanup):
                     help="commit (default): re-run only unresolved rubrics, carry prior approvals "
                          "forward as ♻️ (stale) until the PR is otherwise clean, then sweep them; "
                          "manual: force a full re-review of every rubric")
-    ap.add_argument("--auth", default="subscription", choices=["subscription", "api"],
-                    help="subscription (default): use your logged-in claude/codex; api: use "
-                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment (billed)")
+    # TAUCETI_REVIEW_AUTH sets the default so a session launched on an API key cannot silently fall
+    # back to the subscription login; the flag still takes precedence.
+    env_auth = os.environ.get("TAUCETI_REVIEW_AUTH", "").strip() or "subscription"
+    if env_auth not in ("subscription", "api"):
+        die(f"TAUCETI_REVIEW_AUTH={env_auth!r} is neither 'subscription' nor 'api'.")
+    ap.add_argument("--auth", default=env_auth, choices=["subscription", "api"],
+                    help="subscription: use your logged-in claude/codex; api: use "
+                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment "
+                         "(billed). Default: $TAUCETI_REVIEW_AUTH, else subscription")
     ap.add_argument("--post", action="store_true",
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")

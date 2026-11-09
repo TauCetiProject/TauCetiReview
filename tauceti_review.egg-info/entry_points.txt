@@ -1,0 +1,4 @@
+[console_scripts]
+tauceti-review = runner.cli:main
+tauceti-review-check-sandbox = runner.sandbox_check:main
+tauceti-review-costs = runner.costs:main
