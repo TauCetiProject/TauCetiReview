@@ -41,8 +41,9 @@ post-PR API from your angle; this policy concerns only artifacts that preserve a
 ## What to report
 
 Every finding must identify a user-visible risk: wrong mathematics, wrong scope, duplicated
-API, a misleading interface, misplaced material, an unstable proof, or missing credit. Do not
-file taste preferences.
+API, a misleading interface, misplaced material, an unstable proof, or missing credit. (The
+`quality-pass` angle reports a missing or false account of the author's own checks, which leaves
+those risks unchecked; its rubric says how.) Do not file taste preferences.
 
 Do not infer intent from green CI: a green PR can still be wrong, redundant, misplaced, or
 uncredited. But do not re-report what CI already enforces (the build, the axiom allowlist,

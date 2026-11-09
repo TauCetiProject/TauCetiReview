@@ -24,13 +24,12 @@ block-capable integrity angles run first (cheapest, most-likely-to-block earlies
 | [`naming`](naming.md) | Conclusion-describing names; conventional notation? | no |
 | [`documentation`](documentation.md) | Accurate module and declaration docstrings? | no |
 | [`proof-quality`](proof-quality.md) | Automation-first, robust proofs? | no |
-| [`quality-pass`](quality-pass.md) | Did the author run the quality pass and report it? | no |
+| [`quality-pass`](quality-pass.md) | Did the author complete the PR template's quality pass? | no |
 
 Blocking angles are integrity checks. The rest use `request_changes` for fixable issues.
 
-`quality-pass` is different from the others: it asks the author, not the reviewer, to do the
-work. The author runs the checklist in [`quality-pass.md`](quality-pass.md) over its own diff
-(deduplication against Mathlib, Tau Ceti and its open pull requests, weaker hypotheses,
-proofs of at most 50 lines, elaboration speed, tidying) and
-reports each step in the PR description; the angle passes once every step is reported and
-nothing reported is plainly contradicted by the diff.
+`quality-pass` judges the PR description rather than the code. The checklist itself lives in Tau
+Ceti's PR template (`.github/pull_request_template.md`), its source of truth: authors run it over
+their own diff before review and report each check in the description. The angle checks that the
+report is complete, kept current as the PR changes, and not contradicted by the diff, so a PR that
+arrives with it done passes without a round trip.
