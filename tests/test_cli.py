@@ -413,6 +413,69 @@ def test_head_mismatch_is_nonzero_and_structured_before_inference():
                                    'outcome': 'head-changed', 'expected_head': 'a' * 40}
 
 
+def test_auth_defaults_from_environment_and_flag_overrides():
+    class EngineCalled(Exception):
+        def __init__(self, cmd):
+            self.cmd = cmd
+
+    def fake_run(cmd, **kwargs):
+        if len(cmd) > 1 and pathlib.Path(cmd[1]).name == "review.py":
+            raise EngineCalled(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    cases = [
+        ("", [], "subscription"),
+        ("   ", [], "subscription"),
+        ("api", [], "api"),
+        (" api ", [], "api"),
+        ("api", ["--auth", "subscription"], "subscription"),
+        ("", ["--auth", "api"], "api"),
+    ]
+    for env_auth, flags, expected in cases:
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            argv = ["tauceti-review", "1", "--reviewer", "claude", "--no-archive",
+                    "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
+                    "--submitted-by", "test-reviewer", *flags]
+            stack.enter_context(patch.object(sys, "argv", argv))
+            stack.enter_context(patch.dict(os.environ, {"TAUCETI_REVIEW_AUTH": env_auth,
+                                                        "ANTHROPIC_API_KEY": "test-key"}))
+            stack.enter_context(patch.object(cli, "run", fake_run))
+            stack.enter_context(patch.object(cli, "need"))
+            stack.enter_context(patch.object(cli.shutil, "which",
+                                            side_effect=lambda name: "/bin/claude" if name == "claude" else None))
+            stack.enter_context(patch.object(cli.subprocess, "run", return_value=types.SimpleNamespace(
+                returncode=0, stdout=b"diff --git a/x.lean b/x.lean\n+x\n", stderr=b"")))
+            stack.enter_context(patch.object(cli, "resolve_repo_dir",
+                                            return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
+            stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
+            stack.enter_context(patch.object(cli, "gh_json", return_value={}))
+            stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
+            stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
+            stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
+            stack.enter_context(patch.object(cli, "prepare_review_source"))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            try:
+                cli.main()
+            except EngineCalled as call:
+                cmd = call.cmd
+            else:
+                raise AssertionError("CLI did not invoke the review engine")
+            assert cmd[cmd.index("--auth") + 1] == expected, (env_auth, flags, cmd)
+
+
+def test_invalid_auth_environment_is_rejected():
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(sys, "argv", ["tauceti-review", "1"]))
+        stack.enter_context(patch.dict(os.environ, {"TAUCETI_REVIEW_AUTH": "apikey"}))
+        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        try:
+            cli.main()
+        except SystemExit as exit:
+            assert exit.code not in (0, None)
+        else:
+            raise AssertionError("an unknown TAUCETI_REVIEW_AUTH was accepted")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:
