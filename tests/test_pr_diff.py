@@ -177,6 +177,23 @@ def test_timeout_kills_git_and_its_children():
         assert time.monotonic() - t0 < 10
 
 
+@contextlib.contextmanager
+def _without_waitid():
+    # CPython has no os.waitid on macOS before 3.13.
+    saved = os.__dict__.pop("waitid", None)
+    try:
+        yield
+    finally:
+        if saved is not None:
+            os.waitid = saved
+
+
+def test_runs_and_times_out_without_waitid():
+    with _without_waitid(), tempfile.TemporaryDirectory() as d:
+        pr_diff._git(d, ["init", "-q", "--bare"], pr_diff._git_env(), 30)
+        assert os.path.isfile(os.path.join(d, "HEAD"))
+        test_timeout_kills_git_and_its_children()
+
 
 def test_disk_cap_kills_git_while_it_is_still_running():
     # git (here a stand-in that writes 3 MB into the repository, then idles) is killed as soon as
