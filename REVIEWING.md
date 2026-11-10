@@ -99,7 +99,7 @@ Add `--post` to publish. Useful flags:
 | `--mode manual` | re-run every rubric. The default, `commit`, reuses a completed published review of the current head across workers. A new unanswered author contest reopens its rubric while retaining the other published decisions. Missing history still permits ordinary investigation. Incomplete or different-head reviews retain the existing stale-approval and review rules |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
 | `--repo owner/name` | review a different repo (default `TauCetiProject/TauCeti`) |
-| `--auth api` | use the matching `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `KIRO_API_KEY` instead of a browser login |
+| `--auth api` | use the matching `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `KIRO_API_KEY` instead of a browser login. `TAUCETI_REVIEW_AUTH=api` makes this the default; the flag takes precedence |
 | `--keep` | keep the temporary workspace for inspection |
 
 ## What it does
@@ -243,3 +243,18 @@ The shared lease implementation is packaged in TauCetiTools. Operators using an
 explicit claim repository keep using `CLAIM_REPO`; otherwise the helper checks
 existing shared access and an existing direct fork. The worker passes its already
 resolved namespace, avoiding repeated access discovery in review subprocesses.
+
+Fleet host reviews can set `TAUCETI_REVIEW_MATHLIB_CACHE` (or
+`--mathlib-cache-dir`) to an absolute shared directory. Review caches clean source
+at the exact Mathlib commit in the fetched PR manifest, then creates its normal
+private writable input using reflinks where available. Cache misses and busy or
+unavailable entries use the existing private Git fetch. `--mathlib-dir` and
+`--no-mathlib` keep their existing precedence.
+
+The `exact-sources-v1` subdirectory has an ownership record and stable per-commit
+file locks. A reader holds its lock only during copying; publication and cleanup
+require exclusive ownership. Published trees are never edited in place. Later
+acquisitions, or the Fleet cleanup command using the same collector, remove
+unleased publications after the existing repository-cache publication age of one
+day, and recover interrupted publication/deletion. No cache size or worker-count
+limit is introduced. Removing the environment setting restores private preparation.

@@ -40,8 +40,10 @@ import uuid
 
 try:
     from . import pr_diff as repository_diff
+    from . import source_cache, source_tree
 except ImportError:
     import pr_diff as repository_diff
+    import source_cache, source_tree
 
 # review.py's abort status when the provider itself is unusable. Duplicated rather than imported:
 # this CLI drives the engine as a subprocess and never imports it (the engine's modules use flat
@@ -99,10 +101,49 @@ def stage_tree(src, dst, *, ignore_extra=()):
     if src_p == dst_p or dst_p.is_relative_to(src_p) or src_p.is_relative_to(dst_p):
         die(f"staged source/dest overlap: {src_p} vs {dst_p}")
     try:
-        shutil.copytree(src_p, dst_p, symlinks=True,
-                        ignore=shutil.ignore_patterns(".git", *ignore_extra))
+        source_tree.copy_tree(src_p, dst_p, ignore_extra=ignore_extra)
     except (OSError, shutil.Error) as e:
         die(f"failed to stage {src_p} -> {dst_p}: {e}")
+
+
+def prepare_mathlib_source(manifest, destination, cache_dir):
+    # Local review uses the fetched exact PR head; CI separately pins from the base
+    # repository rather than trusting an attacker-controlled PR manifest.
+    # Keep the existing standard Mathlib URL.
+    # Explicit --mathlib-dir and --no-mathlib are handled before this helper.
+    rev = ""
+    if manifest.is_file():
+        for pkg in json.loads(manifest.read_text()).get("packages", []):
+            if pkg.get("name") == "mathlib":
+                rev = pkg.get("rev", "")
+    if not rev:
+        print("note: no mathlib rev in lake-manifest.json; skipping Mathlib source.", file=sys.stderr)
+        return False
+    existed = destination.exists()
+    borrowing = (contextlib.nullcontext(None) if existed
+                 else source_cache.borrowed(cache_dir, rev))
+    with borrowing as cached:
+        if cached is not None:
+            try:
+                source_tree.copy_tree(cached, destination)
+            except OSError as error:
+                print(f"tauceti-review: cached source copy unavailable: {error}; fetching privately", file=sys.stderr)
+                try:
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                except OSError as cleanup_error:
+                    raise repository_diff.PreparationUnavailable(
+                        f"could not remove incomplete Mathlib input: {cleanup_error}") from cleanup_error
+                cached = None
+    if cached is None:
+        run(["git", "init", "-q", str(destination)], quiet=True)
+        run(["git", "-C", str(destination), "remote", "add", "origin", source_cache.URL], quiet=True)
+        print(f"fetching Mathlib source @ {rev[:12]} (for reuse/grep)…", file=sys.stderr)
+        run(["git", "-C", str(destination), "fetch", "-q", "--depth", "1", "origin", rev], quiet=True)
+        run(["git", "-C", str(destination), "checkout", "-q", "FETCH_HEAD"], quiet=True)
+    if cached is None and not existed:
+        source_cache.publish(cache_dir, rev, destination)
+    return True
 
 
 def resolve_repo_dir(explicit):
@@ -613,9 +654,15 @@ def _main(cleanup):
                     help="commit (default): re-run only unresolved rubrics, carry prior approvals "
                          "forward as ♻️ (stale) until the PR is otherwise clean, then sweep them; "
                          "manual: force a full re-review of every rubric")
-    ap.add_argument("--auth", default="subscription", choices=["subscription", "api"],
-                    help="subscription (default): use your logged-in claude/codex; api: use "
-                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment (billed)")
+    # TAUCETI_REVIEW_AUTH sets the default so a session launched on an API key cannot silently fall
+    # back to the subscription login; the flag still takes precedence.
+    env_auth = os.environ.get("TAUCETI_REVIEW_AUTH", "").strip() or "subscription"
+    if env_auth not in ("subscription", "api"):
+        die(f"TAUCETI_REVIEW_AUTH={env_auth!r} is neither 'subscription' nor 'api'.")
+    ap.add_argument("--auth", default=env_auth, choices=["subscription", "api"],
+                    help="subscription: use your logged-in claude/codex; api: use "
+                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment "
+                         "(billed). Default: $TAUCETI_REVIEW_AUTH, else subscription")
     ap.add_argument("--post", action="store_true",
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")
@@ -642,6 +689,8 @@ def _main(cleanup):
     ap.add_argument("--mathlib-dir", default="",
                     help="use a pre-staged Mathlib source tree (copied into the workspace) instead of "
                          "fetching it. Same motivation as --roadmap-dir; ignored with --no-mathlib.")
+    ap.add_argument("--mathlib-cache-dir", default=os.environ.get("TAUCETI_REVIEW_MATHLIB_CACHE", ""),
+                    help="optional shared immutable Mathlib source cache; private preparation on a miss")
     ap.add_argument("--repo-dir", default="",
                     help="path to a TauCetiReview checkout (default: auto-detect / cached clone)")
     ap.add_argument("--workdir", default="", help="workspace dir (default: a fresh temp dir)")
@@ -924,26 +973,9 @@ def _main(cleanup):
                    ignore_extra=(".lake", "build", ".cache", ".elan"))
         mathlib_args = ["--mathlib-path", "mathlib"]
     elif not a.no_mathlib:
-        # Mathlib rev comes from the PR head's own manifest here (local trusted use); CI instead
-        # pins it from the base repo to avoid evaluating attacker-controlled manifests.
-        manifest = work / "code" / "lake-manifest.json"
-        rev = ""
-        if manifest.is_file():
-            for pkg in json.loads(manifest.read_text()).get("packages", []):
-                if pkg.get("name") == "mathlib":
-                    rev = pkg.get("rev", "")
-        if rev:
-            ml = work / "mathlib"
-            run(["git", "init", "-q", str(ml)], quiet=True)
-            run(["git", "-C", str(ml), "remote", "add", "origin",
-                 "https://github.com/leanprover-community/mathlib4"], quiet=True)
-            print(f"fetching Mathlib source @ {rev[:12]} (for reuse/grep)…", file=sys.stderr)
-            run(["git", "-C", str(ml), "fetch", "-q", "--depth", "1", "origin", rev], quiet=True)
-            run(["git", "-C", str(ml), "checkout", "-q", "FETCH_HEAD"], quiet=True)
+        if prepare_mathlib_source(work / "code/lake-manifest.json", work / "mathlib",
+                                  a.mathlib_cache_dir):
             mathlib_args = ["--mathlib-path", "mathlib"]
-        else:
-            print("note: no mathlib rev in lake-manifest.json; skipping Mathlib source.",
-                  file=sys.stderr)
 
     rubric_dir = repo_dir / "rubrics"
     rubric_repo = os.environ.get("TAUCETI_RUBRICS_REPO", REVIEW_REPO)
@@ -972,6 +1004,7 @@ def _main(cleanup):
     engine_env = {**os.environ, "TAUCETI_CLI_SHA": sha, "TAUCETI_CLI_DIRTY": "1" if dirty else "0",
                   "TAUCETI_RUBRICS_DRIFT": tristate(drift),
                   "TAUCETI_RUBRICS_PUBLISHED": tristate(published)}
+    engine_env.pop("TAUCETI_REVIEW_MATHLIB_CACHE", None)
     # Shadow outbox lives under the PERSISTENT store, not the throwaway scratch one: if the
     # sync at the end fails, the records must survive the workspace cleanup for a later sync.
     outbox_store = (CACHE_DIR / "store" / a.repo.replace("/", "__")) if a.shadow else store

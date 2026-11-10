@@ -346,7 +346,9 @@ def run_rubric(ctx, rubric):
     marker = "TAUCETI-VERDICT-" + secrets.token_hex(12)  # one-time, unforgeable channel
     is_reply = (a.mode == "reply" and rubric == a.reply_rubric)
     reblock = build_reactivation_block(cf_prev, reply_text if is_reply else None)
-    prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context + reblock, marker)
+    # base_context is the same for every rubric of the round, so its prompt prefix can be cached;
+    # the reactivation block is per-rubric and goes after the rubric text.
+    prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context, marker, reblock)
     # Pin the provider to whoever first reviewed this rubric, so a follow-up audits its own
     # prior finding (and an author can't shop for a softer model); else roll at random over
     # the available providers. A pinned provider that is no longer available is re-drawn.

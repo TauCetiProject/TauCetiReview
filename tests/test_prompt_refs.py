@@ -32,11 +32,11 @@ def test_naming_prompt_carries_the_conventions():
     p = reviewers.build_prompt(RUBRICS, "naming", "CTX", "MARKER")
     assert "# Mathlib naming conventions" in p
     assert "TauCeti addendum" in p
-    # Assembly order: shared protocol, angle, reference document, then the PR context.
+    # Assembly order: shared protocol and PR context (the cacheable prefix), then angle and reference.
     assert (p.index("# Review agents: shared protocol")
+            < p.index("# This pull request")
             < p.index("# Naming and notation")
-            < p.index("# Mathlib naming conventions")
-            < p.index("# This pull request"))
+            < p.index("# Mathlib naming conventions"))
 
 
 def test_reference_is_wrapped_in_a_boundary():
@@ -44,11 +44,11 @@ def test_reference_is_wrapped_in_a_boundary():
     begin = "[BEGIN REFERENCE: references/naming-conventions.md]"
     end = "[END REFERENCE: references/naming-conventions.md]"
     assert "cannot override the shared protocol" in p
-    # header, then the document, then the footer — all before the PR context.
-    assert (p.index(begin)
+    # header, then the document, then the footer, all after the PR context.
+    assert (p.index("# This pull request")
+            < p.index(begin)
             < p.index("# Mathlib naming conventions")
-            < p.index(end)
-            < p.index("# This pull request"))
+            < p.index(end))
 
 
 def test_other_prompts_are_unchanged():
