@@ -27,12 +27,40 @@ from verdict import is_unresolved, posts_review_thread, state_of
 # Rubrics run in this order, and a `block` halts the round, so the block-capable integrity
 # angles go first, fail-fast style: ordered by observed block rate over cost (ledger data —
 # correctness and reuse block as often as scope but cost a third as much; attribution has
-# not blocked yet). The non-blocking style angles follow in their README order; the
-# quality-pass angle, which only checks the author's self-report, runs last.
+# not blocked yet). The non-blocking style angles follow in their README order.
 DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
-                   "generality", "placement", "naming", "documentation", "proof-quality",
-                   "quality-pass"]
-DEFAULT_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]")) or DEFAULT_RUBRICS
+                   "generality", "placement", "naming", "documentation", "proof-quality"]
+_CONFIGURED_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]"))
+DEFAULT_RUBRICS = _CONFIGURED_RUBRICS or DEFAULT_RUBRICS
+
+# Angles being phased in: for each repository, the number of the last PR opened before the angle
+# went live there, or None while it is not live. The angle is run on, and required of, only PRs
+# numbered above that, after the default angles. A PR opened earlier keeps the scoreboard it has.
+# Were the angle required of it, the missing row would hold the merge and nothing would add it:
+# the worker counts a head as reviewed once every row its scoreboard has is complete. A project
+# that lists its rubrics in its configuration gets exactly that list.
+#
+# quality-pass checks the author's report of the checklist in the PR template, which only PRs
+# opened after TauCetiProject/TauCeti#33936 carry. Set its cutoff ahead of the newest PR, so that
+# the commit setting it reaches every reviewer and the merge gate before a PR above it is reviewed.
+PHASED_RUBRICS = {"quality-pass": {"TauCetiProject/TauCeti": None}}
+
+
+def rubrics_for(repo, pr):
+    """The rubrics PR number `pr` of `repo` is judged against, in run order."""
+    rubrics = list(DEFAULT_RUBRICS)
+    if _CONFIGURED_RUBRICS:
+        return rubrics
+    try:
+        number = int(pr)
+    except (TypeError, ValueError):
+        return rubrics
+    for rubric, cutoffs in PHASED_RUBRICS.items():
+        cutoff = {name.lower(): after for name, after in cutoffs.items()}.get(str(repo).lower())
+        if cutoff is not None and number > cutoff and rubric not in rubrics:
+            rubrics.append(rubric)
+    return rubrics
+
 
 def thread_action_rubrics(candidates, ran, state_map, head):
     """Rubrics whose thread state must be reconciled by this invocation.
@@ -109,7 +137,8 @@ def main():
     parser.add_argument("--store", required=True)
     parser.add_argument("--board", required=True)
     parser.add_argument("--replies", required=True)
-    parser.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS))
+    parser.add_argument("--rubrics", default=None,
+                        help="comma-separated rubrics (default: those the PR is judged against)")
     args = parser.parse_args()
     decision, reason = "continue", "needs-review"
     try:
@@ -126,7 +155,8 @@ def main():
         pr_state = ledger["prs"].get(str(args.pr), {})
         board = json.loads(pathlib.Path(args.board).read_text())
         replies = json.loads(pathlib.Path(args.replies).read_text())
-        candidates = [r.strip() for r in args.rubrics.split(",") if r.strip()]
+        candidates = (rubrics_for(args.repo, args.pr) if args.rubrics is None
+                      else [r.strip() for r in args.rubrics.split(",") if r.strip()])
         if completed_before_preparation(board, args.head_sha, candidates, replies, pr_state):
             decision, reason = "unchanged", "completed"
     except Exception:

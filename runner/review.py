@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from ledger import Ledger
 from handoff import (DEFAULT_RUBRICS, can_reuse_completed_review, has_unhandled_contest,
-                     thread_action_rubrics)
+                     rubrics_for, thread_action_rubrics)
 from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, sum_usage, warn_unpriced
 # Re-exported for merge_from_scoreboard (changed_paths/decide_merge/DEFAULT_RUBRICS) and the price
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
@@ -558,7 +558,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti"))
     ap.add_argument("--pr", required=True)
-    ap.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS))
+    ap.add_argument("--rubrics", default=None,
+                    help="comma-separated rubrics (default: those the PR is judged against)")
     ap.add_argument("--rubrics-dir", required=True)
     ap.add_argument("--tool-cwd", required=True)
     ap.add_argument("--code-path", default="code")
@@ -758,7 +759,8 @@ def main():
     pr_rounds = ledger["prs"].get(str(a.pr), {}).get("rounds", [])
     round_num = len(pr_rounds) + 1
 
-    candidates = [r.strip() for r in a.rubrics.split(",") if r.strip()]
+    candidates = (rubrics_for(a.repo, a.pr) if a.rubrics is None
+                  else [r.strip() for r in a.rubrics.split(",") if r.strip()])
     rubrics_version = rubrics_fingerprint(pathlib.Path(a.rubrics_dir))
     head = a.head_sha
     # Provenance shared by every rendered body and the meta blocks: runner-verified facts about

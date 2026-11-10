@@ -57,7 +57,7 @@ import api_budget
 from merge_from_scoreboard import decide_from_comments
 from admission_policy import REBASE_MARKER_RE, STALLED_MARKER_RE, rebase_request_heads
 from pr_diff import pr_diff
-from review import DEFAULT_RUBRICS
+from review import rubrics_for
 
 REPO = os.environ.get("REPO", "")
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
@@ -696,7 +696,7 @@ def sweep_bors(prs, admit=True):
             mb = merge_base_now(n, head)
             paths = pr_diff(REPO, n, head, mb)
             build, bump, scope = status_states(v.get("statusCheckRollup"))
-            decision = decide_from_comments(comments, head, set(DEFAULT_RUBRICS), paths, build, bump,
+            decision = decide_from_comments(comments, head, set(rubrics_for(REPO, n)), paths, build, bump,
                                             MERGE_PREFIX, scope=scope, merge_base_sha=mb)
             if current_head(n) != head or merge_base_now(n, head) != mb:
                 continue
@@ -751,7 +751,7 @@ def sweep_direct(prs):
             mb = cmp["merge_base_commit"]["sha"]
             paths = pr_diff(REPO, n, head, mb)
             build, bump, scope = status_states(v.get("statusCheckRollup"))
-            decision = decide_from_comments(comments, head, set(DEFAULT_RUBRICS), paths,
+            decision = decide_from_comments(comments, head, set(rubrics_for(REPO, n)), paths,
                                             build, bump, MERGE_PREFIX, scope=scope, merge_base_sha=mb)
             merge(REPO, n, decision, mb, dry_run=DRY_RUN)
         except api_budget.Exhausted:
@@ -798,7 +798,6 @@ def main():
         return sweep_bors(selected_prs)
     if mode == "unknown":
         return sweep_bors(selected_prs, admit=False)
-    required = set(DEFAULT_RUBRICS)
     failures = 0
     suffix = " [dry-run]" if DRY_RUN else ""
     try:
@@ -880,6 +879,7 @@ def main():
                 raise RuntimeError("no merge base from the compare API")
             paths = pr_diff(REPO, n, head, merge_base)
             ci_build, bump_guard, scope = status_states(v.get("statusCheckRollup"))
+            required = set(rubrics_for(REPO, n))
             decision = decide_from_comments(comments, head, required, paths, ci_build, bump_guard,
                                             MERGE_PREFIX, scope=scope, merge_base_sha=merge_base)
             if decision.get("review_safe", True) is not True:

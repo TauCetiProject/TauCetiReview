@@ -30,7 +30,7 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
     bootstrap()
 
 from merge import read_paths
-from handoff import DEFAULT_RUBRICS
+from handoff import DEFAULT_RUBRICS, rubrics_for
 from admission_policy import (SCOREBOARD_MARKER, META_RE, TABLE_ROW_RE, WORD_STATE,
                               parse_meta, states_from_table as policy_states_from_table, current_scoreboards,
                               latest_current_scoreboard, load_comments, default_allow_files,
@@ -75,8 +75,9 @@ def main():
     ap.add_argument("--pr", required=True)
     ap.add_argument("--head-sha", required=True)
     ap.add_argument("--comments-file", required=True, help="JSON array of the PR's issue comments")
-    ap.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS),
-                    help="comma list of rubrics that must ALL be green to merge")
+    ap.add_argument("--rubrics", default=None,
+                    help="comma list of rubrics that must ALL be green to merge "
+                         "(default: those the PR is judged against)")
     ap.add_argument("--merge-base-sha", required=True,
                     help="merge base of the PR's base and head now; must match the scoreboard's")
     ap.add_argument("--paths-file", required=True,
@@ -91,7 +92,8 @@ def main():
     ap.add_argument("--conf")
     a = ap.parse_args()
 
-    required = {r for r in a.rubrics.split(",") if r}
+    required = (set(rubrics_for(a.repo, a.pr)) if a.rubrics is None
+                else {r for r in a.rubrics.split(",") if r})
     try:
         text = pathlib.Path(a.comments_file).read_text()
     except OSError:
