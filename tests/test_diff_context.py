@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
-from diff_context import diff_prompt
+from diff_context import description_prompt, diff_prompt
 
 
 class CompleteDiffContext(unittest.TestCase):
@@ -52,6 +52,50 @@ class CompleteDiffContext(unittest.TestCase):
                     (workspace / "diff.txt").symlink_to(original)
                 with self.assertRaisesRegex(ValueError, "no matching complete artifact"):
                     diff_prompt(original.read_text(), original, workspace, limit=1)
+
+
+class DescriptionContext(unittest.TestCase):
+    def test_short_description_keeps_its_existing_prompt(self):
+        self.assertEqual(description_prompt("  # Title\n\nbody\n", "unused", "."),
+                         ("# Title\n\nbody", ""))
+
+    def test_cut_description_names_the_complete_file_in_the_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            full = "# Title\n" + "Quality pass line\n" * 100
+            (root / "pr_desc.txt").write_text(full)
+            excerpt, notice = description_prompt(full, root / "pr_desc.txt", root, limit=8)
+            self.assertEqual(excerpt, "# Title")
+            self.assertIn(f"Only the first 8 of its {len(full)} characters are shown below.", notice)
+            self.assertIn('available to your read-only tools at "./pr_desc.txt"', notice)
+            self.assertIn("before reporting anything in the description as missing", notice)
+
+    def test_ci_staged_copy_is_named_only_when_it_matches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            original = root / "pr_desc.txt"
+            original.write_text("complete description")
+            (workspace / "pr_desc.txt").write_text(original.read_text())
+            _, notice = description_prompt(original.read_text(), original, workspace, limit=1)
+            self.assertIn('"./pr_desc.txt"', notice)
+            (workspace / "pr_desc.txt").write_text("another description")
+            _, notice = description_prompt(original.read_text(), original, workspace, limit=1)
+            self.assertNotIn("pr_desc.txt", notice)
+
+    def test_cut_description_outside_the_workspace_still_warns_of_the_cut(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            original = root / "pr_desc.txt"
+            original.write_text("complete description")
+            excerpt, notice = description_prompt(original.read_text(), original, workspace, limit=8)
+            self.assertEqual(excerpt, "complete")
+            self.assertIn("Only the first 8 of its 20 characters are shown below.", notice)
+            self.assertIn("do not report anything in the description as missing because of the cut",
+                          notice)
 
 
 if __name__ == "__main__":
