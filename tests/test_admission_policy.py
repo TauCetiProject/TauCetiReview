@@ -25,6 +25,29 @@ class AdmissionPolicyTests(unittest.TestCase):
                        {"paths": ["scripts/tool.py"]}, {"comments": []}, {"self_tested": False}):
             self.assertFalse(policy.decide_from_comments(**(args | change))["merge"])
 
+    def test_self_tested_mathlib_bump_needs_a_green_bump_guard(self):
+        fixture = json.loads((ROOT / "tests/fixtures/admission-policy.json").read_text())
+        case = next(c for c in fixture["cases"] if c["expected"].get("merge"))
+        args = fixture["configuration"] | case["inputs"] | {
+            "ci_build": "", "self_tested": True, "bump_guard": "SUCCESS",
+            "paths": ["TauCeti/A.lean", "lake-manifest.json", "lean-toolchain"]}
+        for paths in (["lake-manifest.json", "lean-toolchain"], ["lean-toolchain"], args["paths"]):
+            with self.subTest(paths=paths):
+                result = policy.decide_from_comments(**(args | {"paths": paths}))
+                self.assertTrue(result["merge"], result)
+                self.assertTrue(result["self_tested"])
+        for change in ({"bump_guard": ""}, {"bump_guard": "FAILURE"}, {"bump_guard": "pending"},
+                       {"paths": ["lake-manifest.json", "lakefile.toml"]}, {"paths": ["lakefile.lean"]},
+                       {"paths": ["lean-toolchain", "TauCeti.lean"]},
+                       {"paths": ["lean-toolchain", "scripts/tool.py"]}, {"scope": ""},
+                       {"self_tested": False}):
+            with self.subTest(change=change):
+                self.assertFalse(policy.decide_from_comments(**(args | change))["merge"])
+        # A green build keeps the ordinary pin rule: bump-guard is still required.
+        ordinary = args | {"ci_build": "SUCCESS", "self_tested": False}
+        self.assertTrue(policy.decide_from_comments(**ordinary)["merge"])
+        self.assertFalse(policy.decide_from_comments(**(ordinary | {"bump_guard": ""}))["merge"])
+
     def test_trusted_recovery_holds_keep_their_head_and_author_binding(self):
         head = "a" * 40
         for stalled, marker in ((False, "tauceti-rebase"), (True, "tauceti-merge-stalled")):

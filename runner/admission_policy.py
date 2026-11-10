@@ -41,7 +41,9 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
                  scope="", self_tested=False):
     """The single auto-merge rule, shared by the post-review path and the no-dispatch merge mode.
 
-    Require a head commit and either green CI or trusted local tests. The merge path is
+    Require a head commit and either green CI or trusted local tests. Trusted local tests replace
+    the build only for paths under `prefix` plus the two Lake pins, and a pin change also needs a
+    green bump-guard; lakefiles and other root files always need the build. The merge path is
     self-sufficient on comment events. Every
     blocking rubric is green on it (fresh, not stale), and every changed path is under `prefix` or an
     allowed root file (`allow`), and CI's trusted scope status is green. A PR touching either Lake
@@ -55,7 +57,10 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
         p.startswith(prefix) or p in allow for p in paths)
     if not head:
         return False, "no head_sha; refusing to merge"
-    trusted_local = self_tested and bool(paths) and all(p.startswith(prefix) for p in paths)
+    # A self-tested Mathlib bump is admitted only with the trusted bump-guard validation.
+    trusted_local = (self_tested and bool(paths)
+                     and all(p.startswith(prefix) or p in pin_files for p in paths)
+                     and (not touches_pin or (bump_guard or "").upper() == "SUCCESS"))
     if (ci_build or "").lower() != "success" and not trusted_local:
         return False, f"build is not green on HEAD (={ci_build or 'missing'}); refusing to merge"
     if not all_green:
