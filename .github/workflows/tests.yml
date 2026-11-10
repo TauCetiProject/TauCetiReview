@@ -52,3 +52,5 @@ jobs:
       - run: python tests/test_tool_trace.py
       - run: python tests/test_sandbox_check.py
       - run: python tests/test_reviewer_no_shell.py
+      - run: python tests/test_prompt_refs.py
+      - run: python tests/test_prompt_cache.py

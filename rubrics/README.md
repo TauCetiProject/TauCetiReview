@@ -2,7 +2,8 @@
 
 Each file here is the prompt for one review agent. A PR is reviewed by several independent
 agents, each judging a single angle. An agent's full prompt is `_common.md` (the shared
-protocol) followed by its angle file.
+protocol), then the pull request, then its angle file. The angle comes last so that every
+rubric of a round shares the same prompt prefix, which the prompt cache reuses.
 
 Agents run only after CI is green, so the mechanical layer (build, axiom audit, the Mathlib
 linter set, the import boundary) is already satisfied and no agent re-checks it.
