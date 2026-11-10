@@ -71,7 +71,8 @@ def test_large_prompts_use_stdin_not_argv():
     claude_cmd, claude_kwargs = calls[1]
     assert prompt not in claude_cmd
     assert claude_cmd[1] == "-p", claude_cmd
-    assert claude_kwargs["stdin_text"] == prompt
+    # Claude reads a stream-json user message (see reviewers.claude_input), not the bare text.
+    assert claude_kwargs["stdin_text"] == reviewers.claude_input(prompt)
 
     pi_cmd, pi_kwargs = calls[2]
     assert prompt not in pi_cmd
