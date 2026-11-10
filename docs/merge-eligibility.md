@@ -6,6 +6,11 @@ and the pin bump guard. It publishes `merge eligibility` checks using the review
 App (3947238), rather than posting command comments. Native queue admission still
 uses that same decision directly.
 
+A PR-bound `self-tested` assertion replaces only a green `build`. It applies when
+every changed path is under the project's Lean root or is exactly
+`lake-manifest.json` or `lean-toolchain`; a pin change also needs a green
+`bump-guard` on the head. Lakefiles and other root files always need the build.
+
 Each completed check carries JSON in `external_id`:
 
 ```json
