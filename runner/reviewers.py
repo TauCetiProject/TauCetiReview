@@ -2,7 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 
-import functools, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
+import functools, json, os, pathlib, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, time
 from contextlib import closing
 from urllib.parse import quote
 
@@ -125,6 +125,21 @@ def reject_retired_opus(model):
 
 
 
+# One unguessable token per review process. Claude Code writes paths under HOME into its system
+# prompt, which comes before the shared rubric prefix (see ReviewPrompt), so a different HOME for
+# every attempt made each rubric's prompt differ before the pull request and no rubric of a round
+# could read another's cache. Each attempt still gets an empty HOME: the same path, wiped before
+# and after use.
+_CLAUDE_HOME_TOKEN = secrets.token_hex(8)
+
+
+def _stable_claude_home(provider):
+    home = os.path.join(REV_HOME_BASE, f"rev-{provider}-{_CLAUDE_HOME_TOKEN}")
+    cleanup_rev_home(home)  # a previous attempt's cleanup is best-effort
+    os.mkdir(home, mode=0o700)
+    return home
+
+
 def reviewer_env(provider, keys, subscription=False):
     """A minimal, isolated environment for a reviewer subprocess. Returns `(env, home)`; the caller
     must `cleanup_rev_home(home)` once the reviewer returns.
@@ -147,7 +162,10 @@ def reviewer_env(provider, keys, subscription=False):
     # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp. The caller
     # removes `home` once the reviewer returns (cleanup_rev_home), so these don't accumulate.
     os.makedirs(REV_HOME_BASE, exist_ok=True)
-    home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=REV_HOME_BASE)
+    if provider in ("claude", "sonnet"):
+        home = _stable_claude_home(provider)
+    else:
+        home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=REV_HOME_BASE)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": home,
            "LANG": os.environ.get("LANG", "C.UTF-8"), "CI": "1"}
     # On macOS, Claude Code's login-Keychain item is addressed by the login user. HOME alone is
