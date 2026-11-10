@@ -46,24 +46,63 @@ def test_claude_input_accepts_a_plain_prompt():
     assert msg["message"]["content"] == [{"type": "text", "text": "just text"}]
 
 
-def test_run_claude_streams_the_blocks_with_a_pinned_ttl():
+def _run_claude_input(honours_ttl):
     seen = {}
 
     class R:
         returncode, stdout, stderr = 0, "", ""
 
-    orig = reviewers.sh
+    orig_sh, orig_check = reviewers.sh, reviewers._claude_honours_cache_ttl
     reviewers.sh = lambda argv, **kw: (seen.update(argv=list(argv), **kw), R)[1]
+    reviewers._claude_honours_cache_ttl = lambda: honours_ttl
     try:
         p = reviewers.build_prompt(RUBRICS, "naming", CTX, "MARKER")
         reviewers.run_claude(p, ".", "claude-opus-5-5", {"HOME": "/h"})
     finally:
-        reviewers.sh = orig
+        reviewers.sh, reviewers._claude_honours_cache_ttl = orig_sh, orig_check
+    return p, seen
+
+
+def test_run_claude_streams_the_blocks_with_a_pinned_ttl():
+    p, seen = _run_claude_input(True)
     argv = seen["argv"]
     assert argv[argv.index("--input-format") + 1] == "stream-json"
     assert json.loads(seen["stdin_text"])["message"]["content"][0]["text"] == p.shared
     # The breakpoint above carries no ttl, so Claude Code's own must be 5m as well.
     assert seen["env"] == {"HOME": "/h", "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
+
+
+def test_an_older_claude_gets_one_uncached_block():
+    # A CLI that ignores the TTL pin keeps 1h breakpoints, and the API rejects ours before them.
+    p, seen = _run_claude_input(False)
+    assert json.loads(seen["stdin_text"])["message"]["content"] == [{"type": "text", "text": str(p)}]
+
+
+def test_version_check():
+    import subprocess, types
+    orig = reviewers.subprocess.run
+    try:
+        for out, rc, want in (("2.1.321 (Claude Code)\n", 0, True), ("2.1.242 (Claude Code)", 0, True),
+                              ("2.1.241 (Claude Code)", 0, False), ("", 1, False), ("garbage", 0, False)):
+            reviewers.subprocess.run = lambda *a, **k: types.SimpleNamespace(returncode=rc, stdout=out)
+            reviewers._claude_honours_cache_ttl.cache_clear()
+            assert reviewers._claude_honours_cache_ttl() is want, out
+
+        def missing(*a, **k):
+            raise FileNotFoundError("claude")
+        reviewers.subprocess.run = missing
+        reviewers._claude_honours_cache_ttl.cache_clear()
+        assert reviewers._claude_honours_cache_ttl() is False
+    finally:
+        reviewers.subprocess.run = orig
+        reviewers._claude_honours_cache_ttl.cache_clear()
+
+
+def test_review_prompt_survives_copy_and_pickle():
+    import copy, pickle
+    p = reviewers.build_prompt(RUBRICS, "naming", CTX, "MARKER")
+    for q in (copy.copy(p), copy.deepcopy(p), pickle.loads(pickle.dumps(p))):
+        assert q == p and q.shared == p.shared and q.rubric == p.rubric
 
 
 def run():

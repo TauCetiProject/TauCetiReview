@@ -2,7 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 
-import json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
+import functools, json, os, pathlib, re, shutil, sqlite3, subprocess, sys, tempfile, time
 from contextlib import closing
 from urllib.parse import quote
 
@@ -285,6 +285,9 @@ class ReviewPrompt(str):
         self.shared, self.rubric = shared, rubric
         return self
 
+    def __getnewargs__(self):  # copy and pickle rebuild a str subclass from these
+        return self.shared, self.rubric
+
 
 def build_prompt(rubrics_dir, rubric, context, marker, rubric_context=""):
     """Assemble one rubric's prompt as a ReviewPrompt.
@@ -440,16 +443,33 @@ def _tool_trace(stream_lines, root):
 _CLAUDE_CACHE_TTL = "5m"
 
 
+# The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL. An older one keeps its
+# own 1h breakpoints, so the API would reject every request carrying our 5m breakpoint before them;
+# with an older or unidentifiable CLI the prompt goes as one block, uncached, as before.
+_CLAUDE_TTL_MIN_VERSION = (2, 1, 242)
+
+
+@functools.lru_cache(maxsize=None)
+def _claude_honours_cache_ttl():
+    try:
+        r = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    m = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", r.stdout or "")
+    return bool(r.returncode == 0 and m and tuple(map(int, m.groups())) >= _CLAUDE_TTL_MIN_VERSION)
+
+
 def _claude_cache_env(env):
     return {**env, "CLAUDE_CODE_PROMPT_CACHE_TTL": _CLAUDE_CACHE_TTL}
 
 
-def claude_input(prompt):
+def claude_input(prompt, cache=True):
     """The stream-json user message for one rubric. A ReviewPrompt becomes two text blocks with a
     cache breakpoint after the shared one, so the next rubric of the round reads the pull request
-    from the cache. Claude Code passes the block's cache_control through to the API unchanged."""
+    from the cache. Claude Code passes the block's cache_control through to the API unchanged.
+    With `cache` false the whole prompt is one block with no breakpoint."""
     shared = getattr(prompt, "shared", "")
-    if shared:
+    if shared and cache:
         content = [{"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}},
                    {"type": "text", "text": prompt.rubric}]
     else:
@@ -466,6 +486,7 @@ def run_claude(prompt, cwd, model, env):
     # did, and the events before it are the only record of what the reviewer looked at. Parsing is
     # tolerant — a malformed line is counted and skipped, and a stream with no result event falls
     # through to the same parse_error path a malformed json document took.
+    cache = _claude_honours_cache_ttl()
     r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
             "--disable-slash-commands",
             # --tools RESTRICTS the built-in set; --allowedTools only grants permission within
@@ -488,7 +509,7 @@ def run_claude(prompt, cwd, model, env):
             "--tools", *_REVIEW_TOOLS,
             "--allowedTools", *_REVIEW_TOOLS,
             "--input-format", "stream-json"],
-           cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt))
+           cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt, cache))
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     trace, meta = [], {}
     try:
