@@ -184,6 +184,7 @@ class CLITests(unittest.TestCase):
             stack.enter_context(patch.object(sys, 'argv', argv))
             stack.enter_context(patch.dict(os.environ, {'TAUCETI_REVIEW_RESULT_FILE': str(d / 'result.json')}))
             stack.enter_context(patch.object(cli, 'need'))
+            stack.enter_context(patch.object(cli.publication.post, 'current_login', return_value='test'))
             stack.enter_context(patch.object(cli, 'run', fake_run))
             stack.enter_context(patch.object(cli.subprocess, 'run', sub))
             stack.enter_context(patch.object(cli.shutil, 'which', return_value='/fake/cli'))

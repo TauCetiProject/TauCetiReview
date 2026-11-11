@@ -25,17 +25,12 @@ def test_pr_ref_oids_uses_old_gh_compatible_rest_fields():
             stdout=json.dumps({"head": {"sha": "head-sha"}, "base": {"sha": "base-sha"}})
         )
 
-    original = cli.run
-    cli.run = fake_run
-    try:
+    with patch.object(cli.subprocess, "run", side_effect=fake_run):
         assert cli.pr_ref_oids("owner/repo", 42) == ("head-sha", "base-sha")
-    finally:
-        cli.run = original
-
     assert len(calls) == 1
     cmd, kwargs = calls[0]
-    assert cmd[:2] == ["gh", "api"] and cmd[2].endswith("/pulls/42"), calls
-    assert kwargs.get("capture") is True
+    assert cmd[:2] == ["gh", "api"] and cmd[-1].endswith("/pulls/42"), calls
+    assert kwargs.get("capture_output") is True
 
 
 def test_pr_ref_lookup_does_not_require_new_pr_view_field():
@@ -121,12 +116,7 @@ def test_unresolved_merge_base_stops_before_the_diff_or_review():
         stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
         stack.enter_context(patch.object(cli, "merge_base_sha", return_value=""))
         stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
-        try:
-            cli.main()
-        except SystemExit as e:
-            assert e.code == 1
-        else:
-            raise AssertionError("CLI went on without a merge base")
+        assert cli.main() == cli.PREPARATION_WAIT_EXIT
     replies.assert_called_once(); comments.assert_called_once()
     assert all(pathlib.Path(c.args[0][1]).name == "handoff.py" for c in sub.call_args_list)
     assert not any(len(c) > 1 and str(c[1]).endswith("review.py") for c in calls)
@@ -350,7 +340,8 @@ def test_review_error_exits_after_posting_and_coordination_skip_stays_successful
                     events.append("review")
                     pathlib.Path(tmp, "scoreboard.md").write_text("test scoreboard")
                     pathlib.Path(tmp, "post_plan.json").write_text(json.dumps({
-                        "review_error": review_error}))
+                        "review_error": review_error, "head_sha": "a" * 40,
+                        "scoreboard_body": str(pathlib.Path(tmp, "scoreboard.md")), "threads": []}))
                 if len(cmd) > 1 and pathlib.Path(cmd[1]).name == "post.py":
                     events.append("post")
                 return types.SimpleNamespace(returncode=0, stdout="test-token", stderr="")
@@ -359,6 +350,10 @@ def test_review_error_exits_after_posting_and_coordination_skip_stays_successful
                     "--submitted-by", "test-reviewer"]
             stack.enter_context(patch.object(sys, "argv", argv))
             stack.enter_context(patch.object(cli, "run", fake_run))
+            stack.enter_context(patch.object(cli.publication.post, "transport_for",
+                                            return_value=types.SimpleNamespace(identity=lambda: "test-reviewer")))
+            stack.enter_context(patch.object(cli.publication, "publish",
+                                            side_effect=lambda *args: events.append("post") or 0))
             stack.enter_context(patch.object(cli, "need"))
             stack.enter_context(patch.object(cli, "coordinate", return_value=[] if skipped else ["claude"]))
             stack.enter_context(patch.object(cli.shutil, "which",
@@ -377,10 +372,10 @@ def test_review_error_exits_after_posting_and_coordination_skip_stays_successful
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             status = 0
             try:
-                cli.main()
+                status = cli.main() or 0
             except SystemExit as e:
                 status = e.code
-            assert status == (1 if review_error and not skipped else 0), (review_error, skipped, status)
+            assert status == (81 if skipped else 1 if review_error else 0), (review_error, skipped, status)
             assert events == ([] if skipped else ["review", "post"]), events
 
 

@@ -39,7 +39,7 @@ def test_unchanged_review():
     with patch.object(post, 'current_login', return_value='bot'), \
          patch.object(post, 'find_review_roots', return_value=[]), \
          patch.object(post, 'upsert_scoreboard', return_value=(1, True)):
-        assert post.execute_post('Owner/Repo', 1, init_plan, ledger) == 0
+        assert post.execute_post('Owner/Repo', 1, init_plan, ledger, transport=post.GitHubPublication('Owner/Repo', 1, tb.HEAD, init_plan, post)) == 0
     assert 'published_head_sha' not in json.loads(ledger.read_text())['prs']['1']
     tb._run(store, rd, d / 'diff.txt', mode='commit', rubrics=['reuse'], extra=args)
     assert json.loads(plan.read_text())['review_changed'] is True

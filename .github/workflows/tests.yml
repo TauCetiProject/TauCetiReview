@@ -27,6 +27,8 @@ jobs:
       - run: python tests/test_prices.py
       - run: python tests/test_token_accounting.py
       - run: python tests/test_post.py
+      - run: python tests/test_shared_publication.py
+      - run: python tests/test_shared_cli.py
       - run: python tests/test_billing.py
       - run: python tests/test_unchanged_review.py
       - run: python tests/test_completed_handoff.py

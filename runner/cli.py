@@ -38,12 +38,15 @@ import tempfile
 import time
 import uuid
 
+from tauceti_tools.forge import ForgeError
+from tauceti_tools.review_source import source_for
+
 try:
     from . import pr_diff as repository_diff
-    from . import source_cache, source_tree
+    from . import source_cache, source_tree, publication
 except ImportError:
     import pr_diff as repository_diff
-    import source_cache, source_tree
+    import source_cache, source_tree, publication
 
 # review.py's abort status when the provider itself is unusable. Duplicated rather than imported:
 # this CLI drives the engine as a subprocess and never imports it (the engine's modules use flat
@@ -73,10 +76,20 @@ def die(msg):
     sys.exit(1)
 
 
-def run(cmd, capture=False, quiet=False, allow_fail=False, **kw):
+def run(cmd, capture=False, quiet=False, allow_fail=False, preparation=False, **kw):
     """Run a command; die on failure unless allow_fail. capture=True returns stdout/stderr."""
     if not quiet:
         print(f"$ {' '.join(cmd)}", file=sys.stderr)
+    if preparation and cmd[0] == 'git':
+        # Shared GitHub context repositories are independent of the PR's forge.
+        # Use the same bounded transport/descendant cleanup as the PR inputs.
+        from tauceti_tools.forge import GITHUB
+        from tauceti_tools.git_credentials import scoped_git_environment
+
+        token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+        env = scoped_git_environment(GITHUB, token) if token else repository_diff._git_env()
+        output = repository_diff._git(os.getcwd(), cmd[1:], env, repository_diff.FETCH_TIMEOUT)
+        return subprocess.CompletedProcess(cmd, 0, stdout=output.decode('utf-8', 'replace'), stderr='')
     r = subprocess.run(cmd, text=True, capture_output=capture, **kw)
     if r.returncode != 0 and not allow_fail:
         if capture:
@@ -136,11 +149,11 @@ def prepare_mathlib_source(manifest, destination, cache_dir):
                         f"could not remove incomplete Mathlib input: {cleanup_error}") from cleanup_error
                 cached = None
     if cached is None:
-        run(["git", "init", "-q", str(destination)], quiet=True)
-        run(["git", "-C", str(destination), "remote", "add", "origin", source_cache.URL], quiet=True)
+        run(["git", "init", "-q", str(destination)], quiet=True, preparation=True)
+        run(["git", "-C", str(destination), "remote", "add", "origin", source_cache.URL], quiet=True, preparation=True)
         print(f"fetching Mathlib source @ {rev[:12]} (for reuse/grep)…", file=sys.stderr)
-        run(["git", "-C", str(destination), "fetch", "-q", "--depth", "1", "origin", rev], quiet=True)
-        run(["git", "-C", str(destination), "checkout", "-q", "FETCH_HEAD"], quiet=True)
+        run(["git", "-C", str(destination), "fetch", "-q", "--depth", "1", "origin", rev], quiet=True, preparation=True)
+        run(["git", "-C", str(destination), "checkout", "-q", "FETCH_HEAD"], quiet=True, preparation=True)
     if cached is None and not existed:
         source_cache.publish(cache_dir, rev, destination)
     return True
@@ -188,10 +201,24 @@ def engine_at(sha):
     return dst
 
 
+_sources = {}
+
+
+def review_source(repo):
+    # A CLI invocation owns one source binding; standalone tests/embedders can
+    # change bindings without borrowing the previous credential's cached client.
+    key = (repo, os.environ.get("TAUCETI_SOURCE_BINDING"), os.environ.get("TAUCETI_FORGEJO_TOKEN_FILE"),
+           os.environ.get("TAUCETI_FORGEJO_USER_ID"))
+    if key not in _sources:
+        _sources[key] = source_for(repo)
+    return _sources[key]
+
+
 def gh_json(repo, pr, fields):
-    r = run(["gh", "pr", "view", str(pr), "--repo", repo, "--json", fields],
-            capture=True, quiet=True)
-    return json.loads(r.stdout)
+    try:
+        return review_source(repo).projection(int(pr), fields.split(","))
+    except (ForgeError, OSError, subprocess.TimeoutExpired) as error:
+        raise repository_diff.PreparationUnavailable(f"PR metadata unavailable ({type(error).__name__})") from error
 
 
 def ci_build_status(meta, head):
@@ -220,46 +247,36 @@ def ci_build_status(meta, head):
 
 
 def pr_ref_oids(repo, pr):
-    """Return the PR's head and base tips without requiring newer `gh pr view` JSON fields.
-
-    `baseRefOid` was not exposed by `gh pr view --json` until gh 2.63. The REST payload has
-    carried head.sha and base.sha — the same values GraphQL exposes as headRefOid and baseRefOid —
-    for much longer, so use it to keep the subscription CLI working with distro-packaged gh
-    releases such as Ubuntu's 2.45.
-    """
+    """Exact head/base identities from the selected source's native metadata."""
     try:
-        r = run(["gh", "api", f"/repos/{repo}/pulls/{pr}"], capture=True, quiet=True,
-                allow_fail=True, timeout=repository_diff.FETCH_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise repository_diff.PreparationUnavailable(f"PR metadata unavailable: {error}") from error
-    if r.returncode:
-        if repository_diff.transport_unavailable(r.stderr):
-            raise repository_diff.PreparationUnavailable(f"PR metadata unavailable: {r.stderr.strip()}")
-        raise RuntimeError(f"could not read PR metadata: {r.stderr.strip()}")
-    data = json.loads(r.stdout)
-    return data["head"]["sha"], data["base"]["sha"]
+        data = review_source(repo).pull(int(pr))
+        return data["head"]["sha"], data["base"]["sha"]
+    except (ForgeError, OSError, subprocess.TimeoutExpired) as error:
+        raise repository_diff.PreparationUnavailable(f"PR metadata unavailable ({type(error).__name__})") from error
 
 
-def merge_base_sha(repo, base, head):
-    """The merge base of base...head, from the compare API — the actual left side of the reviewed
-    three-dot diff (baseRefOid is the branch tip, which may have moved on)."""
+def merge_base_sha(repo, base, head, number=None):
     if not (base and head):
         return ""
-    return repository_diff._gh_api(f"/repos/{repo}/compare/{base}...{head}?per_page=1",
-                                   ".merge_base_commit.sha")
+    try:
+        return review_source(repo).merge_base(number, base, head)
+    except (ForgeError, OSError, subprocess.TimeoutExpired) as error:
+        raise repository_diff.PreparationUnavailable(f"PR comparison unavailable ({type(error).__name__})") from error
 
 
 def prepare_review_source(repo, head, merge_base, work):
     """One endpoint fetch supplies the canonical patch and exact source, without history."""
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not all(
-            isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, merge_base)):
-        raise RuntimeError("invalid repository or review comparison identity")
+    if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, merge_base)):
+        raise RuntimeError("invalid review comparison identity")
+    source = review_source(repo)
     partial = work / "diff.txt.partial"
     try:
         with partial.open('wb') as out:
-            paths = repository_diff.git_diff(f"https://github.com/{repo}", merge_base, head,
+            paths = repository_diff.git_diff(source.repository.clone_url, merge_base, head,
                                             diff_out=out, limit=None, fetch_limit=None,
-                                            source_dir=work / 'code')
+                                            source_dir=work / 'code',
+                                            cache_dir=CACHE_DIR / 'git' / source.cache_key,
+                                            environment=source.git_environment())
         os.replace(partial, work / 'diff.txt')
         repository_diff.write_paths(work / 'paths.z', paths)
         print(f"Prepared source and diff: {merge_base[:12]}..{head[:12]}", file=sys.stderr)
@@ -417,29 +434,13 @@ def fetch_thread_replies(repo, pr):
     has not recorded the root). Our own comments are dropped by MARKER, never by author login: a
     contest answer carries `tauceti-reply:` and a thread root carries `tauceti-rubric:`; filtering by
     a poster login would wrongly drop a contest from someone who happens to share that login."""
-    r = run(["gh", "api", "--paginate", "--jq", ".[]",
-             f"/repos/{repo}/pulls/{pr}/comments?per_page=100"],
-            capture=True, quiet=True, allow_fail=True)
-    if r.returncode != 0:
-        return None  # Unavailable history cannot establish that there is no new contest.
-    comments = []
-    for line in (r.stdout or "").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                comment = json.loads(line)
-            except json.JSONDecodeError:
-                return None  # A partial history cannot establish that there is no contest.
-            if (not isinstance(comment, dict)
-                    or type(comment.get("id")) is not int or comment["id"] <= 0
-                    or "body" not in comment
-                    or (comment["body"] is not None and not isinstance(comment["body"], str))
-                    or (comment.get("in_reply_to_id") is not None
-                        and type(comment["in_reply_to_id"]) is not int)
-                    or (comment.get("user") is not None
-                        and not isinstance(comment["user"], dict))):
-                return None
-            comments.append(comment)
+    try:
+        comments = review_source(repo).findings(int(pr))
+    except (ForgeError, OSError, subprocess.TimeoutExpired, ValueError):
+        return None  # An incomplete history cannot establish no new contest.
+    if not all(isinstance(row, dict) and type(row.get("id")) is int and row["id"] > 0
+               and isinstance(row.get("body") or "", str) for row in comments):
+        return None
     root_rubric = {}
     root_bodies = {}
     for c in comments:
@@ -508,20 +509,10 @@ def latest_scoreboard(comments):
 
 def issue_comments(repo, pr):
     """All issue comments on a PR, or None on a fetch failure."""
-    r = run(["gh", "api", "--paginate", "--jq", ".[]",
-             f"/repos/{repo}/issues/{pr}/comments?per_page=100"],
-            capture=True, quiet=True, allow_fail=True)
-    if r.returncode != 0:
+    try:
+        return review_source(repo).comments(int(pr))
+    except (ForgeError, OSError, subprocess.TimeoutExpired, ValueError):
         return None
-    out = []
-    for line in (r.stdout or "").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return out
 
 
 # SIGTERM/SIGINT run atexit cleanup; SIGKILL is covered by the lease TTL.
@@ -548,13 +539,11 @@ def _install_claim_cleanup():
 
 
 def git_claim_for(repo, pr, head, nonce):
-    from tauceti_tools.claims import GitClaim, review_repository
-    claim_repo = review_repository(repo)
-    if not claim_repo:
-        return None, 2
-    claim = GitClaim(claim_repo, f"review/{repo.lower()}/{pr}/{head}",
-                     f"{os.environ.get('TAUCETI_WORKER_ID', 'review')}-{nonce}", COORD_TTL)
-    return claim, claim.acquire()
+    source = review_source(repo)
+    state = os.environ.get("TAUCETI_SOURCE_STATE")
+    claim = source.claim(int(pr), head, f"{os.environ.get('TAUCETI_WORKER_ID', 'review')}-{nonce}",
+                         COORD_TTL, pathlib.Path(state) / "claims" if state else None)
+    return (claim, claim.acquire()) if claim else (None, 2)
 
 
 def record_coordination(repo, pr, head, nonce, *, git_held):
@@ -580,6 +569,8 @@ def coordinate(repo, pr, head, avail):
         claim.start_heartbeat()
         _ACTIVE_GIT_CLAIMS.append(claim)
         _install_claim_cleanup()
+    elif review_source(repo).claim_required:
+        raise repository_diff.PreparationUnavailable("review source claim unavailable before inference")
     else:
         print("note: Git review claim unavailable; proceeding without coordination "
               "(a concurrent duplicate review is possible).", file=sys.stderr)
@@ -627,29 +618,68 @@ def review_completed_before_preparation(repo_dir, repo, pr, head, store, board, 
     return unchanged
 
 
+def inference_environment(parent):
+    public_ci = {"GITHUB_ACTIONS", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_REPOSITORY",
+                 "GITHUB_SHA", "GITHUB_WORKFLOW", "GITHUB_EVENT_NAME"}
+    return {key: value for key, value in parent.items()
+            if (key in public_ci or not key.startswith(("GH_", "GITHUB_", "ACTIONS_", "TAUCETI_SOURCE_", "TAUCETI_FORGEJO_", "GIT_CONFIG_", "CLAIM_")))
+            and key not in {"TAUCETI_CONF", "TAUCETI_CONF_SOURCE", "TAUCETI_CONF_SNAPSHOT", "GIT_NO_LAZY_FETCH"}}
+
+
+@contextlib.contextmanager
+def preparation_step(name):
+    began = time.monotonic()
+    print(f'review preparation: {name} started', file=sys.stderr, flush=True)
+    try:
+        yield
+    finally:
+        print(f'review preparation: {name} elapsed {time.monotonic() - began:.1f}s',
+              file=sys.stderr, flush=True)
+
+
 def main():
     _install_claim_cleanup()
-    with contextlib.ExitStack() as cleanup:
+    phase = {'inference': False, 'preparing': False}
+    with contextlib.ExitStack() as cleanup, contextlib.ExitStack() as leases:
         try:
-            return _main(cleanup)
+            return _main(cleanup, leases, phase)
         except repository_diff.PreparationUnavailable as error:
             print(f"tauceti-review: preparation unavailable before inference: {error}", file=sys.stderr)
             return PREPARATION_WAIT_EXIT
+        except publication.PublicationPending as error:
+            print(f"tauceti-review: {error}", file=sys.stderr)
+            return publication.PUBLICATION_WAIT_EXIT
+        except ForgeError as error:
+            print(f'tauceti-review: source unavailable ({type(error).__name__})', file=sys.stderr)
+            return PREPARATION_WAIT_EXIT
         except RuntimeError as error:
             print(f"tauceti-review: {error}", file=sys.stderr)
-            return 1
+            return PREPARATION_WAIT_EXIT if phase['preparing'] and not phase['inference'] else 1
+        except SystemExit as error:
+            if phase['preparing'] and not phase['inference'] and error.code not in (0, HEAD_CHANGED_EXIT):
+                print('tauceti-review: preparation stopped before inference; no PR inference error', file=sys.stderr)
+                return PREPARATION_WAIT_EXIT
+            raise
+        except (OSError, subprocess.TimeoutExpired) as error:
+            if phase['preparing'] and not phase['inference']:
+                print(f'tauceti-review: preparation unavailable ({type(error).__name__})', file=sys.stderr)
+                return PREPARATION_WAIT_EXIT
+            raise
         finally:
             _release_active_claims()
 
 
-def _main(cleanup):
+def _main(cleanup, leases, phase):
     ap = argparse.ArgumentParser(
         prog="tauceti-review",
         description="Run the Tau Ceti AI review on a PR using your own claude/codex subscription.")
-    ap.add_argument("pr", help="PR number to review")
+    ap.add_argument("pr", nargs="?", help="PR number to review")
+    ap.add_argument("--recover-only", action="store_true", help="publish retained output without inference")
+    ap.add_argument("--recover-work", action="append", default=[], help=argparse.SUPPRESS)
     ap.add_argument("--repo", default=DEFAULT_CODE_REPO, help="code repo (owner/name)")
     ap.add_argument("--roadmap-repo", default=DEFAULT_ROADMAP_REPO)
     ap.add_argument("--rubrics", default="", help="comma-separated subset (default: all)")
+    ap.add_argument("--codex-model", default=None, help="exact review model override")
     ap.add_argument("--mode", default="commit", choices=["commit", "manual"],
                     help="commit (default): re-run only unresolved rubrics, carry prior approvals "
                          "forward as ♻️ (stale) until the PR is otherwise clean, then sweep them; "
@@ -740,8 +770,12 @@ def _main(cleanup):
     ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--conf")
     a = ap.parse_args()
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", a.repo) or not re.fullmatch(r"[1-9][0-9]*", a.pr):
-        die("review requires an owner/repository and a positive PR number")
+    # The source adapter validates both legacy GitHub names and qualified native
+    # selectors, including their repository/server identity binding.
+    if not a.sync_only:
+        review_source(a.repo)
+    if a.pr is not None and not re.fullmatch(r"[1-9][0-9]*", a.pr):
+        die("review requires a positive PR number")
 
     a.kiro_model = (a.kiro_model or "").strip()
     if not a.kiro_model or a.kiro_model.lower().startswith("auto"):
@@ -752,6 +786,14 @@ def _main(cleanup):
     # unpriced model only after workspace setup and the Mathlib fetch.
     a.claude_model = (a.claude_model or "").strip() or None
 
+    if a.recover_only:
+        if not a.store or not a.workdir:
+            die("--recover-only requires --store and --workdir")
+        recovered = publication.recover(a.repo, a.workdir, pathlib.Path(a.store) / "ledger.json",
+                                        (int(a.pr),) if a.pr else (), work_names=a.recover_work)
+        return 0 if recovered else 84
+    if not a.sync_only and not a.pr:
+        die("a PR number is required")
     # --sync-only: no review, just drain an existing store's outbox into TauCetiData and exit. The
     # host runs this after a --no-sync review (e.g. a bubble) to publish with its own creds. Loud:
     # `run` (no allow_fail) exits nonzero if archive.py sync fails after its retries.
@@ -773,10 +815,8 @@ def _main(cleanup):
     # Guard on `gh` existing: run() with allow_fail catches a nonzero exit but not a missing binary.
     if not a.submitted_by and not any(
             arg == "--submitted-by" or arg.startswith("--submitted-by=") for arg in sys.argv):
-        a.submitted_by = (os.environ.get("GITHUB_ACTOR")
-                          or (run(["gh", "api", "user", "--jq", ".login"],
-                                  capture=True, quiet=True, allow_fail=True).stdout.strip()
-                              if shutil.which("gh") else ""))
+        a.submitted_by = review_source(a.repo).publisher_key()
+
 
     if a.shadow and not a.label:
         die("--shadow requires --label <name> (it tags every archived record).")
@@ -837,13 +877,17 @@ def _main(cleanup):
     work = pathlib.Path(a.workdir) if a.workdir else pathlib.Path(tempfile.mkdtemp(
         prefix=f"tauceti-review-{a.pr}-"))
     work.mkdir(parents=True, exist_ok=True)
+    leases.enter_context(publication.workspace_lock(work, 'runner.lock'))
+    cleanup.callback(publication.cleanup_inputs, work)
     if not a.keep and not a.workdir:
         cleanup.callback(shutil.rmtree, work, ignore_errors=True)
     print(f"workspace: {work}", file=sys.stderr)
+    phase['preparing'] = True
 
     # PR head, base, diff, and description (author-provided context, no more trusted than the
     # diff). The base/merge-base SHAs are provenance: they pin exactly which diff was reviewed.
-    head, base = pr_ref_oids(a.repo, a.pr)
+    with preparation_step("PR metadata"):
+        head, base = pr_ref_oids(a.repo, a.pr)
     if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, base)):
         die("PR metadata did not contain exact head/base commit identities")
     print(f"PR #{a.pr} head: {head[:12]}", file=sys.stderr)
@@ -889,6 +933,13 @@ def _main(cleanup):
     print(f"store: {store}{'  (scratch: shadow)' if a.shadow else '  (fresh)' if a.fresh else ''}",
           file=sys.stderr)
 
+    try:
+        from .ledger import atomic_write_json as write_context
+    except ImportError:
+        from ledger import atomic_write_json as write_context
+    write_context(work / "review-context.json", dict(source=publication.source_record(review_source(a.repo)),
+                  pr=int(a.pr), head=head, store=str(store / "ledger.json"), lifecycle=2))
+
     # Read the author's replies on the rubric threads from GitHub and pass them to the engine, so a
     # re-review audits the contest (e.g. a push-back on a finding) instead of re-judging the diff
     # blind. This is the local equivalent of CI's reply-trigger flow.
@@ -928,10 +979,11 @@ def _main(cleanup):
     # must produce it identically. The helper ships beside this file, so a --rubrics-sha pin to an
     # older engine still gets it.
     try:
-        merge_base = merge_base_sha(a.repo, base, head)
+        merge_base = merge_base_sha(a.repo, base, head, number=int(a.pr))
         if not merge_base:
             die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
-        prepare_review_source(a.repo, head, merge_base, work)
+        with preparation_step("exact Git source and diff"):
+            prepare_review_source(a.repo, head, merge_base, work)
     except RuntimeError as error:
         if re.search(r"HTTP (?:404|422)|not our ref|unadvertised object", str(error), re.I):
             current, current_base = pr_ref_oids(a.repo, a.pr)
@@ -951,7 +1003,7 @@ def _main(cleanup):
     # just leaves it blank, and the engine then injects nothing).
     ci_build = ""
     try:
-        build_meta = gh_json(a.repo, a.pr, "headRefOid,statusCheckRollup")
+        build_meta = review_source(a.repo).execution_metadata(int(a.pr))
         ci_build = ci_build_status(build_meta, head)
     except Exception:
         ci_build = ""
@@ -963,8 +1015,9 @@ def _main(cleanup):
     if a.roadmap_dir:   # pre-staged (e.g. mounted into a network-restricted bubble); copy, don't clone
         stage_tree(a.roadmap_dir, work / "roadmap")
     else:
-        run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.roadmap_repo}",
-             str(work / "roadmap")])
+        with preparation_step("roadmap source"):
+            run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{a.roadmap_repo}",
+                 str(work / "roadmap")], preparation=True)
         shutil.rmtree(work / "roadmap" / ".git", ignore_errors=True)
 
     mathlib_args = []
@@ -973,9 +1026,10 @@ def _main(cleanup):
                    ignore_extra=(".lake", "build", ".cache", ".elan"))
         mathlib_args = ["--mathlib-path", "mathlib"]
     elif not a.no_mathlib:
-        if prepare_mathlib_source(work / "code/lake-manifest.json", work / "mathlib",
-                                  a.mathlib_cache_dir):
-            mathlib_args = ["--mathlib-path", "mathlib"]
+        with preparation_step("Mathlib source"):
+            if prepare_mathlib_source(work / "code/lake-manifest.json", work / "mathlib",
+                                      a.mathlib_cache_dir):
+                mathlib_args = ["--mathlib-path", "mathlib"]
 
     rubric_dir = repo_dir / "rubrics"
     rubric_repo = os.environ.get("TAUCETI_RUBRICS_REPO", REVIEW_REPO)
@@ -984,8 +1038,8 @@ def _main(cleanup):
         if not re.fullmatch(r"[0-9a-f]{40}", ref):
             die("A custom rubric repository requires review.rubrics_ref as a full commit SHA")
         rubric_checkout = work / "rubric-source"
-        run(["git", "clone", "-q", "--no-checkout", f"https://github.com/{rubric_repo}", str(rubric_checkout)])
-        run(["git", "-C", str(rubric_checkout), "checkout", "--detach", ref])
+        run(["git", "clone", "-q", "--no-checkout", f"https://github.com/{rubric_repo}", str(rubric_checkout)], preparation=True)
+        run(["git", "-C", str(rubric_checkout), "checkout", "--detach", ref], preparation=True)
         rubric_dir = rubric_checkout / "rubrics"
         rub_sha, rub_approx = ref, False
     else:
@@ -1031,6 +1085,8 @@ def _main(cleanup):
            "--replies-json", str(replies_path), "--prior-scoreboard-json", str(prior_board_path)]
     if a.claude_model:
         cmd += ["--claude-model", a.claude_model]
+    if a.codex_model:
+        cmd += ["--codex-model", a.codex_model]
     if a.rubrics:
         cmd += ["--rubrics", a.rubrics]
     print("\n=== running review (this calls claude/codex per rubric; takes a few minutes) ===\n",
@@ -1038,8 +1094,17 @@ def _main(cleanup):
     # Inference can create receipts in --fresh's workspace-local outbox. Keep
     # the original post/inference-failure recovery semantics from this point;
     # ordinary successful completion still removes the workspace below.
+    current, current_base = pr_ref_oids(a.repo, a.pr)
+    if (current, current_base) != (head, base):
+        write_review_result(current, False, outcome='head-changed', expected_head=head)
+        return HEAD_CHANGED_EXIT
+    publisher = publication.post.transport_for(a.repo, int(a.pr), head, {},
+                                               publication.post).identity() if a.post else None
+    context_path = work / 'review-context.json'
+    write_context(context_path, dict(json.loads(context_path.read_text()), publisher=publisher, archive_dir=outbox))
     cleanup.pop_all()
-    r = run(cmd, allow_fail=True, env=engine_env)
+    phase['inference'] = True
+    r = run(cmd, allow_fail=True, env=inference_environment(engine_env))
     # The engine aborts with PROVIDER_DOWN_EXIT when consecutive rubrics failed because the provider
     # itself is unusable (expired credential, exhausted subscription window). It has already said
     # which, and it deliberately wrote no scoreboard: an outage is not a review verdict and must not
@@ -1048,6 +1113,10 @@ def _main(cleanup):
     if r.returncode == PROVIDER_DOWN_EXIT:
         sys.exit(PROVIDER_DOWN_EXIT)
     if r.returncode != 0:
+        if a.post and plan.is_file() and json.loads(plan.read_text()).get('head_sha') == head:
+            publication.retain(a.repo, a.pr, plan, store / 'ledger.json', actor=publisher, archive_dir=outbox)
+        else:
+            publication.cleanup_inputs(work)
         die(f"command failed ({r.returncode}): {' '.join(cmd)}")
 
     # The review step exits 0 having written a scoreboard on every path this CLI drives (commit /
@@ -1062,6 +1131,9 @@ def _main(cleanup):
         print("Review unchanged: already published; selecting other work.", file=sys.stderr)
         if a.post:
             write_review_result(head, False)
+        publication.cleanup_inputs(work)
+        context = json.loads((work / 'review-context.json').read_text())
+        write_context(work / 'review-context.json', dict(context, complete='unchanged'))
         if not a.keep and not a.workdir:
             shutil.rmtree(work, ignore_errors=True)
         return 0
@@ -1080,15 +1152,10 @@ def _main(cleanup):
     elif a.post:
         if not plan.is_file():
             die(f"review step exited cleanly but wrote no post plan ({plan}); refusing to post.")
-        token = run(["gh", "auth", "token"], capture=True, quiet=True).stdout.strip()
-        if not token:
-            die("`gh auth token` returned nothing; run `gh auth login` first.")
-        print("posting scoreboard + threads to the PR as you…", file=sys.stderr)
-        env = {**os.environ, "GH_TOKEN": token}
-        run([sys.executable, str(repo_dir / "runner" / "post.py"),
-             "--repo", a.repo, "--pr", str(a.pr), "--plan", str(plan), "--store", str(store),
-             *(["--archive-dir", outbox] if outbox else [])],
-            env=env)
+        receipt = publication.retain(a.repo, a.pr, plan, store / "ledger.json", actor=publisher, archive_dir=outbox)
+        result = publication.publish(a.repo, receipt, store / "ledger.json")
+        if result:
+            return result
         print("posted.", file=sys.stderr)
         write_review_result(head, True)
     else:
@@ -1107,7 +1174,13 @@ def _main(cleanup):
             print("note: archive sync failed; records remain in the outbox and will sync "
                   "on a later run.", file=sys.stderr)
 
-    if not a.keep and not a.workdir:
+    pending_archive = bool(outbox and pathlib.Path(outbox).resolve().is_relative_to(work.resolve())
+                           and any(p.is_file() for p in pathlib.Path(outbox).rglob('*')))
+    if pending_archive:
+        publication.cleanup_inputs(work)
+        print(f'archive records retained in {outbox}; retry with --sync-only --store {outbox_store}',
+              file=sys.stderr)
+    elif not a.keep and not a.workdir:
         shutil.rmtree(work, ignore_errors=True)
     elif a.keep:
         print(f"workspace kept at {work}", file=sys.stderr)
