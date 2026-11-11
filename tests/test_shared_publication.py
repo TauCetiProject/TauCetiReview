@@ -272,6 +272,19 @@ class SharedPublication(unittest.TestCase):
                 assert publication.recover(w.source.key, w.receipt.parent.parent, w.ledger)
                 assert not (w.ledger.parent / 'outbox').exists()
 
+    def test_native_review_commit_is_authoritative_over_edited_body_metadata(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            assert publish(w) == 0
+            next_head = 'b' * 40
+            row = w.api.groups[0]['comments'][0]
+            row['body'] = row['body'].replace(HEAD, next_head)
+            transport = publication_transport.NativePublication(w.source.key, 7, next_head,
+                {}, post, source=w.source)
+            root = transport.roots()[0]
+            assert root['head_sha'] == HEAD
+            assert not transport.editable(root)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,7 +70,8 @@ def find_review_roots(repo, pr):
     return normalize_roots(_comment_json_lines(r.stdout))
 
 
-def normalize_roots(comments, principal=lambda user: user.get("login")):
+def normalize_roots(comments, principal=lambda user: user.get("login"),
+                    reviewed_head=lambda row, meta: meta.get("head_sha") or row.get("commit_id")):
     roots = []
     for c in comments:
         if c.get("in_reply_to_id") is not None:
@@ -89,7 +90,7 @@ def normalize_roots(comments, principal=lambda user: user.get("login")):
             "login": principal(c.get("user") or {}),
             "thread_kind": c.get("thread_kind"),
             "rubric": rubric_match.group(1) if rubric_match else None,
-            "head_sha": meta.get("head_sha") or c.get("commit_id"),
+            "head_sha": reviewed_head(c, meta),
             "run_ids": [run.get("id") for run in (meta.get("runs") or []) if run.get("id")],
             "created_at": c.get("created_at") or "", "body": body,
         })

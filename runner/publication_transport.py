@@ -78,7 +78,8 @@ class NativePublication(GitHubPublication):
         return pathlib.Path(path).read_text().replace('https://github.com/' + self.repo, self.repository.url)
 
     def roots(self):
-        return self.helpers.normalize_roots(self.source.findings(self.number), self.principal)
+        return self.helpers.normalize_roots(self.source.findings(self.number), self.principal,
+                                            reviewed_head=lambda row, meta: row.get('commit_id'))
 
     def editable(self, root, action=None):
         return root.get('head_sha') == self.head and (action is None or
