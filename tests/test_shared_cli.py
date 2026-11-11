@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,6 +16,23 @@ from test_shared_publication import HEAD, workflow
 
 
 class SharedCLI(unittest.TestCase):
+    def test_configured_cli_starts_for_both_content_forges(self):
+        for kind in ('github', 'forgejo'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                configuration = pathlib.Path(directory) / 'project.toml'
+                content = ('"Owner/Project"' if kind == 'github' else '{forge="native",name="Owner/Project"}')
+                configuration.write_text('schema_version=2\n[forges.native]\nkind="forgejo"\n'
+                    'url="https://git.example.org"\n[repositories]\ncontent='+content+'\nroadmap="Owner/Roadmap"\n')
+                env = {k:v for k,v in os.environ.items() if not k.startswith(('TAUCETI_', 'GH_'))}
+                for selection in ('flag','environment'):
+                    command=[sys.executable,str(pathlib.Path(cli.__file__).resolve()),'--help']
+                    child = dict(env)
+                    if selection == 'flag': command += ['--conf',str(configuration)]
+                    else: child['TAUCETI_CONF']=str(configuration)
+                    result=subprocess.run(command,env=child,cwd=directory,capture_output=True,text=True,timeout=30)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertIn('--conf',result.stdout)
+
     def test_post_inference_errors_cannot_be_classified_as_preparation_or_review_errors(self):
         from tauceti_tools.forge import Incomplete
 
@@ -125,7 +143,8 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                 assert 'Owner/Roadmap and Project/' in last_prompt.read_text()
                 assert 'TauCetiProject/TauCetiRoadmap' not in last_prompt.read_text()
                 host = 'github.com' if kind == 'github' else 'git.example.org'
-                assert f'https://{host}/Owner/Project/pull/7' in last_prompt.read_text()
+                route = 'pull' if kind == 'github' else 'pulls'
+                assert f'https://{host}/Owner/Project/{route}/7' in last_prompt.read_text()
                 if kind == 'forgejo':
                     assert 'https://github.com/Owner/Project' not in last_prompt.read_text()
                 receipt = json.loads(w.receipt.read_text())
