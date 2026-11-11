@@ -23,9 +23,20 @@ Run each of these searches. Choose relevant search terms and grep (under
   plumbing).
 - For each new block of code, grep TauCeti for its distinctive identifiers or proof shape,
   to find near-clones that should be factored into a shared construction.
-- Within the diff itself, look for private lemmas restating public ones up to defeq,
-  composite lemmas that their component `@[simp]` lemmas already prove, and `∧`-bundles of
-  existing lemmas.
+- For each new definition or construction, ask whether it is a special case of something
+  TauCeti or Mathlib already builds: the `n = 1`, rank-one, identity-map, trivial-group or
+  bottom-subgroup instance of a general construction. Search for the general version by the
+  term or combinator it is built from, not by its name, since the general version is usually
+  named differently. (A rank-one carrier that is the rank-`r` carrier at `r = 1`, or a Hessian
+  operator that is the order-one iterated gradient, are duplicates.)
+- For each declaration in the namespace of a structure that `extends` another, check whether
+  the parent already provides it. Dot notation reaches the parent's fields and API through the
+  `toParent` projection, so a restatement in the child's namespace is a parallel API.
+- Search private declarations exactly as you search public ones. A private helper that
+  rebuilds a public TauCeti or Mathlib declaration is duplication, even though nothing outside
+  its file can see it. Within the diff itself, also look for private lemmas restating public
+  ones up to defeq, composite lemmas that their component `@[simp]` lemmas already prove, and
+  `∧`-bundles of existing lemmas.
 - Treat compatibility-only aliases, wrapper declarations, forwarding import modules, deprecated
   shims, and duplicate theorem names as unnecessary duplication. The canonical replacement is
   the located existing API; require the compatibility artifact's deletion.
@@ -38,7 +49,10 @@ If there are unnecessary duplications as public and private APIs, explain the ov
 Make sure that all assertions about duplication are backed up by explicit references based
 on your grep searches; don't ask the author to search themselves.
 Not every hit is a defect: Mathlib itself keeps per-type restatements of generic lemmas, and
-a specialization with genuine consumers can earn its place.
+a specialization with genuine consumers can earn its place. Two definitions with the same
+body are also not duplicates when they play different mathematical roles that merely share an
+encoding (for example, the simple-root index maps of the type-B and type-C root data), or when
+one is a name the roadmap asks for that delegates directly to the other.
 
 ## Verdict
 
