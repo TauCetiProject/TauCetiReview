@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,6 +16,30 @@ from test_shared_publication import HEAD, workflow
 
 
 class SharedCLI(unittest.TestCase):
+    def test_configured_cli_starts_for_both_content_forges(self):
+        for kind in ('github', 'forgejo'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                configuration = pathlib.Path(directory) / 'project.toml'
+                content = ('"Owner/Project"' if kind == 'github' else '{forge="native",name="Owner/Project"}')
+                configuration.write_text('schema_version=2\n[forges.native]\nkind="forgejo"\n'
+                    'url="https://git.example.org"\n[repositories]\ncontent='+content+'\nroadmap="Owner/Roadmap"\n')
+                env = {k:v for k,v in os.environ.items() if not k.startswith(('TAUCETI_', 'GH_'))}
+                for selection in ('flag','environment'):
+                    command=[sys.executable,str(pathlib.Path(cli.__file__).resolve()),'--help']
+                    child = dict(env)
+                    if selection == 'flag': command += ['--conf',str(configuration)]
+                    else: child['TAUCETI_CONF']=str(configuration)
+                    result=subprocess.run(command,env=child,cwd=directory,capture_output=True,text=True,timeout=30)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertIn('--conf',result.stdout)
+                if kind == 'forgejo':
+                    refused = subprocess.run([sys.executable, str(pathlib.Path(cli.__file__).resolve()),
+                        '7', '--conf', str(configuration)], env=env, cwd=directory,
+                        capture_output=True, text=True, timeout=30)
+                    self.assertEqual(refused.returncode, 1)
+                    self.assertIn('TAUCETI_FORGEJO_REPOSITORY_ID', refused.stderr)
+                    self.assertNotIn('Traceback', refused.stderr)
+
     def test_post_inference_errors_cannot_be_classified_as_preparation_or_review_errors(self):
         from tauceti_tools.forge import Incomplete
 
@@ -39,7 +64,8 @@ class SharedCLI(unittest.TestCase):
                 (engine / 'runner').symlink_to(pathlib.Path(cli.__file__).resolve().parent, target_is_directory=True)
                 (engine / 'rubrics').mkdir()
                 (engine / 'rubrics/_common.md').write_text('Return a structured verdict after the requested marker.\n'
-                    'Project context: TauCetiProject/TauCetiRoadmap and TauCeti/.')
+                    'Project context: TauCetiProject/TauCetiRoadmap and TauCeti/.\n'
+                    'Content link: https://github.com/TauCetiProject/TauCeti/pull/7')
                 (engine / 'rubrics/style.md').write_text('# Style\nReview the declaration style.')
                 roadmap = root / 'roadmap-source'; roadmap.mkdir()
                 (roadmap / 'Roadmap.md').write_text('Plan')
@@ -62,7 +88,10 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                 codex.chmod(0o700)
                 model_program = codex.read_text()
                 configuration = root / 'project.toml'
-                configuration.write_text('schema_version = 1\n[repositories]\ncontent="Owner/Project"\n'
+                content = ('"Owner/Project"' if kind == 'github'
+                           else '{forge="native",name="Owner/Project"}')
+                configuration.write_text('schema_version = 2\n[forges.native]\nkind="forgejo"\n'
+                    'url="https://git.example.org"\n[repositories]\ncontent=' + content + '\n'
                     'roadmap="Owner/Roadmap"\n[lean]\nroots=["Project"]\n')
                 configuration_source = 'https://invalid.test/trusted-project.toml'
                 stack.enter_context(patch.dict(os.environ, dict(
@@ -120,6 +149,11 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                 assert calls.read_text() == 'called\n'
                 assert 'Owner/Roadmap and Project/' in last_prompt.read_text()
                 assert 'TauCetiProject/TauCetiRoadmap' not in last_prompt.read_text()
+                host = 'github.com' if kind == 'github' else 'git.example.org'
+                route = 'pull' if kind == 'github' else 'pulls'
+                assert f'https://{host}/Owner/Project/{route}/7' in last_prompt.read_text()
+                if kind == 'forgejo':
+                    assert 'https://github.com/Owner/Project' not in last_prompt.read_text()
                 receipt = json.loads(w.receipt.read_text())
                 assert receipt['state'] == 'published'
                 assert w.source.repository.url + '/compare/' in receipt['scoreboard']

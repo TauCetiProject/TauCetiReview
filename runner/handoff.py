@@ -10,13 +10,14 @@ _CONFIG_VALID = True
 if __name__ == "__main__" and os.environ.get("TAUCETI_CONF"):
     try:
         from tauceti_tools.project import configuration_source, load
+        from tauceti_tools.review_project import environment
         # The CLI has already bootstrapped the project. Reuse its immutable
         # snapshot through the same loader; bootstrap() could fetch/write a new
         # snapshot if it were missing, which this read-only probe must not do.
         snapshot = pathlib.Path(os.environ["TAUCETI_CONF_SNAPSHOT"])
         if configuration_source() != os.environ["TAUCETI_CONF_SOURCE"] or not snapshot.is_file():
             raise ValueError("project snapshot unavailable")
-        os.environ.update(load(str(snapshot)).environment())
+        os.environ.update(environment(load(str(snapshot))))
     except Exception:
         _CONFIG_VALID = False
 

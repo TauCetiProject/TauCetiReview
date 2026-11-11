@@ -85,6 +85,19 @@ publication destinations, review policy and optional archive. For example:
 tauceti-review 123 --conf ./tauceti.toml
 ```
 
+Schema v2 configurations may bind `repositories.content` to Forgejo. The same
+review workflow renders prompts with that repository's native URL and retains
+its qualified identity for preparation, publication, and unchanged-review
+detection. Shared roadmap, review-tool, rubric, and archive repositories
+currently require GitHub bindings; unsupported shared hosts fail explicitly.
+
+The worker supplies the validated native identity and credential binding. For a
+direct Review invocation, set `TAUCETI_FORGEJO_REPOSITORY_ID` to the expected
+numeric repository ID and `TAUCETI_FORGEJO_TOKEN_FILE` to a private, owned token
+file. The origin comes from the TOML binding; a conflicting explicit
+`TAUCETI_FORGEJO_ORIGIN` is rejected. These credentials are used by trusted
+source operations and are excluded from model subprocesses.
+
 The [manual setup](https://github.com/TauCetiProject/TauCetiTools/blob/main/docs/project-setup.md)
 documents credentials and generated workflow callers. An absent optional destination in a configured
 project stays disabled. Invocations without configuration retain the Tau Ceti defaults.

@@ -53,7 +53,7 @@ except ImportError:
 # sibling imports and only resolve with runner/ on sys.path, which an installed `runner.cli` has no
 # reason to arrange). tests/test_provider_down.py pins the two definitions together.
 if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
-    from tauceti_tools.project import bootstrap
+    from tauceti_tools.review_project import bootstrap
     bootstrap()
 
 PROVIDER_DOWN_EXIT = 3
@@ -787,7 +787,10 @@ def _main(cleanup, leases, phase):
     # The source adapter validates both legacy GitHub names and qualified native
     # selectors, including their repository/server identity binding.
     if not a.sync_only:
-        review_source(a.repo)
+        try:
+            review_source(a.repo)
+        except ValueError as error:
+            die(str(error))
     if a.pr is not None and not re.fullmatch(r"[1-9][0-9]*", a.pr):
         die("review requires a positive PR number")
 
