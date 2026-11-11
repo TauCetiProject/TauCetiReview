@@ -11,12 +11,12 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "tauceti-tools", git = "https://github.com/TauCetiProject/TauCetiTools?rev=598d0d48b7e3670b932744de8b1d435db55a7b61" }]
+requires-dist = [{ name = "tauceti-tools", git = "https://github.com/TauCetiProject/TauCetiTools?rev=de7633dd55b5fb6e596b69c0f4345f3e82322640" }]
 
 [[package]]
 name = "tauceti-tools"
 version = "0.1.0"
-source = { git = "https://github.com/TauCetiProject/TauCetiTools?rev=598d0d48b7e3670b932744de8b1d435db55a7b61#598d0d48b7e3670b932744de8b1d435db55a7b61" }
+source = { git = "https://github.com/TauCetiProject/TauCetiTools?rev=de7633dd55b5fb6e596b69c0f4345f3e82322640#de7633dd55b5fb6e596b69c0f4345f3e82322640" }
 dependencies = [
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
