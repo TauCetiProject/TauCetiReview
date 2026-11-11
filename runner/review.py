@@ -12,7 +12,7 @@ rubrics whose last round was not `approve`. The workflow commits the store after
 import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, sys, time
 
 if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
-    from tauceti_tools.project import bootstrap
+    from tauceti_tools.review_project import bootstrap
     bootstrap()
 
 import archive

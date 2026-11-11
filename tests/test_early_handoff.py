@@ -92,6 +92,20 @@ class ProbeTests(unittest.TestCase):
                                         env=env), 'unchanged')
             self.assertEqual(snapshot.read_text(), text)
 
+    def test_native_project_snapshot_supplies_engine_rubrics_without_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = pathlib.Path(tmp) / 'project.toml'
+            text = ('schema_version=2\n[forges.native]\nkind="forgejo"\nurl="https://git.example.org"\n'
+                    '[repositories]\ncontent={forge="native",name="Owner/Repo"}\nroadmap="Owner/Roadmap"\n'
+                    '[review]\nrubrics=["custom"]\n')
+            snapshot.write_text(text)
+            env = {'TAUCETI_CONF': 'https://invalid.test/project.toml',
+                   'TAUCETI_CONF_SOURCE': 'https://invalid.test/project.toml',
+                   'TAUCETI_CONF_SNAPSHOT': str(snapshot), 'TAUCETI_RUBRICS': '["wrong"]'}
+            self.assertEqual(self.probe(value={'head_sha': HEAD, 'states': {'custom': 'green'}},
+                                        env=env), 'unchanged')
+            self.assertEqual(snapshot.read_text(), text)
+
     def test_local_publication_obligations_and_carry_forward_are_not_skipped(self):
         for state in ({'pending_publication_head_sha': HEAD},
                       {'state': {'reuse': {'verdict': 'request_changes', 'reviewed_sha': HEAD}}},

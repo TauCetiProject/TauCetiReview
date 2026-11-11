@@ -323,7 +323,7 @@ def build_prompt(rubrics_dir, rubric, context, marker, rubric_context=""):
 
         project = active()
         if project:
-            common, angle, refs = (render(text, project) for text in (common, angle, refs))
+            common, angle, refs = (render(text, project, qualified=True) for text in (common, angle, refs))
     shared = (f"{common}\n\n---\n\n# This pull request\n\n{context}\n\n"
               "[END OF PULL REQUEST CONTENT]\n\n")
     tail = ("---\n\n# Your rubric\n\n"

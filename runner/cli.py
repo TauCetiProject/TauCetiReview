@@ -53,7 +53,7 @@ except ImportError:
 # sibling imports and only resolve with runner/ on sys.path, which an installed `runner.cli` has no
 # reason to arrange). tests/test_provider_down.py pins the two definitions together.
 if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
-    from tauceti_tools.project import bootstrap
+    from tauceti_tools.review_project import bootstrap
     bootstrap()
 
 PROVIDER_DOWN_EXIT = 3
