@@ -623,7 +623,7 @@ def inference_environment(parent):
                  "GITHUB_SHA", "GITHUB_WORKFLOW", "GITHUB_EVENT_NAME"}
     return {key: value for key, value in parent.items()
             if (key in public_ci or not key.startswith(("GH_", "GITHUB_", "ACTIONS_", "TAUCETI_SOURCE_", "TAUCETI_FORGEJO_", "GIT_CONFIG_", "CLAIM_")))
-            and key not in {"TAUCETI_CONF", "TAUCETI_CONF_SOURCE", "TAUCETI_CONF_SNAPSHOT", "GIT_NO_LAZY_FETCH"}}
+            and key != "GIT_NO_LAZY_FETCH"}
 
 
 @contextlib.contextmanager
@@ -649,9 +649,20 @@ def main():
         except publication.PublicationPending as error:
             print(f"tauceti-review: {error}", file=sys.stderr)
             return publication.PUBLICATION_WAIT_EXIT
+        except publication.PublicationBlocked as error:
+            print(f"tauceti-review: {error}", file=sys.stderr)
+            return publication.PUBLICATION_BLOCKED_EXIT
         except ForgeError as error:
             print(f'tauceti-review: source unavailable ({type(error).__name__})', file=sys.stderr)
-            return PREPARATION_WAIT_EXIT
+            return publication.PUBLICATION_WAIT_EXIT if phase['inference'] else PREPARATION_WAIT_EXIT
+        except ValueError as error:
+            if phase['inference']:
+                print(f'tauceti-review: rendered output retained ({type(error).__name__})', file=sys.stderr)
+                return publication.PUBLICATION_WAIT_EXIT
+            if phase['preparing']:
+                print(f'tauceti-review: invalid preparation: {error}', file=sys.stderr)
+                return PREPARATION_WAIT_EXIT
+            raise
         except RuntimeError as error:
             print(f"tauceti-review: {error}", file=sys.stderr)
             return PREPARATION_WAIT_EXIT if phase['preparing'] and not phase['inference'] else 1
@@ -664,6 +675,9 @@ def main():
             if phase['preparing'] and not phase['inference']:
                 print(f'tauceti-review: preparation unavailable ({type(error).__name__})', file=sys.stderr)
                 return PREPARATION_WAIT_EXIT
+            if phase['inference']:
+                print(f'tauceti-review: rendered output retained ({type(error).__name__})', file=sys.stderr)
+                return publication.PUBLICATION_WAIT_EXIT
             raise
         finally:
             _release_active_claims()
@@ -1096,7 +1110,7 @@ def _main(cleanup, leases, phase):
     # the original post/inference-failure recovery semantics from this point;
     # ordinary successful completion still removes the workspace below.
     current, current_base = pr_ref_oids(a.repo, a.pr)
-    if (current, current_base) != (head, base):
+    if current != head:
         write_review_result(current, False, outcome='head-changed', expected_head=head)
         return HEAD_CHANGED_EXIT
     publisher = publication.post.transport_for(a.repo, int(a.pr), head, {},

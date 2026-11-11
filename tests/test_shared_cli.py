@@ -15,6 +15,18 @@ from test_shared_publication import HEAD, workflow
 
 
 class SharedCLI(unittest.TestCase):
+    def test_post_inference_errors_cannot_be_classified_as_preparation_or_review_errors(self):
+        from tauceti_tools.forge import Incomplete
+
+        for inference, expected in ((False, 83), (True, 85)):
+            for error in (Incomplete('source unavailable'), OSError('storage unavailable'), ValueError('invalid record')):
+                with self.subTest(inference=inference, error=type(error).__name__):
+                    def fail(cleanup, leases, phase):
+                        phase.update(preparing=True, inference=inference)
+                        raise error
+                    with patch.object(cli, '_main', side_effect=fail), contextlib.redirect_stderr(io.StringIO()):
+                        assert cli.main() == expected
+
     def test_engine_handoff_unchanged_retry_and_context_for_both_sources(self):
         for kind in ('github', 'forgejo'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
@@ -26,7 +38,8 @@ class SharedCLI(unittest.TestCase):
                 engine = root / 'engine'; engine.mkdir()
                 (engine / 'runner').symlink_to(pathlib.Path(cli.__file__).resolve().parent, target_is_directory=True)
                 (engine / 'rubrics').mkdir()
-                (engine / 'rubrics/_common.md').write_text('Return a structured verdict after the requested marker.')
+                (engine / 'rubrics/_common.md').write_text('Return a structured verdict after the requested marker.\n'
+                    'Project context: TauCetiProject/TauCetiRoadmap and TauCeti/.')
                 (engine / 'rubrics/style.md').write_text('# Style\nReview the declaration style.')
                 roadmap = root / 'roadmap-source'; roadmap.mkdir()
                 (roadmap / 'Roadmap.md').write_text('Plan')
@@ -37,6 +50,7 @@ class SharedCLI(unittest.TestCase):
                 codex.write_text('#!' + sys.executable + '\n' + '''import json, os, re, sys
 assert not any(key.startswith(('GH_', 'TAUCETI_FORGEJO_', 'TAUCETI_SOURCE_', 'GIT_CONFIG_')) for key in os.environ)
 assert 'GIT_NO_LAZY_FETCH' not in os.environ
+assert not any(key in os.environ for key in ('TAUCETI_CONF', 'TAUCETI_CONF_SOURCE', 'TAUCETI_CONF_SNAPSHOT'))
 prompt = sys.stdin.read()
 marker = re.search(r'TAUCETI-VERDICT-[0-9a-f]+', prompt)[0]
 with open(__CALLS__, 'a') as stream: stream.write('called\\n')
@@ -47,11 +61,17 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
 '''.replace('__CALLS__', repr(str(calls))).replace('__PROMPT__', repr(str(last_prompt))))
                 codex.chmod(0o700)
                 model_program = codex.read_text()
+                configuration = root / 'project.toml'
+                configuration.write_text('schema_version = 1\n[repositories]\ncontent="Owner/Project"\n'
+                    'roadmap="Owner/Roadmap"\n[lean]\nroots=["Project"]\n')
+                configuration_source = 'https://invalid.test/trusted-project.toml'
                 stack.enter_context(patch.dict(os.environ, dict(
                     HOME=str(root), PATH=str(binary) + os.pathsep + os.environ.get('PATH', ''),
                     MODEL_CALLS=str(calls), GH_TOKEN='test-secret', GIT_NO_LAZY_FETCH='1',
                     TAUCETI_FORGEJO_TOKEN_FILE='/private/native-token',
                     TAUCETI_SOURCE_BINDING='private-test-binding', TAUCETI_REVIEW_REF='',
+                    TAUCETI_CONF=configuration_source, TAUCETI_CONF_SOURCE=configuration_source,
+                    TAUCETI_CONF_SNAPSHOT=str(configuration),
                     TAUCETI_REVIEW_MATHLIB_CACHE=str(root / 'shared-mathlib'))))
                 stack.enter_context(patch.object(cli, 'review_source', lambda _: w.source))
                 refs = stack.enter_context(patch.object(cli, 'pr_ref_oids', return_value=(HEAD, 'b' * 40)))
@@ -72,6 +92,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                     assert pathlib.Path(cache) == root / 'shared-mathlib'
                     destination.mkdir(exist_ok=True)
                     (destination / 'Mathlib.lean').write_text('-- source context')
+                    refs.return_value = (w.api.head, 'f' * 40)  # main advanced during preparation
                     return True
                 prepare_mathlib = stack.enter_context(patch.object(cli, 'prepare_mathlib_source', side_effect=mathlib))
                 real_run = cli.run
@@ -97,6 +118,8 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                 assert clones == ['https://github.com/TauCetiProject/TauCetiRoadmap']
                 assert json.loads(result_file.read_text()) == dict(head_sha=HEAD, changed=True)
                 assert calls.read_text() == 'called\n'
+                assert 'Owner/Roadmap and Project/' in last_prompt.read_text()
+                assert 'TauCetiProject/TauCetiRoadmap' not in last_prompt.read_text()
                 receipt = json.loads(w.receipt.read_text())
                 assert receipt['state'] == 'published'
                 assert w.source.repository.url + '/compare/' in receipt['scoreboard']

@@ -142,6 +142,8 @@ def workflow(kind, tmp_path, stack):
         dict(row, login=row['user']['login']) for row in reversed(api.conversation)
         if '<!--tauceti-scoreboard-->' in row['body']]))
     def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=''):
+        if method == 'GET':
+            return source.pull(int(endpoint.rsplit('/', 1)[-1]))
         data = dict(fields or {})
         if body_file:
             data['body'] = pathlib.Path(body_file).read_text()
@@ -241,10 +243,64 @@ class SharedPublication(unittest.TestCase):
                     source=publication.source_record(w.source), pr=7, head=HEAD, store=str(w.ledger),
                     publisher=w.source.publisher_key(), lifecycle=2)))
                 w.api.actor = dict(id=4, login='other')
-                with self.assertRaisesRegex(ValueError, 'original publisher'):
+                with self.assertRaisesRegex(publication.PublicationBlocked, 'original identity'):
                     publication.recover(w.source.key, w.receipt.parent.parent, w.ledger)
                 assert not w.api.writes
                 assert json.loads(w.receipt.read_text())['actor'].endswith('3' if kind == 'forgejo' else 'author')
+
+    def test_bad_retained_workspace_does_not_starve_other_paid_reviews(self):
+        for kind in ('github', 'forgejo'):
+            for problem in ('foreign-actor', 'malformed'):
+                with self.subTest(kind=kind, problem=problem), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+                    w = workflow(kind, pathlib.Path(directory), stack)
+                    good = w.receipt.parent.with_name('z-good')
+                    w.receipt.parent.rename(good)
+                    w.receipt = good / 'publication.json'
+                    bad = good.with_name('a-blocked'); bad.mkdir()
+                    value = json.loads(w.receipt.read_text())
+                    value['actor'] = 'another-actor'
+                    original = json.dumps(value) if problem == 'foreign-actor' else '{not-json'
+                    (bad / 'publication.json').write_text(original)
+                    assert publication.recover(w.source.key, good.parent, w.ledger)
+                    assert json.loads(w.receipt.read_text())['state'] == 'published'
+                    assert (bad / 'publication.json').read_text() == original
+                    with self.assertRaises(publication.PublicationBlocked):
+                        publication.recover(w.source.key, good.parent, w.ledger)
+
+    def test_publisher_capture_never_guesses_bot_on_user_transport_failure(self):
+        for token, message, known_installation in (
+            ('ghp_fixture', 'HTTP 502: unavailable', False),
+            ('ghp_fixture', 'Resource not accessible by integration (HTTP 403)', False),
+            ('ghs_fixture', 'API rate limit exceeded (HTTP 403)', False),
+            ('ghs_fixture', 'Resource not accessible by integration (HTTP 403)', True),
+        ):
+            with self.subTest(token=token, message=message), patch.dict('os.environ', {'GH_TOKEN': token}), patch.object(
+                    post.subprocess, 'run', return_value=types.SimpleNamespace(returncode=1, stdout='', stderr=message)):
+                if known_installation:
+                    assert post.current_login() == post.REVIEW_BOT
+                else:
+                    from tauceti_tools.forge import Incomplete
+                    with self.assertRaises(Incomplete):
+                        post.current_login()
+
+    def test_obsolete_board_cleanup_cannot_undo_successful_publication(self):
+        from tauceti_tools.forge import Incomplete
+
+        for kind in ('github', 'forgejo'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+                w = workflow(kind, pathlib.Path(directory), stack)
+                for _ in range(2):
+                    w.api.conversation.append(w.api._row('<!--tauceti-scoreboard-->\nOld scoreboard'))
+                plan = json.loads((w.receipt.parent / 'post_plan.json').read_text())
+                transport = post.transport_for(w.source.key, 7, HEAD, plan, post)
+                comment = transport.comment
+                def mutate(method, *args, **kwargs):
+                    if method == 'DELETE':
+                        raise Incomplete('cleanup unavailable')
+                    return comment(method, *args, **kwargs)
+                with patch.object(transport, 'comment', side_effect=mutate):
+                    assert post.execute_post(w.source.key, 7, plan, w.ledger, transport=transport) == 0
+                assert json.loads(w.ledger.read_text())['prs']['7']['published_head_sha'] == HEAD
 
     def test_legacy_native_paid_receipt_recovers_without_new_inference(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:

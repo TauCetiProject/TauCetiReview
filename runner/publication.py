@@ -18,10 +18,15 @@ from tauceti_tools.forge import ForgeError
 from tauceti_tools.review_source import source_for
 
 PUBLICATION_WAIT_EXIT = 85
+PUBLICATION_BLOCKED_EXIT = 86
 
 
 class PublicationPending(RuntimeError):
     pass
+
+
+class PublicationBlocked(ValueError):
+    """Paid output needs its original identity or an operator repair, not inference."""
 
 
 @contextlib.contextmanager
@@ -72,7 +77,7 @@ def publish(repo, path, ledger_path):
         print(f'review publication retained for retry ({type(error).__name__})', file=sys.stderr)
         return PUBLICATION_WAIT_EXIT
     if value['source'] != source_record(source) or pathlib.Path(value['ledger']).resolve() != ledger_path.resolve():
-        raise ValueError('retained publication belongs to another source/store')
+        raise PublicationBlocked('retained publication belongs to another source/store')
     if value['state'] == 'published':
         return 0
     if value['state'] == 'superseded':
@@ -100,7 +105,7 @@ def publish(repo, path, ledger_path):
                         round=value.get('round'), in_progress=value.get('in_progress', False))
             transport = post.transport_for(source.key, value['pr'], value['head'], plan, post)
             if transport.identity() != actor:
-                raise ValueError('retained review requires its original publisher')
+                raise PublicationBlocked('retained review requires its original publisher')
             status = post.execute_post(source.key, value['pr'], plan, ledger_path,
                                        value.get('archive_dir', str(ledger_path.parent / 'outbox')), transport=transport)
         if status == 0:
@@ -123,7 +128,7 @@ def recover(repo, root, ledger_path, numbers=(), *, work_names=()):
     if not root.is_dir():
         return False
     source = source_for(repo)
-    pending = False
+    pending, blocked = False, False
     for work in sorted(root.iterdir()):
         if work.is_symlink() or not work.is_dir() or work_names and work.name not in work_names:
             continue
@@ -133,11 +138,17 @@ def recover(repo, root, ledger_path, numbers=(), *, work_names=()):
                                            legacy_owner_checked=bool(work_names))
         except BlockingIOError:
             continue
+        except (ValueError, KeyError, OSError) as error:
+            print(f'review recovery preserved {work.name}: {type(error).__name__}', file=sys.stderr)
+            blocked = True
+            continue
         if result is True:
             return True
         pending |= result == PUBLICATION_WAIT_EXIT
     if pending:
         raise PublicationPending('rendered review output remains retained for publication retry')
+    if blocked:
+        raise PublicationBlocked('some retained reviews require their original identity or record repair')
     return False
 
 
@@ -156,7 +167,8 @@ def recover_workspace(repo, work, ledger_path, source, numbers, *, legacy_owner_
         if not context.is_file():
             return False
         record = json.loads(context.read_text())
-        if record.get('source') != source_record(source) or record.get('store') != str(ledger_path):
+        if (record.get('source') != source_record(source)
+                or pathlib.Path(record.get('store', '')).resolve() != ledger_path.resolve()):
             raise ValueError('retained review context belongs to another source/store')
         if numbers and record['pr'] not in numbers:
             return False

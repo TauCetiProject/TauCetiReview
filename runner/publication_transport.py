@@ -8,13 +8,29 @@ from tauceti_tools.forge import AmbiguousWrite, Incomplete
 from tauceti_tools.review_source import source_for
 
 
-class GitHubPublication:
+class PublicationTransport:
     def __init__(self, repo, number, head, plan, helpers, source=None):
         self.repo, self.number, self.head, self.plan, self.helpers = repo, number, head, plan, helpers
         self.source = source
 
     def body(self, path):
         return pathlib.Path(path).read_text()
+
+    def current_pull(self):
+        raise NotImplementedError
+
+    def current(self):
+        if self.source is None:
+            return True  # Legacy direct helper callers supply their own snapshot.
+        row = self.current_pull()
+        if row is None:
+            raise Incomplete('publication freshness is unavailable')
+        return row['state'] == 'open' and row['head']['sha'] == self.head
+
+
+class GitHubPublication(PublicationTransport):
+    def current_pull(self):
+        return self.helpers.gh_api('GET', f'/repos/{self.repo}/pulls/{self.number}')
 
     def identity(self):
         return self.helpers.current_login()
@@ -55,18 +71,14 @@ class GitHubPublication:
     def resolve(self, identifier):
         self.helpers.resolve_thread(self.repo, self.number, identifier)
 
-    def current(self):
-        if self.source is None:
-            return True  # Legacy direct helper callers supply their own snapshot.
-        row = self.source.pull(self.number)
-        return row['state'] == 'open' and row['head']['sha'] == self.head
-
-
-class NativePublication(GitHubPublication):
+class NativePublication(PublicationTransport):
     def __init__(self, *args, source):
         super().__init__(*args)
         self.source, self.api, self.repository = source, source.api, source.repository
         self.prefix = 'repos/' + self.repository.name
+
+    def current_pull(self):
+        return self.source.pull(self.number)
 
     def identity(self):
         return self.source.publisher_key()

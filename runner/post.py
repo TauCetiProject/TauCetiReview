@@ -21,7 +21,7 @@ current-head scoreboard never names a blocker that lacks its contestable inline 
 """
 import argparse, datetime, hashlib, json, os, pathlib, random, re, shutil, subprocess, sys, time
 
-from tauceti_tools.forge import ForgeError
+from tauceti_tools.forge import ForgeError, Incomplete
 
 try:
     from . import archive
@@ -271,7 +271,16 @@ def current_login():
     write-scoped token never overwrites or removes a comment belonging to someone else."""
     r = subprocess.run(["gh", "api", "user", "--jq", ".login"], text=True, capture_output=True)
     login = (r.stdout or "").strip()
-    return login if (r.returncode == 0 and login) else REVIEW_BOT
+    if r.returncode == 0 and login:
+        return login
+    # Installation tokens cannot read /user. Preserve that known transport
+    # behavior, but never turn an outage/rate limit on a user token into a bot
+    # identity that will strand its paid publication receipt.
+    token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN') or ''
+    if (token.startswith('ghs_') and '403' in (r.stderr or '')
+            and 'resource not accessible by integration' in (r.stderr or '').lower()):
+        return REVIEW_BOT
+    raise Incomplete('publication identity is unavailable')
 
 
 def find_scoreboard_comments(repo, pr):
@@ -363,7 +372,10 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
     if ok:                                # collapse our own older duplicates (best-effort)
         for dup in mine_dupes:
             if dup:
-                transport.comment("DELETE", dup, action=f"scoreboard collapse {dup}")
+                try:
+                    transport.comment("DELETE", dup, action=f"scoreboard collapse {dup}")
+                except (ForgeError, OSError, subprocess.TimeoutExpired):
+                    print("post.py: obsolete scoreboard cleanup deferred", file=sys.stderr)
     return sb_id, ok
 
 
@@ -535,8 +547,14 @@ def main():
         print("post.py: GH_TOKEN not set", file=sys.stderr)
         sys.exit(1)
     plan = json.loads(pathlib.Path(a.plan).read_text())
-    status = execute_post(a.repo, a.pr, plan, pathlib.Path(a.store) / "ledger.json",
-                          a.archive_dir)
+    try:
+        status = execute_post(a.repo, a.pr, plan, pathlib.Path(a.store) / "ledger.json",
+                              a.archive_dir)
+    except (ForgeError, OSError, subprocess.TimeoutExpired) as error:
+        print(f'post.py: plan retained at {a.plan}; source unavailable ({type(error).__name__})', file=sys.stderr)
+        status = 85
+    if status == 82:
+        return  # A superseded Actions review is a successful no-op.
     if status:
         sys.exit(status)
 
