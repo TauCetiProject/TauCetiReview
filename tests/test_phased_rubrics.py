@@ -20,6 +20,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "runner"))
 sys.path.insert(0, str(ROOT / "tests"))
+import admission_policy  # noqa: E402
 import handoff  # noqa: E402
 import merge_from_scoreboard as gate  # noqa: E402
 import test_billing as tb  # noqa: E402  (the stubbed-reviewer harness)
@@ -33,7 +34,7 @@ PHASED = "quality-pass"
 
 def cutoff(value, repo=REPO):
     """Patch the phased rubric's cutoff for `repo`, in place, as the shipped constant is read."""
-    return patch.dict(handoff.PHASED_RUBRICS, {PHASED: {repo: value}})
+    return patch.dict(admission_policy.PHASED_RUBRICS, {PHASED: {repo: value}})
 
 
 def scoreboard(states):
@@ -73,12 +74,51 @@ class RubricsFor(unittest.TestCase):
         self.assertEqual(handoff.DEFAULT_RUBRICS, TEN)
 
     def test_a_configured_rubric_list_is_used_as_it_is(self):
-        code = ("import handoff; handoff.PHASED_RUBRICS['quality-pass'] = {'Owner/Repo': 1}; "
+        code = ("import admission_policy, handoff; "
+                "admission_policy.PHASED_RUBRICS['quality-pass'] = {'Owner/Repo': 1}; "
                 "print(handoff.rubrics_for('Owner/Repo', 5))")
         out = subprocess.run([sys.executable, "-c", code], cwd=ROOT / "runner", check=True,
                              capture_output=True, text=True,
                              env={**os.environ, "TAUCETI_RUBRICS": '["custom"]'}).stdout
         self.assertEqual(out.strip(), "['custom']")
+
+
+class PolicyTable(unittest.TestCase):
+    """The queue service reads the table through the pure policy module, with its own rubric list."""
+
+    def test_the_phased_rubric_follows_the_list_the_caller_supplies(self):
+        mine = ("correctness", "scope")
+        with cutoff(100):
+            self.assertEqual(admission_policy.with_phased_rubrics(mine, REPO, 100), list(mine))
+            self.assertEqual(admission_policy.with_phased_rubrics(mine, REPO, 101), [*mine, PHASED])
+            self.assertEqual(admission_policy.with_phased_rubrics(mine, "Owner/Repo", 101), list(mine))
+        with cutoff(None):
+            self.assertEqual(admission_policy.with_phased_rubrics(mine, REPO, 101), list(mine))
+
+    def test_a_rubric_already_in_the_list_is_not_repeated(self):
+        with cutoff(100):
+            self.assertEqual(admission_policy.with_phased_rubrics([PHASED, "scope"], REPO, 101),
+                             [PHASED, "scope"])
+
+    def test_the_callers_list_is_left_as_it_was(self):
+        mine = ["correctness"]
+        with cutoff(100):
+            admission_policy.with_phased_rubrics(mine, REPO, 101).append("x")
+        self.assertEqual(mine, ["correctness"])
+
+    def test_the_shipped_table_is_well_formed(self):
+        for rubric, cutoffs in admission_policy.PHASED_RUBRICS.items():
+            self.assertTrue((ROOT / "rubrics" / f"{rubric}.md").is_file(), rubric)
+            for repo, after in cutoffs.items():
+                self.assertRegex(repo, r"^[^/\s]+/[^/\s]+$")
+                self.assertTrue(after is None or (type(after) is int and after > 0), after)
+
+    def test_the_policy_module_stays_free_of_configuration(self):
+        code = ("import sys; import admission_policy; "
+                "print(sorted(m for m in ('handoff', 'ledger', 'tauceti_tools') if m in sys.modules))")
+        out = subprocess.run([sys.executable, "-c", code], cwd=ROOT / "runner", check=True,
+                             capture_output=True, text=True).stdout
+        self.assertEqual(out.strip(), "[]")
 
 
 class MergeGate(unittest.TestCase):

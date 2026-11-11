@@ -20,6 +20,7 @@ if __name__ == "__main__" and os.environ.get("TAUCETI_CONF"):
     except Exception:
         _CONFIG_VALID = False
 
+from admission_policy import with_phased_rubrics
 from ledger import Ledger
 from verdict import is_unresolved, posts_review_thread, state_of
 
@@ -33,33 +34,16 @@ DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
 _CONFIGURED_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]"))
 DEFAULT_RUBRICS = _CONFIGURED_RUBRICS or DEFAULT_RUBRICS
 
-# Angles being phased in: for each repository, the number of the last PR opened before the angle
-# went live there, or None while it is not live. The angle is run on, and required of, only PRs
-# numbered above that, after the default angles. A PR opened earlier keeps the scoreboard it has.
-# Were the angle required of it, the missing row would hold the merge and nothing would add it:
-# the worker counts a head as reviewed once every row its scoreboard has is complete. A project
-# that lists its rubrics in its configuration gets exactly that list.
-#
-# quality-pass checks the author's report of the checklist in the PR template, which only PRs
-# opened after TauCetiProject/TauCeti#33936 carry. Set its cutoff ahead of the newest PR, so that
-# the commit setting it reaches every reviewer and the merge gate before a PR above it is reviewed.
-PHASED_RUBRICS = {"quality-pass": {"TauCetiProject/TauCeti": None}}
-
 
 def rubrics_for(repo, pr):
-    """The rubrics PR number `pr` of `repo` is judged against, in run order."""
-    rubrics = list(DEFAULT_RUBRICS)
+    """The rubrics PR number `pr` of `repo` is judged against, in run order.
+
+    The default angles, then any being phased in for that PR (`PHASED_RUBRICS` in
+    admission_policy.py). A project that lists its rubrics in its configuration gets exactly that
+    list."""
     if _CONFIGURED_RUBRICS:
-        return rubrics
-    try:
-        number = int(pr)
-    except (TypeError, ValueError):
-        return rubrics
-    for rubric, cutoffs in PHASED_RUBRICS.items():
-        cutoff = {name.lower(): after for name, after in cutoffs.items()}.get(str(repo).lower())
-        if cutoff is not None and number > cutoff and rubric not in rubrics:
-            rubrics.append(rubric)
-    return rubrics
+        return list(DEFAULT_RUBRICS)
+    return with_phased_rubrics(DEFAULT_RUBRICS, repo, pr)
 
 
 def thread_action_rubrics(candidates, ran, state_map, head):

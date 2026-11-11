@@ -16,6 +16,33 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
 
+# Rubrics being phased in: for each repository, the number of the last PR opened before the rubric
+# went live there, or None while it is not live. The rubric is run on, and required of, only PRs
+# numbered above that, after the others. A PR opened earlier keeps the scoreboard it has. Were the
+# rubric required of it, the missing row would hold the merge and nothing would add it: the worker
+# counts a head as reviewed once every row its scoreboard has is complete. The table lives in this
+# module so that the engine, the merge gate and the queue service read the same one.
+#
+# quality-pass checks the author's report of the checklist in the PR template, which only PRs
+# opened after TauCetiProject/TauCeti#33936 carry. Set its cutoff ahead of the newest PR, so that
+# the commit setting it reaches every reviewer and the queue service before a PR above it is
+# reviewed.
+PHASED_RUBRICS = {"quality-pass": {"TauCetiProject/TauCeti": None}}
+
+
+def with_phased_rubrics(rubrics, repo, pr):
+    """`rubrics`, then each rubric being phased in that PR number `pr` of `repo` is judged against."""
+    rubrics = list(rubrics)
+    try:
+        number = int(pr)
+    except (TypeError, ValueError):
+        return rubrics
+    for rubric, cutoffs in PHASED_RUBRICS.items():
+        cutoff = {name.lower(): after for name, after in cutoffs.items()}.get(str(repo).lower())
+        if cutoff is not None and number > cutoff and rubric not in rubrics:
+            rubrics.append(rubric)
+    return rubrics
+
 
 def rebase_request_heads(comments, *, stalled=False):
     """Existing trusted, head-bound recovery holds, shared by sweep and service intake.
