@@ -422,7 +422,7 @@ def archive_outcome(archive_dir, repo, pr, plan, sb_id, scoreboard_ok, posted_th
         print(f"WARNING: post archive write failed: {e}", file=sys.stderr)
 
 
-def execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None):
+def execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, expected_publisher=None):
     """Execute one trusted plan. Return a process-style status code (0 success, 1 incomplete)."""
     if plan.get("review_changed") is False:
         return 0
@@ -442,6 +442,9 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None):
                 if t.get("required", t.get("action") == "upsert")]
     optional = [t for t in actions if t not in required]
     me = transport.identity()
+    if expected_publisher is not None and me != expected_publisher:
+        print('post.py: retained review requires its original publisher', file=sys.stderr)
+        return 86
 
     # Phase 1: every genuine blocker root is required. Remote discovery is itself required because
     # it proves ownership before PATCH and makes a POST-crash retry idempotent.

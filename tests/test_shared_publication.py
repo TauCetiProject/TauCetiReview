@@ -250,7 +250,7 @@ class SharedPublication(unittest.TestCase):
 
     def test_bad_retained_workspace_does_not_starve_other_paid_reviews(self):
         for kind in ('github', 'forgejo'):
-            for problem in ('foreign-actor', 'malformed'):
+            for problem in ('foreign-actor', 'malformed', 'threads-null', 'root-list'):
                 with self.subTest(kind=kind, problem=problem), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
                     w = workflow(kind, pathlib.Path(directory), stack)
                     good = w.receipt.parent.with_name('z-good')
@@ -259,13 +259,37 @@ class SharedPublication(unittest.TestCase):
                     bad = good.with_name('a-blocked'); bad.mkdir()
                     value = json.loads(w.receipt.read_text())
                     value['actor'] = 'another-actor'
-                    original = json.dumps(value) if problem == 'foreign-actor' else '{not-json'
+                    original = {'foreign-actor': json.dumps(value), 'malformed': '{not-json',
+                                'threads-null': json.dumps(dict(value, actor=w.source.publisher_key(), threads=None)),
+                                'root-list': '[]'}[problem]
                     (bad / 'publication.json').write_text(original)
                     assert publication.recover(w.source.key, good.parent, w.ledger)
                     assert json.loads(w.receipt.read_text())['state'] == 'published'
                     assert (bad / 'publication.json').read_text() == original
                     with self.assertRaises(publication.PublicationBlocked):
                         publication.recover(w.source.key, good.parent, w.ledger)
+
+    def test_stale_paid_receipt_can_retire_without_its_former_publisher(self):
+        for kind in ('github', 'forgejo'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+                w = workflow(kind, pathlib.Path(directory), stack)
+                w.api.actor = dict(id=4, login='other')
+                w.api.head = 'b' * 40
+                assert publish(w) == 82
+                assert json.loads(w.receipt.read_text())['state'] == 'superseded'
+                assert not w.api.writes
+
+    def test_unavailable_or_malformed_freshness_keeps_paid_output_pending(self):
+        for kind in ('github', 'forgejo'):
+            for row in (None, {}, {'state': 'open', 'head': {}}, {'state': 'unknown'}):
+                with self.subTest(kind=kind, row=row), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+                    w = workflow(kind, pathlib.Path(directory), stack)
+                    cls = (publication_transport.GitHubPublication if kind == 'github'
+                           else publication_transport.NativePublication)
+                    with patch.object(cls, 'current_pull', return_value=row):
+                        assert publish(w) == 85
+                    assert json.loads(w.receipt.read_text())['state'] == 'prepared'
+                    assert not w.api.writes
 
     def test_publisher_capture_never_guesses_bot_on_user_transport_failure(self):
         for token, message, known_installation in (

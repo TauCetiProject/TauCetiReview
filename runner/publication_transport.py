@@ -23,9 +23,14 @@ class PublicationTransport:
         if self.source is None:
             return True  # Legacy direct helper callers supply their own snapshot.
         row = self.current_pull()
-        if row is None:
+        if not isinstance(row, dict) or row.get('state') not in {'open', 'closed'}:
             raise Incomplete('publication freshness is unavailable')
-        return row['state'] == 'open' and row['head']['sha'] == self.head
+        if row['state'] == 'closed':
+            return False
+        head = row.get('head')
+        if not isinstance(head, dict) or not isinstance(head.get('sha'), str) or not head['sha']:
+            raise Incomplete('publication head is unavailable')
+        return head['sha'] == self.head
 
 
 class GitHubPublication(PublicationTransport):

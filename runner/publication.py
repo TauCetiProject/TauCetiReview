@@ -104,14 +104,15 @@ def publish(repo, path, ledger_path):
             plan = dict(head_sha=value['head'], scoreboard_body=str(scoreboard), threads=threads,
                         round=value.get('round'), in_progress=value.get('in_progress', False))
             transport = post.transport_for(source.key, value['pr'], value['head'], plan, post)
-            if transport.identity() != actor:
-                raise PublicationBlocked('retained review requires its original publisher')
             status = post.execute_post(source.key, value['pr'], plan, ledger_path,
-                                       value.get('archive_dir', str(ledger_path.parent / 'outbox')), transport=transport)
+                                       value.get('archive_dir', str(ledger_path.parent / 'outbox')),
+                                       transport=transport, expected_publisher=actor)
         if status == 0:
             value['state'] = 'published'
         elif status == 82:
             value['state'] = 'superseded'
+        elif status == PUBLICATION_BLOCKED_EXIT:
+            raise PublicationBlocked('retained review requires its original publisher')
         else:
             return PUBLICATION_WAIT_EXIT
         atomic_write_json(path, value)
@@ -138,7 +139,7 @@ def recover(repo, root, ledger_path, numbers=(), *, work_names=()):
                                            legacy_owner_checked=bool(work_names))
         except BlockingIOError:
             continue
-        except (ValueError, KeyError, OSError) as error:
+        except (ValueError, KeyError, TypeError, AttributeError, OSError) as error:
             print(f'review recovery preserved {work.name}: {type(error).__name__}', file=sys.stderr)
             blocked = True
             continue
