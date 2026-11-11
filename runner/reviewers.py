@@ -292,9 +292,10 @@ class ReviewPrompt(str):
 
     The text is the whole prompt, so every runner can keep treating it as a string. `shared` is the
     part every rubric of a review round has in common (the shared protocol and the pull request), and
-    `rubric` is the rest. run_claude sends them as two content blocks with a cache breakpoint after
-    the first, so the rubrics after the first one in a round read the pull request from the prompt
-    cache instead of paying to write it again. Anthropic only caches a prefix that ends where a
+    `rubric` is the rest. run_claude appends the shared part to Claude Code's system prompt and sends
+    the rest as the user message, so Claude Code's own breakpoint at the end of the system prompt
+    lets the rubrics after the first one in a round read the pull request from the prompt cache
+    instead of paying to write it again. Anthropic only caches a prefix that ends where a
     breakpoint is, so putting the shared part first in one text block would not be enough.
     Codex, Kiro and pi get the same text in the same order as one string."""
 
@@ -454,16 +455,14 @@ def _tool_trace(stream_lines, root):
     return trace, meta, result
 
 
-# Claude Code picks its own cache TTL (1h for subscribers, 5m otherwise), and the API rejects a
-# 1h breakpoint that comes after a 5m one, so the breakpoint claude_input adds must use the same
-# TTL as Claude Code's own. Pin both to 5m: a round's rubrics run back to back and every turn
-# refreshes the entry, and a 5m write costs 1.25x the input rate against 2x for 1h.
+# Claude Code picks its own cache TTL (1h for subscribers, 5m otherwise). Pin it to 5m: a round's
+# rubrics run back to back and every turn refreshes the entry, and a 5m write costs 1.25x the input
+# rate against 2x for 1h.
 _CLAUDE_CACHE_TTL = "5m"
 
 
-# The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL. An older one keeps its
-# own 1h breakpoints, so the API would reject every request carrying our 5m breakpoint before them;
-# with an older or unidentifiable CLI the prompt goes as one block, uncached, as before.
+# The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL. With an older or
+# unidentifiable CLI the whole prompt goes in the user message, uncached, as before.
 _CLAUDE_TTL_MIN_VERSION = (2, 1, 242)
 
 
@@ -481,17 +480,11 @@ def _claude_cache_env(env):
     return {**env, "CLAUDE_CODE_PROMPT_CACHE_TTL": _CLAUDE_CACHE_TTL}
 
 
-def claude_input(prompt, cache=True):
-    """The stream-json user message for one rubric. A ReviewPrompt becomes two text blocks with a
-    cache breakpoint after the shared one, so the next rubric of the round reads the pull request
-    from the cache. Claude Code passes the block's cache_control through to the API unchanged.
-    With `cache` false the whole prompt is one block with no breakpoint."""
-    shared = getattr(prompt, "shared", "")
-    if shared and cache:
-        content = [{"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}},
-                   {"type": "text", "text": prompt.rubric}]
-    else:
-        content = [{"type": "text", "text": str(prompt)}]
+def claude_input(text):
+    """The stream-json user message for one rubric: one text block with no cache breakpoint.
+    After the first tool call Claude Code's own breakpoints reach four, the API's limit, so a
+    breakpoint here made that request fail with a 400."""
+    content = [{"type": "text", "text": str(text)}]
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
 
@@ -504,8 +497,12 @@ def run_claude(prompt, cwd, model, env):
     # did, and the events before it are the only record of what the reviewer looked at. Parsing is
     # tolerant — a malformed line is counted and skipped, and a stream with no result event falls
     # through to the same parse_error path a malformed json document took.
-    cache = _claude_honours_cache_ttl()
-    r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
+    #
+    # The shared prefix goes in as an appended system prompt, from a file for the same argv reason.
+    shared = getattr(prompt, "shared", "")
+    if shared and not _claude_honours_cache_ttl():
+        shared = ""
+    argv = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
             "--disable-slash-commands",
             # --tools RESTRICTS the built-in set; --allowedTools only grants permission within
             # whatever set exists. With --allowedTools alone the reviewer still had Bash, and used
@@ -526,8 +523,19 @@ def run_claude(prompt, cwd, model, env):
             # leaves Write and Edit in the set.
             "--tools", *_REVIEW_TOOLS,
             "--allowedTools", *_REVIEW_TOOLS,
-            "--input-format", "stream-json"],
-           cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt, cache))
+            "--input-format", "stream-json"]
+    shared_file = None
+    try:
+        if shared:
+            fd, shared_file = tempfile.mkstemp(prefix="tauceti-review-shared-", suffix=".md")
+            with os.fdopen(fd, "w") as f:
+                f.write(shared)
+            argv += ["--append-system-prompt-file", shared_file]
+        r = sh(argv, cwd=cwd, env=_claude_cache_env(env),
+               stdin_text=claude_input(prompt.rubric if shared else prompt))
+    finally:
+        if shared_file:
+            os.unlink(shared_file)
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     trace, meta = [], {}
     try:
