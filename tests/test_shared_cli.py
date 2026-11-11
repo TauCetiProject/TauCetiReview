@@ -33,16 +33,18 @@ class SharedCLI(unittest.TestCase):
                 binary = root / 'bin'; binary.mkdir()
                 codex = binary / 'codex'
                 calls = root / 'model-calls'
+                last_prompt = root / 'last-prompt'
                 codex.write_text('#!' + sys.executable + '\n' + '''import json, os, re, sys
 assert not any(key.startswith(('GH_', 'TAUCETI_FORGEJO_', 'TAUCETI_SOURCE_', 'GIT_CONFIG_')) for key in os.environ)
 assert 'GIT_NO_LAZY_FETCH' not in os.environ
 prompt = sys.stdin.read()
 marker = re.search(r'TAUCETI-VERDICT-[0-9a-f]+', prompt)[0]
 with open(__CALLS__, 'a') as stream: stream.write('called\\n')
+with open(__PROMPT__, 'w') as stream: stream.write(prompt)
 print(json.dumps({'type':'item.completed','item':{'type':'agent_message',
  'text':marker+'\\n'+json.dumps({'verdict':'approve','summary':'Style is clear.'})}}))
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_tokens':1}}))
-'''.replace('__CALLS__', repr(str(calls))))
+'''.replace('__CALLS__', repr(str(calls))).replace('__PROMPT__', repr(str(last_prompt))))
                 codex.chmod(0o700)
                 model_program = codex.read_text()
                 stack.enter_context(patch.dict(os.environ, dict(
@@ -123,6 +125,49 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                 assert calls.read_text() == 'called\ncalled\n'
                 assert json.loads(result_file.read_text()) == dict(head_sha=next_head, changed=True)
                 assert json.loads(w.ledger.read_text())['prs']['7']['published_head_sha'] == next_head
+
+                # An author can contest a previously passing finding. Both
+                # discussion shapes must invoke the same reply-only review.
+                root_id, through = w.source.contest('Please reconsider this style finding.')
+                ledger = json.loads(w.ledger.read_text())
+                ledger['prs']['7']['state']['style']['thread'] = dict(comment_id=root_id, path='Proof.lean')
+                w.ledger.write_text(json.dumps(ledger))
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    assert cli.main() in (None, 0)
+                assert calls.read_text() == 'called\n' * 3
+                assert 'Please reconsider this style finding.' in last_prompt.read_text()
+                ledger = json.loads(w.ledger.read_text())
+                assert ledger['prs']['7']['rounds'][-1]['mode'] == 'reply'
+                assert ledger['prs']['7']['rounds'][-1]['ran'] == ['style']
+                answered = [row for row in w.source.findings(7)
+                            if f'<!--tauceti-reply:style:through:{through}-->' in row['body']]
+                assert len(answered) == 1 and answered[0]['in_reply_to_id'] == root_id
+                codex.write_text('#!' + sys.executable + "\nraise RuntimeError('adjudicated contest reran')\n")
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    assert cli.main() in (None, 0)
+                assert calls.read_text() == 'called\n' * 3
+                assert json.loads(result_file.read_text()) == dict(head_sha=next_head, changed=False)
+
+                # A new head with unavailable preparation leaves paid output,
+                # archives and inference count intact, then the normal retry runs.
+                after_contest = 'f' * 40
+                w.api.head = after_contest
+                refs.return_value = (after_contest, 'b' * 40)
+                argv[argv.index('--expect-head') + 1] = after_contest
+                before_records = {path: path.read_bytes() for path in
+                    (w.ledger.parent / 'outbox').rglob('*.json')}
+                with patch.object(cli, 'prepare_review_source',
+                                  side_effect=cli.repository_diff.PreparationUnavailable('HTTP 503')):
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        assert cli.main() == cli.PREPARATION_WAIT_EXIT
+                assert calls.read_text() == 'called\n' * 3
+                assert not (work / 'code').exists()
+                assert all(path.read_bytes() == value for path, value in before_records.items())
+                codex.write_text(model_program)
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    assert cli.main() in (None, 0)
+                assert calls.read_text() == 'called\n' * 4
+                assert json.loads(result_file.read_text()) == dict(head_sha=after_contest, changed=True)
 
 
 

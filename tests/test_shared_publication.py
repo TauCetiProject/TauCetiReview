@@ -23,7 +23,7 @@ class API:
     def __init__(self):
         self.actor = dict(id=3, login='author')
         self.head = HEAD
-        self.comments = []
+        self.conversation = []
         self.findings = []
         self.groups = []
         self.writes = []
@@ -49,17 +49,20 @@ class API:
         elif method == 'POST' and '/pulls/' in endpoint and endpoint.endswith('/comments'):
             result = self._row(data['body'], commit_id=data['commit_id'], path=data['path'])
             self.findings.append(result)
+        elif method == 'POST' and endpoint.endswith('/replies'):
+            result = self._row(data['body'], in_reply_to_id=int(endpoint.split('/')[-2]))
+            self.findings.append(result)
         elif method == 'POST' and endpoint.endswith('/comments'):
             result = self._row(data['body'])
-            self.comments.append(result)
+            self.conversation.append(result)
         elif method == 'PATCH':
             identifier = int(endpoint.rsplit('/', 1)[-1])
-            rows = [*self.comments, *self.findings, *(row for group in self.groups for row in group['comments'])]
+            rows = [*self.conversation, *self.findings, *(row for group in self.groups for row in group['comments'])]
             result = next(row for row in rows if row['id'] == identifier)
             result['body'] = data['body']
         elif method == 'DELETE':
             identifier = int(endpoint.rsplit('/', 1)[-1])
-            self.comments[:] = [row for row in self.comments if row['id'] != identifier]
+            self.conversation[:] = [row for row in self.conversation if row['id'] != identifier]
             result = {}
         else:
             raise AssertionError((method, endpoint, data))
@@ -69,6 +72,9 @@ class API:
             self.lose_response = None
             raise AmbiguousWrite('accepted write response lost')
         return result
+
+    def comments(self, repository, number):
+        return self.conversation
 
     def reviews(self, repository, number):
         return self.groups
@@ -88,10 +94,17 @@ class Source:
         return self.client.actor['login']
 
     def comments(self, number):
-        return self.client.comments
+        return self.client.conversation
 
     def findings(self, number):
         return self.client.findings
+
+    def contest(self, body):
+        root = self.client._row('<!--tauceti-rubric:style--> Original style finding.',
+                                path='Proof.lean', commit_id=self.client.head)
+        reply = self.client._row(body, in_reply_to_id=root['id'])
+        self.client.findings.extend([root, reply])
+        return root['id'], reply['id']
 
 
 class NativeSource(Source):
@@ -106,6 +119,13 @@ class NativeSource(Source):
         # The real normalizer supplies containing-review heads and native replies.
         return review_comments(self.api, self.repository, number, conversation=self.comments(number))
 
+    def contest(self, body):
+        root = self.client._row(f'<!--tauceti-source-head:{self.client.head}-->\n'
+                                '<!--tauceti-rubric:style--> Original style finding.')
+        reply = self.client._row(f"<!--tauceti-source-reply:root:{root['id']}-->\n" + body)
+        self.client.conversation.extend([root, reply])
+        return root['id'], reply['id']
+
 
 def workflow(kind, tmp_path, stack):
     store = tmp_path
@@ -119,7 +139,7 @@ def workflow(kind, tmp_path, stack):
     stack.enter_context(patch.object(post, 'current_login', source.publisher_key))
     stack.enter_context(patch.object(post, 'find_review_roots', lambda repo, pr: post.normalize_roots(source.findings(pr))))
     stack.enter_context(patch.object(post, 'find_scoreboard_comments', lambda repo, pr: [
-        dict(row, login=row['user']['login']) for row in reversed(api.comments)
+        dict(row, login=row['user']['login']) for row in reversed(api.conversation)
         if '<!--tauceti-scoreboard-->' in row['body']]))
     def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=''):
         data = dict(fields or {})
@@ -132,6 +152,9 @@ def workflow(kind, tmp_path, stack):
                 failures.append(dict(action=action, error='response lost'))
             return None
     stack.enter_context(patch.object(post, 'gh_api', gh_api))
+    stack.enter_context(patch.object(post, 'already_replied', lambda repo, pr, rubric, through, me:
+        post.reply_seen(source.findings(pr), rubric, through, me)))
+    stack.enter_context(patch.object(post, 'resolve_thread'))
     ledger = store / 'ledger.json'
     ledger.write_text(json.dumps(dict(days={}, prs={'7': dict(state={}, pending_publication_head_sha=HEAD)})))
     meta = json.dumps(dict(head_sha=HEAD, runs=[dict(id='run-1')]))
@@ -159,7 +182,7 @@ class SharedPublication(unittest.TestCase):
                 tmp_path = pathlib.Path(directory)
                 w = workflow(kind, tmp_path, stack)
                 assert publish(w) == 0
-                assert len(w.source.findings(7)) == 1 and len(w.api.comments) == 1
+                assert len(w.source.findings(7)) == 1 and len(w.api.conversation) == 1
                 state = json.loads(w.ledger.read_text())['prs']['7']
                 assert state['published_head_sha'] == HEAD and 'pending_publication_head_sha' not in state
                 assert state['state']['correctness']['thread']['comment_id'] == w.source.findings(7)[0]['id']
@@ -173,9 +196,9 @@ class SharedPublication(unittest.TestCase):
                 w = workflow(kind, tmp_path, stack)
                 w.api.lose_response = '/pulls/'
                 assert publish(w) == 85
-                assert len(w.source.findings(7)) == 1 and not w.api.comments
+                assert len(w.source.findings(7)) == 1 and not w.api.conversation
                 assert publication.recover(w.source.key, w.receipt.parent.parent, w.ledger)
-                assert len(w.source.findings(7)) == 1 and len(w.api.comments) == 1
+                assert len(w.source.findings(7)) == 1 and len(w.api.conversation) == 1
 
     def test_stale_before_or_during_publication_withholds_board(self):
         for kind in ("github", "forgejo"):
@@ -184,7 +207,7 @@ class SharedPublication(unittest.TestCase):
                 w = workflow(kind, tmp_path, stack)
                 w.api.move_after_root = True
                 assert publish(w) == 82
-                assert not w.api.comments
+                assert not w.api.conversation
                 assert json.loads(w.receipt.read_text())['state'] == 'superseded'
 
     def test_actor_and_store_binding_survive_retention(self):
