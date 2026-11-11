@@ -787,7 +787,10 @@ def _main(cleanup, leases, phase):
     # The source adapter validates both legacy GitHub names and qualified native
     # selectors, including their repository/server identity binding.
     if not a.sync_only:
-        review_source(a.repo)
+        try:
+            review_source(a.repo)
+        except ValueError as error:
+            die(str(error))
     if a.pr is not None and not re.fullmatch(r"[1-9][0-9]*", a.pr):
         die("review requires a positive PR number")
 

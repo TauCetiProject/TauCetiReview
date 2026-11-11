@@ -32,6 +32,13 @@ class SharedCLI(unittest.TestCase):
                     result=subprocess.run(command,env=child,cwd=directory,capture_output=True,text=True,timeout=30)
                     self.assertEqual(result.returncode,0,result.stderr)
                     self.assertIn('--conf',result.stdout)
+                if kind == 'forgejo':
+                    refused = subprocess.run([sys.executable, str(pathlib.Path(cli.__file__).resolve()),
+                        '7', '--conf', str(configuration)], env=env, cwd=directory,
+                        capture_output=True, text=True, timeout=30)
+                    self.assertEqual(refused.returncode, 1)
+                    self.assertIn('TAUCETI_FORGEJO_REPOSITORY_ID', refused.stderr)
+                    self.assertNotIn('Traceback', refused.stderr)
 
     def test_post_inference_errors_cannot_be_classified_as_preparation_or_review_errors(self):
         from tauceti_tools.forge import Incomplete
