@@ -68,6 +68,21 @@ def test_same_fetch_supplies_exact_patch_paths_and_source():
         assert b'outside\nnewline.txt\0' in (work / 'paths.z').read_bytes()
 
 
+def test_reused_source_cache_cannot_apply_prior_pr_attributes_to_a_diff():
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        url, base, head, _ = _fixture(root)
+        cache = root / 'git-cache'
+        expected = _diff(url, base, head)[0]
+        for index in range(2):
+            out = root / f'diff-{index}.txt'
+            with out.open('wb') as stream:
+                pr_diff.git_diff(url, base, head, stream, source_dir=root / f'code-{index}',
+                                 cache_dir=cache, fetch_limit=None, limit=None)
+            assert out.read_bytes() == expected
+            assert b'+theorem t0 : True := by trivial' in out.read_bytes()
+
+
 def test_preparation_outage_retries_without_models_or_stale_workspace():
     with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as stack:
         root = pathlib.Path(d); work = root / 'work'; store = root / 'store'; store.mkdir()

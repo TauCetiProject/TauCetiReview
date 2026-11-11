@@ -77,6 +77,11 @@ def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES,
     with git_inputs.snapshot(remote, merge_base, head, run_git=_git, environment=env,
                              cache_dir=cache_dir, parent=parent, complete=source_dir is not None,
                              fetch_limit=fetch_limit) as (d, env):
+        # A previous source materialization left an index in this bare cache.
+        # Do not let its attributes affect the next canonical diff.
+        index = os.path.join(d, 'index')
+        if os.path.exists(index):
+            os.unlink(index)
         names = _git(d, ["diff", "--name-only", "-z", "--no-renames", merge_base, head, "--"],
                      local, DIFF_TIMEOUT, limit=limit, disk_cap=fetch_limit)
         if diff_out is not None and source_dir is None:
