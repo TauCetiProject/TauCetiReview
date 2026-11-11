@@ -95,7 +95,10 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                 assert clones == ['https://github.com/TauCetiProject/TauCetiRoadmap']
                 assert json.loads(result_file.read_text()) == dict(head_sha=HEAD, changed=True)
                 assert calls.read_text() == 'called\n'
-                assert json.loads(w.receipt.read_text())['state'] == 'published'
+                receipt = json.loads(w.receipt.read_text())
+                assert receipt['state'] == 'published'
+                assert w.source.repository.url + '/compare/' in receipt['scoreboard']
+                assert 'https://github.com/forgejo:' not in receipt['scoreboard']
                 state = json.loads(w.ledger.read_text())['prs']['7']
                 assert state['published_head_sha'] == HEAD
                 records = list((w.ledger.parent / 'outbox/records/runs').rglob('*.json'))

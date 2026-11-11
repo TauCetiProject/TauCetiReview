@@ -1056,6 +1056,7 @@ def _main(cleanup, leases, phase):
         print(f"tauceti-review: WARNING: rubrics commit {rub_sha[:12]} is not on GitHub, so PR "
               "authors cannot read the rubric text this review used.", file=sys.stderr)
     engine_env = {**os.environ, "TAUCETI_CLI_SHA": sha, "TAUCETI_CLI_DIRTY": "1" if dirty else "0",
+                  "TAUCETI_REVIEW_REPOSITORY_URL": review_source(a.repo).repository.url,
                   "TAUCETI_RUBRICS_DRIFT": tristate(drift),
                   "TAUCETI_RUBRICS_PUBLISHED": tristate(published)}
     engine_env.pop("TAUCETI_REVIEW_MATHLIB_CACHE", None)
