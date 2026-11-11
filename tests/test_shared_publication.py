@@ -1,6 +1,7 @@
 """The same publication/recovery scenarios run against both native transports."""
 import json
 import pathlib
+import sys
 import types
 
 import contextlib
@@ -8,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from runner import post, publication, publication_transport
 from tauceti_tools.ci_candidate import RepositoryIdentity
 from tauceti_tools.forge import AmbiguousWrite, Forge, RepositoryRef
