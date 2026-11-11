@@ -250,7 +250,7 @@ def test_diff_never_fetches_lazily():
         url, base, head = _two_commits(pathlib.Path(d), {"a.lean": b"x\n"},
                                        {"a.lean": b"y\n"})
         assert b"+y\n" in _diff(url, base, head)[0]
-        with patch.object(pr_diff, "_changed_blobs", return_value=[]):
+        with patch.object(pr_diff.git_inputs, "_changed_blobs", return_value=[]):
             try:
                 _diff(url, base, head)
             except RuntimeError as e:

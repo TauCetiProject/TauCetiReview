@@ -40,202 +40,24 @@ Flat imports only (run as a script with runner/ on sys.path, or imported by swee
 """
 import argparse
 import os
-import re
 import shutil
-import signal
 import subprocess
 import sys
-import tempfile
-import threading
 
-# Blob-id abbreviation on `index` lines, as GitHub renders them for TauCeti today. Cosmetic: the
-# patch digest normalises these ids away.
-INDEX_ABBREV = 11
-# Hard cap on the diff (and on the NUL-separated path list). Real large PRs are far below it: the
-# 909-file mathlib4 bump #3780 is about 6 MB, the 338-file mathlib4 #26077 0.36 MB, TauCeti's
-# biggest diffs well under 1 MB.
-MAX_BYTES = 64 << 20
-# Hard cap on everything downloaded into the throwaway repository (trees plus the changed files'
-# contents), enforced while git runs and checked again after. mathlib4 #3780 (909 files) needs
-# about 6 MB; TauCeti's trees are about 0.4 MB and its largest tracked file under 0.3 MB.
-MAX_FETCH_BYTES = 256 << 20
-FETCH_TIMEOUT = 300   # seconds, per git call
-DIFF_TIMEOUT = 300
-# The only variables git sees. Everything else (GH_TOKEN, GITHUB_TOKEN, provider API keys,
-# GIT_ASKPASS, SSH_ASKPASS, GIT_SSH*, GIT_CONFIG_*, GIT_DIR, ...) is dropped.
-ENV_ALLOW = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "LANG",
-             "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-             "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-             "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_EXEC_PATH")
-
-PREPARATION_WAIT_EXIT = 83
-
-# The parent's pipe owns this process group, including remote helpers. Unlike a
-# timer in the CLI, this guardian also observes SIGKILL/owner death on EOF.
-_GIT_OWNER = '''import os,signal,subprocess,sys,threading
-fd=int(sys.argv[1])
-def owner_gone():
- while os.read(fd,1): pass
- os.killpg(os.getpgrp(),signal.SIGKILL)
-threading.Thread(target=owner_gone,daemon=True).start()
-child=subprocess.Popen(sys.argv[2:])
-rc=child.wait()
-os._exit(rc if rc>=0 else 128-rc)
-'''
+from tauceti_tools import git_inputs
+from tauceti_tools.git_inputs import (INDEX_ABBREV, MAX_BYTES, MAX_FETCH_BYTES, FETCH_TIMEOUT, DIFF_TIMEOUT,
+                                     PREPARATION_WAIT_EXIT as PREPARATION_WAIT_EXIT, PreparationUnavailable, transport_unavailable, _git_env)
 
 
-class PreparationUnavailable(RuntimeError):
-    """A transport or host outage before inference; the fleet retries uncharged."""
+def _git(*arguments, **options):
+    return git_inputs._git(*arguments, **options)
 
 
-def transport_unavailable(message):
-    return bool(re.search(
-        r"HTTP (?:401|403|408|429|5\d\d)|(?:returned error:|error:)[ ]*(?:401|403|408|429|5\d\d)\b"
-        r"|could not resolve|couldn't connect|failed to connect|connection (?:reset|refused|timed out)"
-        r"|timed out|TLS|SSL|authentication failed|could not read Username|rate limit|network is unreachable"
-        r"|RPC failed|early EOF|remote end hung up|unexpected disconnect|HTTP/2.*stream"
-        r"|error connecting to|i/o timeout|unexpected EOF|context deadline exceeded|operation too slow"
-        r"|no space left on device|disk quota exceeded|too many open files|input/output error",
-        message, re.I))
-
-
-def _git_env():
-    """Allowlisted environment for git: no credentials, no user/system config, no prompts."""
-    env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW}
-    env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "LC_ALL": "C"})
-    return env
-
-
-def host_resource_unavailable(message):
-    return bool(re.search(r"no space left on device|disk quota exceeded|too many open files|input/output error",
-                          message, re.I))
-
-
-def _killpg(p):
-    try:
-        os.killpg(p.pid, signal.SIGKILL)
-    except OSError:
-        pass
-
-
-def _du(path):
-    total = 0
-    for root, _dirs, files in os.walk(path):
-        for f in files:
-            try:
-                total += os.lstat(os.path.join(root, f)).st_size
-            except OSError:
-                pass   # a temporary pack renamed or removed under us
-    return total
-
-
-def _git(d, args, env, timeout, sink=None, limit=MAX_BYTES, stdin=b"", disk_cap=None, config=()):
-    """Run `git -C d args` with `stdin`, streaming stdout into `sink` (a binary file) up to `limit`
-    bytes, killing git's whole process group at `timeout` or, when `disk_cap` is given, as soon as
-    the repository directory `d` grows past it (checked every 0.1 s while git runs, so a fast
-    download can overshoot slightly before the kill, and once more after it exits). Returns stdout bytes when `sink` is None. Raises
-    RuntimeError on failure, timeout, or overflow."""
-    name = args[0]
-    with tempfile.TemporaryFile() as err, tempfile.TemporaryFile() as inp:
-        inp.write(stdin)
-        inp.seek(0)
-        reader, owner = os.pipe()
-        try:
-            p = subprocess.Popen([sys.executable, '-c', _GIT_OWNER, str(reader), "git",
-                                  '-c', 'maintenance.autoDetach=false', '-c', 'gc.autoDetach=false',
-                                  *[a for value in config for a in ('-c', value)], "-C", d, *args],
-                                 stdin=inp, stdout=subprocess.PIPE, stderr=err, env=env,
-                                 start_new_session=True, pass_fds=(reader,))
-        except OSError as e:
-            os.close(owner)
-            raise RuntimeError(f"cannot run git: {e}")
-        finally:
-            os.close(reader)
-        timed_out, too_big, done = threading.Event(), threading.Event(), threading.Event()
-        lock = threading.Lock()
-
-        def kill(reason):
-            # Only while git is unreaped (`done` is set before the reaping wait), so a recycled PID
-            # is never signalled.
-            with lock:
-                if not done.is_set():
-                    reason.set()
-                    _killpg(p)
-
-        def watch_disk():
-            while not done.wait(0.1):
-                if _du(d) > disk_cap:
-                    kill(too_big)
-                    return
-
-        timer = threading.Timer(timeout, kill, args=(timed_out,)) if timeout is not None else None
-        if timer:
-            timer.start()
-        watcher = threading.Thread(target=watch_disk, daemon=True)
-        if disk_cap is not None:
-            watcher.start()
-        out, total = [], 0
-        try:
-            while True:
-                chunk = p.stdout.read(1 << 16)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if limit is not None and total > limit:
-                    raise RuntimeError(f"git {name} output exceeds the {limit}-byte limit")
-                if sink is None:
-                    out.append(chunk)
-                else:
-                    sink.write(chunk)
-            # Wait for git to exit WITHOUT reaping it, so the timer and the watcher can still
-            # kill it safely until `done` is set below.
-            os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOWAIT)
-        except BaseException:
-            kill(threading.Event())
-            raise
-        finally:
-            with lock:
-                done.set()
-            if timer:
-                timer.cancel()
-            if watcher.is_alive():
-                watcher.join()
-            p.wait()
-            p.stdout.close()
-            os.close(owner)
-        if disk_cap is not None and _du(d) > disk_cap:
-            too_big.set()   # grew past the cap between two checks
-        if too_big.is_set():
-            raise RuntimeError(f"git {name}: the objects downloaded exceed the {disk_cap}-byte "
-                               "limit")
-        if timed_out.is_set():
-            error = PreparationUnavailable if name == 'fetch' else RuntimeError
-            raise error(f"git {name} timed out after {timeout}s")
-        if p.returncode != 0:
-            err.seek(0)
-            msg = err.read()[-2000:].decode("utf-8", "replace").strip()
-            error = PreparationUnavailable if host_resource_unavailable(msg) or name == 'fetch' and transport_unavailable(msg) else RuntimeError
-            raise error(f"git {name} failed ({p.returncode}): {msg}")
-        return b"".join(out)
-
-
-def _changed_blobs(raw):
-    """Blob ids on either side of a `git diff --raw -z --no-renames` listing (no submodules)."""
-    fields = raw.split(b"\0")
-    blobs = set()
-    for meta in fields[0::2]:
-        if not meta.startswith(b":"):
-            continue
-        old_mode, new_mode, old, new = meta[1:].split(b" ")[:4]
-        for mode, oid in ((old_mode, old), (new_mode, new)):
-            if mode != b"160000" and oid.strip(b"0"):
-                blobs.add(oid)
-    return sorted(blobs)
+_changed_blobs = git_inputs._changed_blobs
 
 
 def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES,
-             fetch_limit=MAX_FETCH_BYTES, source_dir=None):
+             fetch_limit=MAX_FETCH_BYTES, source_dir=None, cache_dir=None, environment=None):
     """Diff `merge_base..head` from a throwaway bare clone of `remote`. Only the two commits'
     trees (blobless, depth 1) are fetched, then, when `diff_out` is given, exactly the changed
     files' blobs, all under `fetch_limit` bytes in total. git never fetches lazily after that
@@ -249,28 +71,22 @@ def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES,
     if not (merge_base and head):
         raise RuntimeError("need both the merge base and the head SHA")
     source_dir = os.path.abspath(source_dir) if source_dir is not None else None
-    env = _git_env()
+    env = _git_env() if environment is None else environment
     local = {**env, "GIT_NO_LAZY_FETCH": "1"}
     parent = os.path.dirname(os.fspath(source_dir)) if source_dir is not None else None
-    with tempfile.TemporaryDirectory(prefix="pr-diff-", dir=parent) as d:
-        _git(d, ["init", "-q", "--bare"], env, FETCH_TIMEOUT)
-        _git(d, ["remote", "add", "origin", remote], env, FETCH_TIMEOUT)
-        _git(d, ["fetch", "-q", "--no-tags", "--depth", "1", *([] if source_dir else ["--filter=blob:none"]),
-                 "origin", merge_base, head], env, None if source_dir else FETCH_TIMEOUT,
-             disk_cap=fetch_limit,
-             # The old source clone had no whole-download deadline. Let a slow
-             # progressing snapshot finish; Git detects a stalled HTTP transfer
-             # and the existing round owner can still cancel the whole group.
-             config=("http.lowSpeedLimit=1", f"http.lowSpeedTime={FETCH_TIMEOUT}") if source_dir else ())
+    with git_inputs.snapshot(remote, merge_base, head, run_git=_git, environment=env,
+                             cache_dir=cache_dir, parent=parent, complete=source_dir is not None,
+                             fetch_limit=fetch_limit) as (d, env):
+        # A previous source materialization left an index in this bare cache.
+        # Do not let its attributes affect the next canonical diff.
+        index = os.path.join(d, 'index')
+        if os.path.exists(index):
+            os.unlink(index)
         names = _git(d, ["diff", "--name-only", "-z", "--no-renames", merge_base, head, "--"],
                      local, DIFF_TIMEOUT, limit=limit, disk_cap=fetch_limit)
         if diff_out is not None and source_dir is None:
-            raw = _git(d, ["diff", "--raw", "-z", "--no-renames", "--abbrev=40", merge_base,
-                           head, "--"], local, DIFF_TIMEOUT, limit=limit, disk_cap=fetch_limit)
-            blobs = _changed_blobs(raw)
-            if blobs:
-                _git(d, ["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--stdin", "origin"],
-                     env, FETCH_TIMEOUT, stdin=b"\n".join(blobs) + b"\n", disk_cap=fetch_limit)
+            git_inputs.fetch_changed_blobs(d, merge_base, head, env, run_git=_git, limit=limit,
+                                           fetch_limit=fetch_limit)
         if diff_out is not None:
             _git(d, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M",
                      f"--abbrev={INDEX_ABBREV}", "--src-prefix=a/", "--dst-prefix=b/",

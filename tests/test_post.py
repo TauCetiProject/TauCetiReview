@@ -268,7 +268,7 @@ def test_find_review_roots_extracts_identity_head_and_run():
         roots = post.find_review_roots("o/r", 1)
     finally:
         post.subprocess.run = orig
-    assert roots == [{"id": 7, "node_id": "N7", "path": "x.lean", "login": "bot",
+    assert roots == [{"id": 7, "node_id": "N7", "path": "x.lean", "login": "bot", "thread_kind": None,
                       "rubric": "api-design", "head_sha": "abc", "run_ids": ["r-1"],
                       "created_at": "2026-08-04T00:00:00Z", "body": body}], roots
 
@@ -306,7 +306,7 @@ def _execute(fake_gh, roots, *, thread_id=None, scoreboards=...):
     found = ([{"id": 500, "login": "bot"}] if scoreboards is ... else scoreboards)
     post.find_scoreboard_comments = lambda repo, pr: None if found is None else list(found)
     try:
-        status = post.execute_post("o/r", 1, plan, ledger_path)
+        status = post.execute_post("o/r", 1, plan, ledger_path, transport=post.GitHubPublication("o/r", 1, plan["head_sha"], plan, post))
     finally:
         (post.gh_api, post.find_review_roots, post.current_login,
          post.find_scoreboard_comments) = saved
@@ -451,7 +451,7 @@ def test_optional_close_failure_does_not_roll_back_publication():
     post.current_login = lambda: "bot"
     post.find_scoreboard_comments = lambda repo, pr: []
     try:
-        status = post.execute_post("o/r", 1, plan, ledger_path)
+        status = post.execute_post("o/r", 1, plan, ledger_path, transport=post.GitHubPublication("o/r", 1, plan["head_sha"], plan, post))
     finally:
         (post.gh_api, post.find_review_roots, post.current_login,
          post.find_scoreboard_comments) = saved
@@ -490,7 +490,7 @@ def test_identical_closed_body_skips_patch_but_resolves_thread():
     resolved = []
     post.resolve_thread = lambda repo, pr, cid: resolved.append(cid)
     try:
-        status = post.execute_post("o/r", 1, plan, ledger_path)
+        status = post.execute_post("o/r", 1, plan, ledger_path, transport=post.GitHubPublication("o/r", 1, plan["head_sha"], plan, post))
     finally:
         (post.gh_api, post.find_review_roots, post.current_login,
          post.find_scoreboard_comments, post.resolve_thread) = saved

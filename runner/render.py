@@ -83,7 +83,8 @@ def diff_url(prov):
     builds it); both endpoint SHAs stay visible in the URL."""
     if not (prov and prov.get("base_sha") and prov.get("head_sha")):
         return ""
-    return (f"https://github.com/{prov['repo']}/compare/"
+    repository_url = prov.get('repo_url') or f"https://github.com/{prov['repo']}"
+    return (f"{repository_url}/compare/"
             f"{prov['base_sha']}...{prov['head_sha']}")
 
 

@@ -68,6 +68,21 @@ def test_same_fetch_supplies_exact_patch_paths_and_source():
         assert b'outside\nnewline.txt\0' in (work / 'paths.z').read_bytes()
 
 
+def test_reused_source_cache_cannot_apply_prior_pr_attributes_to_a_diff():
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        url, base, head, _ = _fixture(root)
+        cache = root / 'git-cache'
+        expected = _diff(url, base, head)[0]
+        for index in range(2):
+            out = root / f'diff-{index}.txt'
+            with out.open('wb') as stream:
+                pr_diff.git_diff(url, base, head, stream, source_dir=root / f'code-{index}',
+                                 cache_dir=cache, fetch_limit=None, limit=None)
+            assert out.read_bytes() == expected
+            assert b'+theorem t0 : True := by trivial' in out.read_bytes()
+
+
 def test_preparation_outage_retries_without_models_or_stale_workspace():
     with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as stack:
         root = pathlib.Path(d); work = root / 'work'; store = root / 'store'; store.mkdir()
@@ -97,7 +112,7 @@ def test_preparation_outage_retries_without_models_or_stale_workspace():
                 assert cli.main() == cli.HEAD_CHANGED_EXIT
         assert not work.exists()
         for message, expected in [('not our ref ' + 'a' * 40, 83),
-                                  ('not our ref ' + 'c' * 40, 1), ('HTTP 404', 1)]:
+                                  ('not our ref ' + 'c' * 40, 83), ('HTTP 404', 83)]:
             with patch.object(cli, 'merge_base_sha', return_value='c' * 40), patch.object(
                     cli, 'prepare_review_source', side_effect=RuntimeError(message)):
                 with contextlib.redirect_stderr(io.StringIO()):
@@ -107,7 +122,7 @@ def test_preparation_outage_retries_without_models_or_stale_workspace():
         with patch.object(cli, 'merge_base_sha', return_value='c' * 40), patch.object(
             cli, 'prepare_review_source', side_effect=RuntimeError('invalid comparison')) as prepare:
             with contextlib.redirect_stderr(io.StringIO()):
-                assert cli.main() == 1
+                assert cli.main() == 83
             prepare.assert_called_once()
         assert not work.exists() and (store / 'outbox/receipt').exists()
 
@@ -129,11 +144,13 @@ def test_relative_workspace_stages_source_at_the_requested_path():
             os.chdir(cwd)
 
 
-def test_post_failure_retains_fresh_archive_receipts():
+def _fresh_archive_failure(post_status):
     with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as stack:
         root = pathlib.Path(d); work = root / 'work'
         argv = ['tauceti-review', '7', '--reviewer', 'claude', '--submitted-by', 'tester',
                 '--fresh', '--post', '--no-sync', '--no-mathlib', '--no-coordinate']
+        if post_status == 0:
+            argv.remove('--no-sync')
         stack.enter_context(patch.object(sys, 'argv', argv))
         stack.enter_context(patch.dict(os.environ, {'TAUCETI_REVIEW_REF': '', 'TAUCETI_CLAUDE_MODEL': ''}))
         stack.enter_context(patch.object(cli.tempfile, 'mkdtemp', return_value=str(work)))
@@ -152,21 +169,27 @@ def test_post_failure_retains_fresh_archive_receipts():
         def run(cmd, **kwargs):
             if len(cmd) > 1 and pathlib.Path(cmd[1]).name == 'review.py':
                 (work / 'scoreboard.md').write_text('reviewed')
-                (work / 'post_plan.json').write_text(json.dumps({}))
+                (work / 'post_plan.json').write_text(json.dumps(dict(head_sha='a' * 40, scoreboard_body=str(work / 'scoreboard.md'), threads=[])))
                 (work / 'store/outbox').mkdir(parents=True)
                 (work / 'store/outbox/receipt').write_text('keep paid evidence')
-            elif len(cmd) > 1 and pathlib.Path(cmd[1]).name == 'post.py':
-                raise SystemExit(1)
+            elif len(cmd) > 1 and pathlib.Path(cmd[1]).name == 'archive.py':
+                return types.SimpleNamespace(returncode=1)
             return types.SimpleNamespace(returncode=0, stdout='test-token', stderr='')
         stack.enter_context(patch.object(cli, 'run', side_effect=run))
+        stack.enter_context(patch.object(cli.publication.post, 'transport_for', return_value=types.SimpleNamespace(identity=lambda: 'tester')))
+        stack.enter_context(patch.object(cli.publication, 'publish', return_value=post_status))
         with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
-            try:
-                cli.main()
-            except SystemExit as error:
-                assert error.code == 1
-            else:
-                raise AssertionError('post failure became success')
+            assert cli.main() in ((None, 0) if post_status == 0 else (85,))
+        assert json.loads((work / 'publication.json').read_text())['state'] == 'prepared'
         assert (work / 'store/outbox/receipt').read_text() == 'keep paid evidence'
+
+
+def test_post_failure_retains_fresh_archive_receipts():
+    _fresh_archive_failure(85)
+
+
+def test_archive_failure_retains_fresh_receipts_after_successful_post():
+    _fresh_archive_failure(0)
 
 
 def test_transport_classification_keeps_deterministic_failures_distinct():

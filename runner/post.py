@@ -21,8 +21,16 @@ current-head scoreboard never names a blocker that lacks its contestable inline 
 """
 import argparse, datetime, hashlib, json, os, pathlib, random, re, shutil, subprocess, sys, time
 
-import archive
-from ledger import atomic_write_json
+from tauceti_tools.forge import ForgeError, Incomplete
+
+try:
+    from . import archive
+    from .ledger import atomic_write_json
+    from .publication_transport import GitHubPublication, transport_for
+except ImportError:
+    import archive
+    from ledger import atomic_write_json
+    from publication_transport import GitHubPublication, transport_for
 
 REPLY_MARKER_RE = re.compile(r"<!--tauceti-reply:([a-z][a-z-]*):through:(\d+)-->")
 RUBRIC_MARKER_RE = re.compile(r"<!--tauceti-rubric:([a-z][a-z-]*)-->")
@@ -59,8 +67,13 @@ def find_review_roots(repo, pr):
     if r.returncode != 0:
         print(f"review-root lookup failed: {r.stderr[-300:]}", file=sys.stderr)
         return None
+    return normalize_roots(_comment_json_lines(r.stdout))
+
+
+def normalize_roots(comments, principal=lambda user: user.get("login"),
+                    reviewed_head=lambda row, meta: meta.get("head_sha") or row.get("commit_id")):
     roots = []
-    for c in _comment_json_lines(r.stdout):
+    for c in comments:
         if c.get("in_reply_to_id") is not None:
             continue
         body = c.get("body") or ""
@@ -74,9 +87,10 @@ def find_review_roots(repo, pr):
                 meta = {}
         roots.append({
             "id": c.get("id"), "node_id": c.get("node_id"), "path": c.get("path"),
-            "login": (c.get("user") or {}).get("login"),
+            "login": principal(c.get("user") or {}),
+            "thread_kind": c.get("thread_kind"),
             "rubric": rubric_match.group(1) if rubric_match else None,
-            "head_sha": meta.get("head_sha") or c.get("commit_id"),
+            "head_sha": reviewed_head(c, meta),
             "run_ids": [run.get("id") for run in (meta.get("runs") or []) if run.get("id")],
             "created_at": c.get("created_at") or "", "body": body,
         })
@@ -87,13 +101,14 @@ def _newest(items):
     return max(items, key=lambda c: (c.get("created_at") or "", c.get("id") or 0), default=None)
 
 
-def publish_required_upsert(repo, pr, head, action, cf, roots, me, failures):
+def publish_required_upsert(repo, pr, head, action, cf, roots, me, failures, transport=None):
     """Land one required blocker root and update `cf`; return its confirmed id or None.
 
     Exact roots authored by this identity are adopted after a crash. Known roots authored by this
     identity are edited in place. A root owned by another identity is never PATCHed: this identity
     appends its own root on the current head instead.
     """
+    transport = transport or GitHubPublication(repo, pr, head, {}, sys.modules[__name__])
     rubric, run_id = action["rubric"], action.get("run_id")
     exact = _newest(c for c in roots
                     if c.get("login") == me and c.get("rubric") == rubric
@@ -104,32 +119,21 @@ def publish_required_upsert(repo, pr, head, action, cf, roots, me, failures):
         known_id = (cf.get("thread") or {}).get("comment_id") or action.get("comment_id")
         known = next((c for c in roots if c.get("id") == known_id), None) if known_id else None
         foreign = bool(known and known.get("login") != me)
-        if known and not foreign:
-            response = gh_api(
-                "PATCH", f"/repos/{repo}/pulls/comments/{known_id}",
-                body_file=action["body"], failures=failures,
-                action=f"required thread PATCH {rubric}")
+        if known and not foreign and transport.editable(known, action):
+            response = transport.edit_finding(known_id, action, failures)
             chosen = known if response is not None else None
         else:
             # If the ledger lost its id, reuse our newest rubric root. A known foreign root is the
             # identity-migration case and deliberately forces a new current-head root instead.
             ours = None if foreign else _newest(
-                c for c in roots if c.get("login") == me and c.get("rubric") == rubric)
+                c for c in roots if c.get("login") == me and c.get("rubric") == rubric and transport.editable(c, action))
             if ours:
-                response = gh_api(
-                    "PATCH", f"/repos/{repo}/pulls/comments/{ours['id']}",
-                    body_file=action["body"], failures=failures,
-                    action=f"required thread PATCH {rubric}")
+                response = transport.edit_finding(ours["id"], action, failures)
                 chosen = ours if response is not None else None
             else:
-                response = gh_api(
-                    "POST", f"/repos/{repo}/pulls/{pr}/comments",
-                    fields={"commit_id": head, "path": action["path"],
-                            "subject_type": "file"},
-                    body_file=action["body"], failures=failures,
-                    action=f"required thread POST {rubric}")
+                response = transport.create_finding(action, failures)
                 chosen = ({"id": response.get("id"), "node_id": response.get("node_id"),
-                           "path": action["path"]}
+                           "path": action.get("path", "")}
                           if response and response.get("id") else None)
     if not chosen or not chosen.get("id"):
         if not any(f.get("action", "").endswith(rubric) for f in failures):
@@ -163,18 +167,17 @@ def already_replied(repo, pr, rubric, through_id, me):
                          text=True, capture_output=True)
     if out.returncode != 0:
         return False
-    for line in out.stdout.splitlines():
-        line = line.strip()
-        if not line:
+    return reply_seen(_comment_json_lines(out.stdout), rubric, through_id, me)
+
+
+def reply_seen(comments, rubric, through_id, me, principal=lambda user: user.get("login")):
+    if through_id is None:
+        return False
+    for c in comments:
+        if principal(c.get("user") or {}) != me:
             continue
-        try:
-            c = json.loads(line)
-        except Exception:
-            continue
-        if (c.get("user") or {}).get("login") != me:
-            continue
-        m = REPLY_MARKER_RE.search(c.get("body") or "")
-        if m and m.group(1) == rubric and int(m.group(2)) >= int(through_id):
+        match = REPLY_MARKER_RE.search(c.get("body") or "")
+        if match and match.group(1) == rubric and int(match.group(2)) >= int(through_id):
             return True
     return False
 
@@ -268,7 +271,16 @@ def current_login():
     write-scoped token never overwrites or removes a comment belonging to someone else."""
     r = subprocess.run(["gh", "api", "user", "--jq", ".login"], text=True, capture_output=True)
     login = (r.stdout or "").strip()
-    return login if (r.returncode == 0 and login) else REVIEW_BOT
+    if r.returncode == 0 and login:
+        return login
+    # Installation tokens cannot read /user. Preserve that known transport
+    # behavior, but never turn an outage/rate limit on a user token into a bot
+    # identity that will strand its paid publication receipt.
+    token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN') or ''
+    if (token.startswith('ghs_') and '403' in (r.stderr or '')
+            and 'resource not accessible by integration' in (r.stderr or '').lower()):
+        return REVIEW_BOT
+    raise Incomplete('publication identity is unavailable')
 
 
 def find_scoreboard_comments(repo, pr):
@@ -305,7 +317,7 @@ def find_scoreboard_comments(repo, pr):
     return out
 
 
-def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=None):
+def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=None, transport=None):
     """Publish the PR's single scoreboard comment, editing OUR existing one in place rather than
     duplicating, and collapsing OUR older duplicates.
 
@@ -317,8 +329,9 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
     newest: updated_at determines which scoreboard supersedes others. Our
     obsolete duplicates are still removed. Returns (sb_id, ok). `mine` overrides
     the actor login."""
+    transport = transport or GitHubPublication(repo, pr, "", {}, sys.modules[__name__])
     me = mine if mine is not None else current_login()
-    existing = find_scoreboard_comments(repo, pr)
+    existing = transport.board_comments()
     if existing is None:
         if failures is not None:
             failures.append({"action": "scoreboard discovery",
@@ -342,16 +355,14 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
         strictly_newest = all(c.get("updated_at") and current.get("updated_at")
                              and c["updated_at"] < current["updated_at"]
                              for c in existing if c["id"] != sb_id)
-        if strictly_newest and current.get("body") == pathlib.Path(body_file).read_text():
+        if strictly_newest and current.get("body") == transport.body(body_file):
             pr_state["scoreboard_comment_id"] = sb_id
             ok = True
-        elif gh_api("PATCH", f"/repos/{repo}/issues/comments/{sb_id}", body_file=body_file,
-                  failures=failures, action="scoreboard PATCH") is not None:
+        elif transport.comment("PATCH", sb_id, body_file, failures, "scoreboard PATCH") is not None:
             pr_state["scoreboard_comment_id"] = sb_id
             ok = True
     else:
-        resp = gh_api("POST", f"/repos/{repo}/issues/{pr}/comments",
-                      body_file=body_file, failures=failures, action="scoreboard POST")
+        resp = transport.comment("POST", None, body_file, failures, "scoreboard POST")
         if resp and resp.get("id"):
             pr_state["scoreboard_comment_id"] = sb_id = resp["id"]
             ok = True
@@ -361,8 +372,10 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
     if ok:                                # collapse our own older duplicates (best-effort)
         for dup in mine_dupes:
             if dup:
-                gh_api("DELETE", f"/repos/{repo}/issues/comments/{dup}",
-                       action=f"scoreboard collapse {dup}")
+                try:
+                    transport.comment("DELETE", dup, action=f"scoreboard collapse {dup}")
+                except (ForgeError, OSError, subprocess.TimeoutExpired):
+                    print("post.py: obsolete scoreboard cleanup deferred", file=sys.stderr)
     return sb_id, ok
 
 
@@ -409,11 +422,15 @@ def archive_outcome(archive_dir, repo, pr, plan, sb_id, scoreboard_ok, posted_th
         print(f"WARNING: post archive write failed: {e}", file=sys.stderr)
 
 
-def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
+def execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, expected_publisher=None):
     """Execute one trusted plan. Return a process-style status code (0 success, 1 incomplete)."""
     if plan.get("review_changed") is False:
         return 0
     head = plan.get("head_sha", "")
+    transport = transport or transport_for(repo, int(pr), head, plan, sys.modules[__name__])
+    if not transport.current():
+        print("post.py: source head changed; retained plan is superseded", file=sys.stderr)
+        return 82
     ledger_path = pathlib.Path(ledger_path)
     ledger = json.loads(ledger_path.read_text())
     pr_state = ledger["prs"].setdefault(str(pr), {})
@@ -424,11 +441,14 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
     required = [t for t in actions
                 if t.get("required", t.get("action") == "upsert")]
     optional = [t for t in actions if t not in required]
-    me = current_login()
+    me = transport.identity()
+    if expected_publisher is not None and me != expected_publisher:
+        print('post.py: retained review requires its original publisher', file=sys.stderr)
+        return 86
 
     # Phase 1: every genuine blocker root is required. Remote discovery is itself required because
     # it proves ownership before PATCH and makes a POST-crash retry idempotent.
-    roots = find_review_roots(repo, pr)
+    roots = transport.roots()
     if required and roots is None:
         failures.append({"action": "required thread discovery",
                          "error": "could not list review roots"})
@@ -436,7 +456,7 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
         for t in required:
             rubric = t["rubric"]
             cf = pr_state["state"].setdefault(rubric, {})
-            cid = publish_required_upsert(repo, pr, head, t, cf, roots, me, failures)
+            cid = publish_required_upsert(repo, pr, head, t, cf, roots, me, failures, transport=transport)
             if cid:
                 posted_threads[rubric] = cid
                 # Persist the confirmed root immediately. Keep its pending marker until the
@@ -452,9 +472,12 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
 
     # Phase 2: the current-head scoreboard is the publication commit marker. Only after it lands do
     # we clear the PR/thread write-ahead records.
+    if not transport.current():
+        print("post.py: source head changed before scoreboard; retained plan is superseded", file=sys.stderr)
+        return 82
     sb_id, scoreboard_ok = upsert_scoreboard(
         repo, pr, plan["scoreboard_body"], plan.get("scoreboard_comment_id"), pr_state, failures,
-        mine=me)
+        mine=me, transport=transport)
     atomic_write_json(ledger_path, ledger)
     if not scoreboard_ok:
         archive_outcome(archive_dir, repo, pr, plan, sb_id, False, posted_threads, failures)
@@ -481,29 +504,30 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir=""):
     # review verdict was published. Optional failures are archived and reported, never rolled back.
     roots_by_id = {c.get("id"): c for c in (roots or []) if c.get("id")}
     for t in optional:
-        rubric = t["rubric"]
-        cf = pr_state["state"].setdefault(rubric, {})
-        if t["action"] == "reply":
-            parent = t.get("in_reply_to") or (cf.get("thread") or {}).get("comment_id")
-            if not parent or already_replied(repo, pr, rubric, t.get("reply_dedupe"), me):
+        try:
+            rubric = t["rubric"]
+            cf = pr_state["state"].setdefault(rubric, {})
+            if t["action"] == "reply":
+                parent = t.get("in_reply_to") or (cf.get("thread") or {}).get("comment_id")
+                if not parent or transport.replied(rubric, t.get("reply_dedupe"), me):
+                    continue
+                resp = transport.reply(parent, t, failures)
+                if resp and resp.get("id"):
+                    posted_threads[f"{rubric}:reply"] = resp["id"]
                 continue
-            resp = gh_api("POST", f"/repos/{repo}/pulls/{pr}/comments/{parent}/replies",
-                          body_file=t["body"], failures=failures,
-                          action=f"thread reply {rubric}")
-            if resp and resp.get("id"):
-                posted_threads[f"{rubric}:reply"] = resp["id"]
-            continue
-        if t["action"] != "close":
-            continue
-        cid = (cf.get("thread") or {}).get("comment_id") or t.get("comment_id")
-        root = roots_by_id.get(cid)
-        if not cid or not root or root.get("login") != me:
-            continue  # nothing of ours to edit; never cross-edit another identity's thread
-        if (root.get("body") == pathlib.Path(t["body"]).read_text()
-                or gh_api("PATCH", f"/repos/{repo}/pulls/comments/{cid}", body_file=t["body"],
-                          failures=failures, action=f"thread close {rubric}") is not None):
-            posted_threads[rubric] = cid
-            resolve_thread(repo, pr, cid)
+            if t["action"] != "close":
+                continue
+            cid = (cf.get("thread") or {}).get("comment_id") or t.get("comment_id")
+            root = roots_by_id.get(cid)
+            if not cid or not root or root.get("login") != me:
+                continue  # nothing of ours to edit; never cross-edit another identity's thread
+            if (root.get("body") == pathlib.Path(t["body"]).read_text()
+                    or transport.edit_finding(cid, t, failures) is not None):
+                posted_threads[rubric] = cid
+                transport.resolve(cid)
+        except (ForgeError, OSError) as error:
+            failures.append({'action': f"optional {t['action']} {t['rubric']}",
+                             'error': type(error).__name__})
 
     atomic_write_json(ledger_path, ledger)
     archive_outcome(archive_dir, repo, pr, plan, sb_id, True, posted_threads, failures)
@@ -522,12 +546,18 @@ def main():
                     help="outbox directory: record which comment ids actually landed "
                          "(records/posts/) for the durable archive")
     a = ap.parse_args()
-    if not os.environ.get("GH_TOKEN"):
+    if not (os.environ.get("GH_TOKEN") or os.environ.get("TAUCETI_SOURCE_BINDING")):
         print("post.py: GH_TOKEN not set", file=sys.stderr)
         sys.exit(1)
     plan = json.loads(pathlib.Path(a.plan).read_text())
-    status = execute_post(a.repo, a.pr, plan, pathlib.Path(a.store) / "ledger.json",
-                          a.archive_dir)
+    try:
+        status = execute_post(a.repo, a.pr, plan, pathlib.Path(a.store) / "ledger.json",
+                              a.archive_dir)
+    except (ForgeError, OSError, subprocess.TimeoutExpired) as error:
+        print(f'post.py: plan retained at {a.plan}; source unavailable ({type(error).__name__})', file=sys.stderr)
+        status = 85
+    if status == 82:
+        return  # A superseded Actions review is a successful no-op.
     if status:
         sys.exit(status)
 
