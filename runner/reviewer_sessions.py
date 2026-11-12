@@ -6,6 +6,7 @@ finish(). No provider transcript or credential belongs in the public review stor
 """
 
 import atexit
+import ctypes
 import fcntl
 import functools
 import hashlib
@@ -17,6 +18,7 @@ import selectors
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -37,11 +39,30 @@ PRIMER_POLICY = (
     "turn supplies a rubric, follow the shared review protocol and that rubric. Each rubric's "
     "verdict marker is supplied only with that rubric."
 )
-TIMEOUT = 900
+# Model work may include long source inspections. Transport/control operations have
+# a separate short deadline; operators can bound paid model work independently.
+TIMEOUT = float(os.environ.get("TAUCETI_REVIEW_CALL_TIMEOUT_S", "3600"))
+CONTROL_TIMEOUT = 30
+
+# Linux deployment workers may forcibly kill their runner. Couple the server's
+# lifetime to its parent even when normal Python cleanup cannot execute.
+_LIBC = ctypes.CDLL(None, use_errno=True) if sys.platform == "linux" else None
+
+
+def _server_child(parent_pid):
+    if _LIBC is not None:
+        if _LIBC.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+            os._exit(126)
+        if os.getppid() != parent_pid:
+            os._exit(126)
 
 
 class SessionError(RuntimeError):
     pass
+
+
+def incompatible_rpc(error):
+    return any(token in str(error).lower() for token in ("-32601", "-32602", "unknown method", "invalid params"))
 
 
 class CheckpointError(RuntimeError):
@@ -122,6 +143,28 @@ def write_private(path, value):
         os.close(directory)
 
 
+def journal_private(path, value):
+    # Public receipts and the ledger are authoritative. A full private disk must
+    # never prevent the caller from settling a request that has already been paid.
+    try:
+        write_private(path, value)
+    except OSError:
+        pass
+
+
+def acknowledges(result):
+    # Native CLIs can emit commentary before the final acknowledgement.
+    text = result.get("text", "").strip().splitlines()
+    return bool(text) and text[-1].strip().rstrip(".! ").upper() == "READY"
+
+
+def primer_failure(provider, result):
+    if result.get("returncode") or result.get("is_error") or result.get("parse_error"):
+        return result
+    # Model text is untrusted and must never enter native failure classification.
+    return {**result, **failed(f"{provider} primer did not acknowledge without tools")}
+
+
 @functools.lru_cache(maxsize=None)
 def claude_capabilities():
     help_result = subprocess.run(["claude", "--help"], capture_output=True, text=True, timeout=30)
@@ -152,21 +195,21 @@ class ClaudeSession:
         elif result.get("returncode") == 0 and not result.get("is_error"):
             result.update(is_error=True, returncode=1, text="", cost_usd=None, usage_incomplete=True,
                           error_message="Update Claude Code: final per-response usage is required for review caching")
-        elif not result.get("cost_usd"):
-            result.update(cost_usd=0, usage={})
         else:
-            result.update(is_error=True, returncode=1, text="", cost_usd=None, usage_incomplete=True,
-                          error_message="Update Claude Code: response usage missing; cannot distinguish inherited session billing")
+            # A failed fork can report inherited primer cost. Retain its native
+            # failure category rather than claiming the client is incompatible.
+            result.update(cost_usd=None, usage={}, usage_incomplete=True)
+        if result.get("is_error") or result.get("returncode"):
+            result["usage_incomplete"] = True
         return result
 
     def prime(self):
         claude_capabilities()
         result = self.call(self.shared, ["--session-id", self.primer])
         if (result.get("returncode") or result.get("is_error") or result.get("parse_error")
-                or result.get("text", "").strip() != "READY"
+                or not acknowledges(result)
                 or result.get("tool_trace_meta", {}).get("total_calls")):
-            return {**result, **failed("Claude primer failed: " + result.get("error_message", result.get("text", "")),
-                                      error_status=result.get("error_status"))}
+            return primer_failure("Claude", result)
         # Preserve only the original conversation and minimal CLI metadata. Keep refreshed
         # credentials live, never include them in the baseline restored between forks.
         try:
@@ -216,9 +259,11 @@ class Rpc:
                 "-c", 'features.multi_agent=false', "-c", 'features.memories=false',
                 "-c", 'memories.generate_memories=false', "-c", 'memories.use_memories=false']
         try:
+            parent_pid = os.getpid()
             self.proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE,
                                          stdout=subprocess.PIPE, stderr=self.stderr,
-                                         text=True, start_new_session=True)
+                                         text=True, start_new_session=True,
+                                         preexec_fn=functools.partial(_server_child, parent_pid) if _LIBC else None)
         except BaseException:
             self.stderr.close()
             raise
@@ -284,7 +329,7 @@ class Rpc:
             self.events.append(msg)
         return msg
 
-    def request(self, method, params, *, timeout=TIMEOUT):
+    def request(self, method, params, *, timeout=CONTROL_TIMEOUT):
         self.serial += 1
         call_id = self.serial
         self.send({"id": call_id, "method": method, "params": params}, timeout=timeout)
@@ -351,16 +396,26 @@ class CodexSession:
         self.thread = result["thread"]["id"]
         if result.get("model") != self.model:
             raise SessionError("Codex selected a different model than the requested exact model")
+        # Check paginated history support before making a paid request.
+        try:
+            self.rpc.request("thread/turns/list", {"threadId": self.thread, "limit": 2,
+                                                  "sortDirection": "asc"})
+        except SessionError as error:
+            # Current native builds recognize the method but materialize the
+            # thread only on its first turn. That rejection proves capability.
+            if "-32600" not in str(error) or "not materialized yet" not in str(error):
+                raise
         result = self.run(self.shared)
-        if (result.get("returncode") or result.get("text", "").strip() != "READY"
+        if (result.get("returncode") or not acknowledges(result)
                 or result.get("tool_trace_meta", {}).get("total_calls")):
-            return {**result, **failed("Codex primer failed: " + result.get("error_message", result.get("text", "")))}
+            return primer_failure("Codex", result)
         self.primer, self.pending, self.ready = self.pending, None, True
         try:
             self.baseline()
         except (OSError, ValueError, KeyError, SessionError) as error:
             self.ready = False
-            return {**result, **failed(f"Codex could not validate its paid primer: {error}")}
+            prefix = "Update Codex: " if incompatible_rpc(error) else ""
+            return {**result, **failed(f"{prefix}Codex could not validate its paid primer: {error}")}
         return result
 
     def baseline(self):
@@ -376,7 +431,7 @@ class CodexSession:
             self.baseline()
         self.rpc.events.clear()
         result = self.rpc.request("turn/start", {"threadId": self.thread,
-                                  "input": [{"type": "text", "text": str(tail)}]})
+                                  "input": [{"type": "text", "text": str(tail)}]}, timeout=TIMEOUT)
         self.pending = result["turn"]["id"]
         self.terminal = False
         deadline = time.monotonic() + TIMEOUT
@@ -434,6 +489,8 @@ class CodexSession:
             if not responses:
                 result.update(is_error=True, returncode=1, text="", cost_usd=None, usage_incomplete=True,
                               error_message="Update Codex: per-response usage notifications are required for review caching")
+        if result.get("is_error") or result.get("returncode"):
+            result["usage_incomplete"] = True
         return result
 
     def reset(self):
@@ -473,6 +530,7 @@ class RoundReviewers:
         if self.pending is not None:
             raise SessionError("Previous review result must be persisted before another attempt")
         key = (provider, model, os.path.realpath(cwd), hashlib.sha256(prompt.shared.encode()).hexdigest())
+        self.release_other_providers(provider)
         if provider in self.incompatible:
             return failed(self.incompatible[provider])
         session = self.sessions.get(key)
@@ -490,7 +548,7 @@ class RoundReviewers:
                 session.owned_home = home
                 self.sessions[key] = session
                 initialization = session.prime()
-                write_private(self.journal / (uuid.uuid4().hex + ".json"), {"phase": "primer", "result": initialization})
+                journal_private(self.journal / (uuid.uuid4().hex + ".json"), {"phase": "primer", "result": initialization})
                 if on_primer is not None:
                     try:
                         on_primer(initialization)
@@ -498,6 +556,8 @@ class RoundReviewers:
                         self.pending = key
                         raise CheckpointError("Could not persist primer billing") from error
                 if not session.ready:
+                    if "Update Codex:" in initialization.get("error_message", ""):
+                        self.incompatible[provider] = initialization["error_message"]
                     self.discard(key)
                     result = initialization
                     initialization = None
@@ -506,15 +566,32 @@ class RoundReviewers:
             else:
                 result = session.run(prompt.rubric)
         except (OSError, ValueError, KeyError, SessionError, subprocess.SubprocessError) as e:
-            result = failed(e)
+            unsupported = provider == "codex" and incompatible_rpc(e)
+            if unsupported:
+                self.incompatible[provider] = "Update Codex: persistent paginated thread history and revert are required"
+                e = self.incompatible[provider]
+            result = failed(e, **({} if unsupported else {"usage_incomplete": True}))
             self.discard(key)
         if initialization is not None:
             result["initialization"] = {k: initialization.get(k) for k in ("usage", "cost_usd", "cost_estimated")}
             result["cost_usd"] = (result.get("cost_usd") or 0) + (initialization.get("cost_usd") or 0)
             result["usage"] = add_usage(initialization.get("usage"), result.get("usage"))
-        write_private(self.journal / (uuid.uuid4().hex + ".json"), {"phase": "rubric", "result": result})
+        journal_private(self.journal / (uuid.uuid4().hex + ".json"), {"phase": "rubric", "result": result})
         self.pending = key
         return result
+
+    def needs_primer(self, provider, prompt, cwd, model):
+        key = (provider, model, os.path.realpath(cwd), hashlib.sha256(prompt.shared.encode()).hexdigest())
+        return provider not in self.incompatible and key not in self.sessions
+
+    def release_other_providers(self, provider):
+        # Apply this before uncached providers too: their tools must not reach a
+        # previous cached provider's credentials or private transcript.
+        for previous in list(self.sessions):
+            if previous[0] != provider:
+                self.discard(previous)
+                for path in self.journal.glob("*.json"):
+                    path.unlink()
 
     def finish(self):
         key, self.pending = self.pending, None

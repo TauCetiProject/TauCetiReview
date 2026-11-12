@@ -22,6 +22,12 @@ Connected apps, delegation, automatic memory, and web search are disabled for th
 review path; shell tools retain the existing read-only sandbox and credential-free
 environment.
 
+Switching providers closes the previous provider's server, removes its HOME, and
+clears private evidence before the next reviewer starts, including transitions to
+uncached providers. Returning to that provider requires another primer. This
+preserves the existing single-provider credential exposure; same-uid processes
+remain outside a strong OS isolation boundary.
+
 Session state lives only for the current review round. Changing shared context,
 provider, exact model, or cwd creates another primer. A CLI lacking the required
 fork/TTL or paginated-revert capabilities produces an actionable compatibility
@@ -40,6 +46,9 @@ recover a completed attempt without another model call. Settlement is idempotent
 a failed ledger update after a receipt write is repaired when the store is next
 opened. Completed failed rubric attempts are retired so normal provider recovery
 can make new requests on a later invocation.
+Dry-run receipts live separately and cannot be settled or replayed by a real run.
+The budget reservation includes an additional call allowance when a primer is
+needed. As before, call allowances are estimates rather than hard provider limits.
 
 Raw provider errors, session IDs, credentials, and transcripts are excluded from
 these receipts. Private evidence stays in an owner-only leased review directory.
@@ -63,6 +72,11 @@ observed spend is a lower bound, not an assertion that the request was free.
 Paid primer usage is preserved even when its transcript snapshot or history
 validation fails. Stdio writes as well as response waits have bounded deadlines,
 so an app-server that stops reading cannot strand a large prompt indefinitely.
+Model calls default to a one-hour limit, configurable with
+`TAUCETI_REVIEW_CALL_TIMEOUT_S`; control RPCs use 30-second deadlines. Linux
+app-servers receive a parent-death signal if the runner is forcibly killed.
+Abnormal calls retain available counters and flag spend as incomplete. Private
+journaling is best effort; public receipts and ledger settlement remain mandatory.
 
 ## Reproducing validation
 
@@ -120,7 +134,8 @@ an adverse review of that fixture is a successful acceptance result.
 
 Deployment-host checks on `tauchonki` used its actual Claude Code 2.1.304 and
 Codex 0.163.0 binaries. Both passed native request capture against the local fake
-provider. With its enrolled credential kept on that host, Claude API-auth
+provider, including the final control-loop changes. CI pins these accepted CLI
+versions; upgrades require repeating native acceptance. With its enrolled credential kept on that host, Claude API-auth
 acceptance passed three production-model rubrics with tool use: every first
 request read 16,457 shared-prefix tokens; estimated cost including initialization
 was $0.226303. Worker and CI admissions were unchanged.

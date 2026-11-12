@@ -365,7 +365,10 @@ def run_rubric(ctx, rubric):
         template = str(prompt).replace(marker, "<one-time-marker>")
         receipts = Attempts(outdir, rubric, fingerprint(a.repo, a.pr, head, round_num,
                             rubrics_version, template, a.auth, os.path.realpath(a.tool_cwd),
-                            sorted((p, runners[p][1]) for p in providers)),
+                            # Dispatch may downgrade Codex during the round. Recovery
+                            # identity uses the configured models, not mutable runners.
+                            sorted(providers), a.claude_model, a.codex_model or CODEX_MODEL,
+                            a.kiro_model),
                             ctx.ledger, day, a.dry_run, head_sha=head)
     # Pin the provider to whoever first reviewed this rubric, so a follow-up audits its own
     # prior finding (and an author can't shop for a softer model); else roll at random over
@@ -375,6 +378,11 @@ def run_rubric(ctx, rubric):
     if receipts and receipts.saved and receipts.saved[0]["provider"] in providers:
         provider = receipts.saved[0]["provider"]
     fn, model = runners[provider]
+    if (ctx.sessions is not None and provider in ("claude", "sonnet", "codex")
+            and hasattr(ctx.sessions, "needs_primer") and not (receipts and receipts.saved)
+            and ctx.sessions.needs_primer(provider, prompt, a.tool_cwd, model)
+            and ctx.spent_today + 2 * a.max_call_cost > a.daily_budget):
+        return False  # reserve for both the primer and the rubric
     started_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     attempts, t0 = [], time.monotonic()
 
@@ -383,6 +391,8 @@ def run_rubric(ctx, rubric):
         t = time.monotonic()
         marker = "TAUCETI-VERDICT-" + secrets.token_hex(12)
         prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context, marker, reblock)
+        if ctx.sessions is not None and hasattr(ctx.sessions, "release_other_providers"):
+            ctx.sessions.release_other_providers(provider)
         cached = ctx.sessions is not None and provider in ("claude", "sonnet", "codex")
         if cached:
             receipt = receipts.replay(provider, model)
@@ -1108,7 +1118,9 @@ def main():
             if ctx.spent_today + a.max_call_cost > a.daily_budget:
                 stopped = rubric
                 break
-            run_rubric(ctx, rubric)
+            if run_rubric(ctx, rubric) is False:
+                stopped = rubric
+                break
             if ctx.provider_is_down():
                 abort_provider_down(ctx)
             if a.mode != "manual" and state_of(state_map.get(rubric), head) == "blocking_block":
@@ -1129,7 +1141,9 @@ def main():
                     if ctx.spent_today + a.max_call_cost > a.daily_budget:
                         stopped = rubric
                         break
-                    run_rubric(ctx, rubric)
+                    if run_rubric(ctx, rubric) is False:
+                        stopped = rubric
+                        break
                     if ctx.provider_is_down():
                         abort_provider_down(ctx)
                     if state_of(state_map.get(rubric), head) == "blocking_block":

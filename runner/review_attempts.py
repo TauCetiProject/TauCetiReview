@@ -20,7 +20,7 @@ else:
 
 class Attempts:
     def __init__(self, outdir, rubric, fingerprint, ledger, day, dry_run=False, head_sha=None):
-        self.directory = pathlib.Path(outdir) / "attempts"
+        self.directory = pathlib.Path(outdir) / ("dry-run-attempts" if dry_run else "attempts")
         self.rubric, self.fingerprint = rubric, fingerprint
         self.ledger, self.day, self.dry_run = ledger, day, dry_run
         self.head_sha = head_sha

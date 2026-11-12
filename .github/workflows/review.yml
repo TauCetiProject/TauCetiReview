@@ -230,7 +230,9 @@ jobs:
         uses: actions/setup-node@v4
         with: { node-version: "22" }
       - name: Install Claude and Codex CLIs
-        run: npm install -g @anthropic-ai/claude-code @openai/codex
+        # Session/fork and paginated history capabilities are acceptance-tested
+        # together. Upgrade these deliberately with native input-capture checks.
+        run: npm install -g @anthropic-ai/claude-code@2.1.304 @openai/codex@0.163.0
 
       - name: Assemble clean reviewer workspace
         # Reviewers run here: only PR source (no .git), roadmap, Mathlib source, and the diff.
