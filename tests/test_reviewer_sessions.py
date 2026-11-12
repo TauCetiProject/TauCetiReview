@@ -20,7 +20,7 @@ def test_claude_final_stream_usage_deduplicates_assistant_fragments():
     events = [
         {"type": "stream_event", "event": {"type": "message_start", "message": {
             "id": "r1", "usage": {"input_tokens": 2, "output_tokens": 1,
-                                    "cache_read_input_tokens": 2000}}}},
+                                    "cache_read_input_tokens": 2000, "service_tier": "standard"}}}},
         {"type": "assistant", "message": {"id": "r1", "content": [], "usage": {
             "input_tokens": 2, "output_tokens": 1, "cache_read_input_tokens": 2000}}},
         {"type": "stream_event", "event": {"type": "message_delta", "usage": {"output_tokens": 75}}},
@@ -34,6 +34,8 @@ def test_claude_final_stream_usage_deduplicates_assistant_fragments():
         result = c.run("rubric")
     assert result["usage"]["output_tokens"] == 75
     assert result["usage"]["cache_read_input_tokens"] == 2000
+    assert result["first_request_usage"]["cache_read_input_tokens"] == 2000
+    assert "service_tier" not in result["first_request_usage"]
     assert result["cost_usd"] == (2 + 200 + 75 * 5) / 1e6
 
 
@@ -438,6 +440,33 @@ def test_runner_recovers_a_paid_verdict_after_crash_before_casefile():
         assert ledger["prs"]["1"]["state"]["correctness"]["verdict"] == "approve"
         assert round(sum(ledger["days"].values()), 6) == billing.COST
         assert ledger["prs"]["1"]["rounds"][0]["cost"] == billing.COST
+    finally:
+        import shutil
+        shutil.rmtree(d)
+
+
+def test_run_archive_retains_first_request_and_primer_counters():
+    import test_billing as billing
+    import review
+    billing._install_stubs()
+    billing._VERDICTS.clear()
+    billing._VERDICTS["correctness"] = "approve"
+    first = {"input_tokens": 10, "cache_read_input_tokens": 9000, "output_tokens": 50}
+    primer = {"usage": {"input_tokens": 1, "cache_creation_input_tokens": 9000}, "cost_usd": .02}
+    records = []
+    def measured_runner(prompt, cwd, model, env):
+        return {**billing._fake_runner(prompt, cwd, model, env),
+                "first_request_usage": first, "initialization": primer}
+    d, rd, store = billing._workspace(["correctness"])
+    try:
+        with patch.object(review, "run_claude", measured_runner), \
+                patch.object(review.archive, "archive_run", side_effect=lambda target, record, **kw: records.append(record)):
+            billing._run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness"],
+                         extra=["--archive-dir", str(d / "archive")])
+        assert len(records) == 1
+        assert records[0]["first_request_usage"] == first
+        assert records[0]["initialization"] == primer
+        assert records[0]["attempts"][0]["first_request_usage"] == first
     finally:
         import shutil
         shutil.rmtree(d)

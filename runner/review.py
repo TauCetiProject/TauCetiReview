@@ -423,7 +423,8 @@ def run_rubric(ctx, rubric):
         # (TauCetiReview#105). It is a closed vocabulary, so unlike the stderr it derives from, it is
         # safe in a record that gets committed and pushed.
         attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
-                                           "price_inherited", "usage", "usage_incomplete", "session_id", "parse_error")
+                                           "price_inherited", "usage", "first_request_usage", "initialization",
+                                           "usage_incomplete", "session_id", "parse_error")
                          if r.get(k) is not None}
                         | {"model": model, "secs": round(time.monotonic() - t, 1)}
                         | ({} if has_verdict(r) else {"error_kind": error_kind(r)}))
@@ -528,7 +529,8 @@ def run_rubric(ctx, rubric):
             "tool_trace": res.get("tool_trace") or None,
             "tool_trace_meta": res.get("tool_trace_meta") or None,
             "attempts": public_record(attempts),
-            "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
+            "usage": res.get("usage"), "first_request_usage": res.get("first_request_usage"),
+            "initialization": res.get("initialization"), "cost_usd": res.get("cost_usd"),
             "cost_estimated": res.get("cost_estimated"), "cost_incomplete": res.get("cost_incomplete"),
             "usage_incomplete": res.get("usage_incomplete"), "prices_sha": PRICES_SHA,
             # Set only when prices.json had no row for this model, naming the model whose rates

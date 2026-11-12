@@ -143,6 +143,9 @@ class ClaudeSession:
                                       session_args=["--include-partial-messages", "--strict-mcp-config", "--setting-sources", "",
                                                     "--append-system-prompt", PRIMER_POLICY, *flags], timeout=TIMEOUT)
         responses = result.pop("response_usage", [])
+        if result.get("first_request_usage"):
+            # Only numeric provider counters belong in public cache diagnostics.
+            result["first_request_usage"] = add_usage(result["first_request_usage"])
         if responses:
             usage = add_usage(*responses)
             result.update(usage=usage, **price_responses(self.model, responses))

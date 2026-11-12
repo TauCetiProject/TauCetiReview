@@ -52,6 +52,8 @@ Claude's terminal cost can include the primer again on a fork. Incremental costs
 therefore come from unique API response IDs and final streamed output counters,
 including thinking tokens. Codex uses each turn's response-usage observations;
 inherited/resettable thread totals are never treated as new spend or refunds.
+First-request counters and initialization usage are retained in public run and
+attempt records, so production analysis can establish reuse before any tool call.
 Cache reads, writes, and ordinary input remain distinct. Pricing is per response
 using the existing dated model table, including TTL and long-context tiers, and
 derived prices remain labeled estimates. Round totals include initialization,
