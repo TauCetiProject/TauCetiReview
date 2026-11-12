@@ -125,6 +125,24 @@ def test_codex_rejects_contaminated_history():
     assert not any(m == "turn/start" for m, _ in c.rpc.calls)
 
 
+def test_cache_miss_does_not_invalidate_a_review_or_reset_the_primer():
+    class ColdRpc(FakeRpc):
+        def request(self, method, params):
+            result = super().request(method, params)
+            if method == "turn/start":
+                for event in self.events:
+                    if event.get("method") == "thread/tokenUsage/updated":
+                        event["params"]["tokenUsage"]["last"]["cachedInputTokens"] = 0
+            return result
+    c = sessions.CodexSession({}, "/isolated", ".", "gpt-6.1-sol", "PR")
+    c.rpc, c.thread, c.primer, c.ready = ColdRpc(), "thread", "primer", True
+    result = c.run("rubric after cache expiry")
+    assert result["returncode"] == 0 and result["text"] == "independent review"
+    assert result["usage"]["cached_input_tokens"] == 0
+    c.reset()
+    assert c.ready and c.rpc.retained == ["primer"]
+
+
 def test_round_initialization_is_charged_once_and_reset_failure_rebuilds():
     class FakeSession:
         def __init__(self, *args):
