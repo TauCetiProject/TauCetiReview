@@ -158,6 +158,10 @@ def reviewer_env(provider, keys, subscription=False):
     plugins, or settings, so the review does not depend on who runs it. If the credential is not
     where we expect (e.g. a macOS keychain login), we fall back to the real HOME so auth still
     works, trading reproducibility for a working review.
+
+    A Claude reviewer whose parent has `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) gets
+    that variable instead of the credential file, and keeps the clean HOME. It is the provider's
+    own credential, so the residual is the same as for an API key: the reviewer can read it.
     """
     # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp. The caller
     # removes `home` once the reviewer returns (cleanup_rev_home), so these don't accumulate.
@@ -177,8 +181,11 @@ def reviewer_env(provider, keys, subscription=False):
     if provider in ("claude", "sonnet"):
         if subscription:
             # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
+            token = (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "") or "").strip()
             src = os.path.expanduser("~/.claude/.credentials.json")
-            if os.path.exists(src):
+            if token:
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+            elif os.path.exists(src):
                 cdir = os.path.join(home, ".claude")
                 os.makedirs(cdir, exist_ok=True)
                 shutil.copyfile(src, os.path.join(cdir, ".credentials.json"))

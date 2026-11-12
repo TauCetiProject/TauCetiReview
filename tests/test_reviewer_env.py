@@ -161,6 +161,73 @@ def test_claude_attempts_reuse_one_empty_home():
         reviewers.cleanup_rev_home(home3)
     assert not os.path.exists(home1)
 
+
+def _claude_subscription_env(provider, token=None, credential_file=True, subscription=True, keys=None):
+    """reviewer_env under a synthetic real HOME and reviewer-home base. Returns the env, whether
+    the isolated home held a seeded credential file, and the synthetic real HOME."""
+    old_env, old_base = os.environ.copy(), reviewers.REV_HOME_BASE
+    try:
+        with tempfile.TemporaryDirectory() as real_home, tempfile.TemporaryDirectory() as base:
+            reviewers.REV_HOME_BASE = base
+            if credential_file:
+                cdir = pathlib.Path(real_home) / ".claude"
+                cdir.mkdir()
+                (cdir / ".credentials.json").write_text('{"synthetic": true}')
+            os.environ.clear()
+            os.environ.update(HOME=real_home, PATH="/usr/bin", USER="synthetic-user")
+            if token is not None:
+                os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
+            env, isolated_home = reviewers.reviewer_env(provider, keys or {}, subscription=subscription)
+            try:
+                seeded = (pathlib.Path(isolated_home) / ".claude" / ".credentials.json").exists()
+                return env, isolated_home, seeded, real_home
+            finally:
+                reviewers.cleanup_rev_home(isolated_home)
+    finally:
+        reviewers.REV_HOME_BASE = old_base
+        os.environ.clear()
+        os.environ.update(old_env)
+
+
+def test_claude_subscription_token_replaces_credential_file():
+    for provider in ("claude", "sonnet"):
+        env, isolated_home, seeded, real_home = _claude_subscription_env(provider, token=" tok-synthetic ")
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok-synthetic"
+        assert env["HOME"] == isolated_home != real_home
+        assert not seeded
+        assert set(env) == {"PATH", "HOME", "LANG", "CI", "USER", "LOGNAME", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+
+def test_claude_subscription_token_keeps_clean_home_without_credential_file():
+    env, isolated_home, seeded, real_home = _claude_subscription_env(
+        "claude", token="tok-synthetic", credential_file=False)
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok-synthetic"
+    assert env["HOME"] == isolated_home != real_home
+    assert not seeded
+
+
+def test_claude_subscription_without_token_is_unchanged():
+    for token in (None, "", "   "):
+        env, isolated_home, seeded, _ = _claude_subscription_env("claude", token=token)
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+        assert env["HOME"] == isolated_home and seeded
+        env, isolated_home, seeded, real_home = _claude_subscription_env(
+            "claude", token=token, credential_file=False)
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+        assert env["HOME"] == real_home and not seeded
+
+
+def test_oauth_token_reaches_no_other_reviewer():
+    cases = [("codex", True, {}), ("deepseek", True, {"openrouter": "or-synthetic"}),
+             ("kiro", True, {}), ("claude", False, {"anthropic": "sk-synthetic"}),
+             ("codex", False, {"openai": "sk-synthetic"})]
+    for provider, subscription, keys in cases:
+        env, *_ = _claude_subscription_env(provider, token="tok-synthetic",
+                                           subscription=subscription, keys=keys)
+        assert "tok-synthetic" not in env.values(), (provider, subscription)
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env, (provider, subscription)
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:

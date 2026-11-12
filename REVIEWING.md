@@ -22,7 +22,8 @@ On your `PATH`, all logged in:
 - `claude` ([Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code)) signed into a
   Claude subscription, and/or `codex` ([Codex](https://www.npmjs.com/package/@openai/codex)) signed
   into a ChatGPT subscription. You need **at least one**; each rubric is judged by whichever you
-  have. With both, the reviewer is drawn per rubric, like CI.
+  have. With both, the reviewer is drawn per rubric, like CI. A headless host can instead set
+  `CLAUDE_CODE_OAUTH_TOKEN` to the token `claude setup-token` prints.
 - For explicit Kiro reviews, `kiro-cli` signed in with `kiro-cli login` (or a
   headless `KIRO_API_KEY`). Kiro is never auto-drawn.
 - Python ≥ 3.10.
@@ -197,6 +198,8 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   setup. (The repo's own in-tree `CLAUDE.md` is still visible, as part of the code under review.)
   On macOS, where the login lives in the keychain rather than a credential file, it falls back to
   your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
+  For Claude, `CLAUDE_CODE_OAUTH_TOKEN` also keeps the clean room: when it is set, a Claude
+  reviewer receives that variable in place of the credential file.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
 - **Concurrent reviewers.** Before spending inference, a contributing run acquires a renewable
