@@ -179,7 +179,7 @@ def stderr_summary(res, limit=200):
 
 
 def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
-                       scoreboard_md, rubrics_version, mode=None):
+                       scoreboard_md, rubrics_version, mode=None, cost_incomplete=False):
     """Durable round record for the archive (production and shadow rounds alike). `mode` overrides
     a.mode so a contest-only commit round is recorded as a reply round (it must not count toward the
     review budget)."""
@@ -209,7 +209,8 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
             "rubrics_published": prov.get("rubrics_published"),
             "diff_sha256": prov.get("diff_sha256"), "ran": ran,
             "run_ids": run_ids, "states": states,
-            "overall": overall, "cost": round_cost, "halted_at": halted,
+            "overall": overall, "cost": round_cost, "cost_incomplete": cost_incomplete or None,
+            "halted_at": halted,
             "scoreboard_sha256": hashlib.sha256(scoreboard_md.encode()).hexdigest(),
             "fidelity": "exact"}
     try:
@@ -1193,7 +1194,7 @@ def main():
         # a posting step to act on. The scoreboard above is informational (printed by the CLI).
         shadow_cost = round_totals["cost_usd"]
         emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
-                           shadow_cost, scoreboard_md, rubrics_version)
+                           shadow_cost, scoreboard_md, rubrics_version, cost_incomplete=round_totals["cost_incomplete"])
         pr_state["rounds"].append(
             {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
              "mode": a.mode, "ran": ran, "states": states, "cost": shadow_cost,
@@ -1273,7 +1274,8 @@ def main():
           + f"cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
 
     emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
-                       scoreboard_md, rubrics_version, mode=effective_mode)
+                       scoreboard_md, rubrics_version, mode=effective_mode,
+                       cost_incomplete=round_totals["cost_incomplete"])
 
     if a.dry_run:
         print("[dry-run] not writing ledger.")

@@ -296,6 +296,62 @@ def test_paid_codex_primer_preserves_usage_when_history_check_fails():
     assert not session.ready
 
 
+def test_sigterm_cleans_the_owned_server_and_round_homes():
+    import signal
+    import subprocess
+    import time
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        exe = root / "codex"
+        exe.write_text('#!' + sys.executable + '\nimport sys,json,time\n'
+                       'message=json.loads(sys.stdin.readline())\n'
+                       'print(json.dumps({"id":message["id"],"result":{}}),flush=True)\n'
+                       'time.sleep(60)\n')
+        exe.chmod(0o700)
+        ready = root / "ready.json"
+        home_base = root / "review-homes"
+        code = '''
+import json,os,pathlib,sys,time
+sys.path.insert(0,sys.argv[1])
+import reviewers,reviewer_sessions as sessions
+reviewers.REV_HOME_BASE=sys.argv[2]
+class BusySession:
+ def __init__(self,env,home,cwd,model,shared):
+  self.rpc=sessions.Rpc(env,cwd)
+  self.ready=False
+ def prime(self):
+  pathlib.Path(sys.argv[3]).write_text(json.dumps({'server_pid':self.rpc.proc.pid}))
+  time.sleep(60)
+ def close(self): self.rpc.close()
+sessions.CodexSession=BusySession
+with sessions.RoundReviewers({'openai':'dummy'},False) as rounds:
+ rounds.run('codex',reviewers.ReviewPrompt('shared','rubric'),sys.argv[4],'model')
+'''
+        env = dict(os.environ, PATH=tmp + os.pathsep + os.environ["PATH"])
+        child = subprocess.Popen([sys.executable, "-c", code, str(ROOT / "runner"), str(home_base),
+                                  str(ready), tmp], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(.02)
+            assert ready.exists(), child.communicate(timeout=1)
+            server_pid = json.loads(ready.read_text())["server_pid"]
+            child.send_signal(signal.SIGTERM)
+            stdout, stderr = child.communicate(timeout=10)
+            assert child.returncode == 143, stderr.decode()
+            assert not list(home_base.iterdir())
+            try:
+                os.kill(server_pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise AssertionError("owned app-server survived cancellation")
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
+
+
 def test_attempt_receipt_survives_killed_settlement_and_replays_without_double_spend():
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
