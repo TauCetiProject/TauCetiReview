@@ -6,7 +6,7 @@ readme = "REVIEWING.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 # Shared project configuration is the only Python dependency: the engine shells out to the `git`, `gh`, `claude`, `codex`, and `kiro-cli` CLIs.
-dependencies = ["tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@de7633dd55b5fb6e596b69c0f4345f3e82322640"]
+dependencies = ["tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@cccfd6b73106bb49e5e59383e5c718279daefece"]
 
 [project.scripts]
 tauceti-review = "runner.cli:main"
