@@ -109,7 +109,10 @@ class Attempts:
         roots = pathlib.Path(store) / "reviews"
         if not roots.exists():
             return
+        accounted = ledger.data.get("review_attempts", {})
         for path in roots.glob("*/*/attempts/*.json"):
+            if path.stem.rsplit("-", 1)[-1] in accounted:
+                continue
             receipt = json.loads(path.read_text())
             if receipt.get("schema") != "tauceti.review-attempt/v1":
                 continue
