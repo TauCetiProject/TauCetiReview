@@ -630,6 +630,41 @@ def test_linux_server_dies_when_parent_is_forcibly_killed():
                 try: os.kill(server_pid, signal.SIGKILL)
                 except ProcessLookupError: pass
 
+
+def test_crash_after_an_earlier_codex_downgrade_recovers_without_model_work():
+    import test_billing as billing
+    import review
+    calls = []
+    class Interrupted(billing.DirectSessions):
+        def finish(self):
+            if len(calls) == 4:
+                raise RuntimeError("crash after later fallback receipt")
+    def codex(prompt, cwd, model, env):
+        calls.append(model)
+        if model == review.CODEX_MODEL:
+            return {"returncode": 1, "is_error": True, "text": "", "error_status": 400,
+                    "error_message": "model not supported when using Codex with a ChatGPT account"}
+        return billing._fake_runner(prompt, cwd, model, env)
+    billing._install_stubs()
+    billing._VERDICTS.clear()
+    d, rd, store = billing._workspace(["correctness", "reuse"])
+    kwargs = dict(mode="commit", rubrics=["correctness", "reuse"], extra=["--providers", "codex"])
+    try:
+        with patch.object(review, "RoundReviewers", Interrupted), patch.object(review, "run_codex", codex):
+            try:
+                billing._run(store, rd, d / "diff.txt", **kwargs)
+            except RuntimeError as error:
+                assert "crash after later" in str(error)
+            else:
+                raise AssertionError("crash not injected")
+        with patch.object(review, "run_codex", codex):
+            ledger = billing._run(store, rd, d / "diff.txt", **kwargs)
+        assert len(calls) == 4, calls
+        assert ledger["prs"]["1"]["state"]["reuse"]["verdict"] == "approve"
+    finally:
+        import shutil
+        shutil.rmtree(d)
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

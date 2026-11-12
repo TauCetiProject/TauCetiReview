@@ -378,6 +378,11 @@ def run_rubric(ctx, rubric):
     if receipts and receipts.saved and receipts.saved[0]["provider"] in providers:
         provider = receipts.saved[0]["provider"]
     fn, model = runners[provider]
+    if (receipts and receipts.saved and provider == "codex" and not ctx.codex_model_explicit
+            and receipts.saved[0]["model"] == CODEX_FALLBACK_MODEL):
+        # A prior rubric may already have established the permitted downgrade
+        # before a crash. Recover its paid fallback attempt without re-probing.
+        model = CODEX_FALLBACK_MODEL
     if (ctx.sessions is not None and provider in ("claude", "sonnet", "codex")
             and hasattr(ctx.sessions, "needs_primer") and not (receipts and receipts.saved)
             and ctx.sessions.needs_primer(provider, prompt, a.tool_cwd, model)
