@@ -116,9 +116,16 @@ counters match incremental native billing while the fork's terminal total also
 includes its primer. The source fixture intentionally contains a vacuous theorem;
 an adverse review of that fixture is a successful acceptance result.
 
-API-mode acceptance remains outstanding: the configured Anthropic key was
-rejected as invalid, and no OpenAI API key was available in the test environment.
-Broad rollout must wait for those live gates and deployment-binary checks.
+Deployment-host checks on `tauchonki` used its actual Claude Code 2.1.304 and
+Codex 0.163.0 binaries. Both passed native request capture against the local fake
+provider. With its enrolled credential kept on that host, Claude API-auth
+acceptance passed three production-model rubrics with tool use: every first
+request read 16,457 shared-prefix tokens; estimated cost including initialization
+was $0.226303. Worker and CI admissions were unchanged.
+
+OpenAI API-auth acceptance remains outstanding: both local and deployment-host
+Codex credentials use ChatGPT authentication and contain no API key. Broad
+rollout must wait for that live gate and upstream review/CI on the current head.
 Deployment observations should be added when completed. Passing finite
 prompt-injection fixtures is not a security proof.
 
