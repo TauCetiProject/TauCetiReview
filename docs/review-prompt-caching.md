@@ -125,11 +125,12 @@ acceptance passed three production-model rubrics with tool use: every first
 request read 16,457 shared-prefix tokens; estimated cost including initialization
 was $0.226303. Worker and CI admissions were unchanged.
 
-OpenAI API-auth acceptance remains outstanding: both local and deployment-host
-Codex credentials use ChatGPT authentication and contain no API key. Broad
-rollout must wait for that live gate and upstream review/CI on the current head.
-Deployment observations should be added when completed. Passing finite
-prompt-injection fixtures is not a security proof.
+The user explicitly waived the live OpenAI API-auth acceptance test. It was not
+run: local and deployment-host Codex credentials use ChatGPT authentication and
+contain no API key. Codex validation covers subscription authentication and native
+request capture, not live API-key billing. This is a recorded validation limit,
+not a rollout gate. Upstream review, current-head CI, and live deployment checks
+still apply. Passing finite prompt-injection fixtures is not a security proof.
 
 Deploy through the normal review-source revision update, with worker and CI
 admissions enabled. Verify running revisions, completed useful reviews, first-turn
