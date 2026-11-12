@@ -145,6 +145,9 @@ class ClaudeSession:
         if responses:
             usage = add_usage(*responses)
             result.update(usage=usage, **price_responses(self.model, responses))
+        elif result.get("returncode") == 0 and not result.get("is_error"):
+            result.update(is_error=True, returncode=1, text="", cost_usd=None, usage_incomplete=True,
+                          error_message="Update Claude Code: final per-response usage is required for review caching")
         elif not result.get("cost_usd"):
             result.update(cost_usd=0, usage={})
         else:
@@ -403,6 +406,9 @@ class CodexSession:
                       **price_responses(self.model, responses))
         if not result.get("is_error"):
             result["text"] = "\n".join(texts)
+            if not responses:
+                result.update(is_error=True, returncode=1, text="", cost_usd=None, usage_incomplete=True,
+                              error_message="Update Codex: per-response usage notifications are required for review caching")
         return result
 
     def reset(self):

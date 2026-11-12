@@ -143,6 +143,21 @@ def test_cache_miss_does_not_invalidate_a_review_or_reset_the_primer():
     assert c.ready and c.rpc.retained == ["primer"]
 
 
+def test_missing_response_usage_is_a_client_failure_not_a_free_review():
+    class MissingUsageRpc(FakeRpc):
+        def request(self, method, params):
+            result = super().request(method, params)
+            if method == "turn/start":
+                self.events[:] = [e for e in self.events if e.get("method") != "thread/tokenUsage/updated"]
+            return result
+    c = sessions.CodexSession({}, "/isolated", ".", "gpt-6.1-sol", "PR")
+    c.rpc, c.thread, c.primer, c.ready = MissingUsageRpc(), "thread", "primer", True
+    result = c.run("rubric")
+    assert result["returncode"] == 1 and result["is_error"]
+    assert result["usage_incomplete"] and result["cost_usd"] is None
+    assert not result["text"]
+
+
 def test_round_initialization_is_charged_once_and_reset_failure_rebuilds():
     class FakeSession:
         def __init__(self, *args):
