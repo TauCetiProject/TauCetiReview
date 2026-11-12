@@ -238,6 +238,64 @@ def test_rpc_eof_and_protocol_error_are_bounded_and_reaped():
         assert rpc.proc.poll() is not None
 
 
+def test_rpc_large_write_times_out_when_server_stops_reading():
+    import time
+    with tempfile.TemporaryDirectory() as tmp:
+        exe = pathlib.Path(tmp) / "codex"
+        exe.write_text('#!' + sys.executable + '\nimport sys,json,time\n'
+                       'message=json.loads(sys.stdin.readline())\n'
+                       'print(json.dumps({"id":message["id"],"result":{}}),flush=True)\n'
+                       'time.sleep(60)\n')
+        exe.chmod(0o700)
+        rpc = sessions.Rpc({"PATH": tmp + os.pathsep + os.environ["PATH"], "HOME": tmp}, tmp)
+        started = time.monotonic()
+        try:
+            try:
+                rpc.request("large", {"text": "x" * 1_000_000}, timeout=.1)
+            except sessions.SessionError as error:
+                assert "stdin write timed out" in str(error)
+            else:
+                raise AssertionError("unresponsive stdin accepted the large request")
+            assert time.monotonic() - started < 2
+        finally:
+            rpc.close()
+        assert rpc.proc.poll() is not None
+
+
+def test_paid_claude_primer_preserves_usage_when_snapshot_fails():
+    result = {"returncode": 0, "text": "READY", "cost_usd": .3,
+              "cost_estimated": True, "usage": {"input_tokens": 100},
+              "tool_trace_meta": {"total_calls": 0}}
+    with tempfile.TemporaryDirectory() as home:
+        session = sessions.ClaudeSession({}, home, ".", "model", "PR")
+        transcript = pathlib.Path(home) / ".claude" / (session.primer + ".jsonl")
+        transcript.parent.mkdir()
+        transcript.touch()
+        with patch.object(sessions, "claude_capabilities"), patch.object(session, "call", return_value=result), \
+                patch.object(pathlib.Path, "read_bytes", side_effect=OSError("disk read failed")):
+            failed = session.prime()
+        assert failed["is_error"] and failed["returncode"]
+        assert failed["cost_usd"] == .3 and failed["usage"] == {"input_tokens": 100}
+        assert not session.ready
+
+
+def test_paid_codex_primer_preserves_usage_when_history_check_fails():
+    class PrimerRpc(FakeRpc):
+        def request(self, method, params):
+            if method == "thread/start":
+                return {"thread": {"id": "thread"}, "model": "model"}
+            return super().request(method, params)
+    session = sessions.CodexSession({}, "/isolated", ".", "model", "PR")
+    result = {"returncode": 0, "text": "READY", "cost_usd": .4,
+              "usage": {"input_tokens": 120}, "tool_trace_meta": {"total_calls": 0}}
+    with patch.object(sessions, "Rpc", PrimerRpc), patch.object(session, "run", return_value=result), \
+            patch.object(session, "baseline", side_effect=sessions.SessionError("bad history")):
+        failed = session.prime()
+    assert failed["is_error"] and failed["returncode"]
+    assert failed["cost_usd"] == .4 and failed["usage"] == {"input_tokens": 120}
+    assert not session.ready
+
+
 def test_attempt_receipt_survives_killed_settlement_and_replays_without_double_spend():
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -263,6 +321,20 @@ def test_attempt_receipt_survives_killed_settlement_and_replays_without_double_s
             assert result["verdict"] == {"verdict": "approve"}
             assert restarted.spent("2026-11-12") == .4
         assert not Attempts(outdir, "correctness", "changed-input", restarted, "2026-11-12").saved
+
+
+def test_incomplete_usage_stays_visible_in_receipts_and_round_totals():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        ledger = Ledger(root / "ledger.json")
+        outdir = root / "reviews" / "7" / "1"
+        receipts = Attempts(outdir, "correctness", "input", ledger, "2026-11-12", head_sha="head")
+        result = {"returncode": 1, "cost_usd": .2, "usage_incomplete": True,
+                  "usage": {"input_tokens": 100}}
+        receipt = receipts.record("codex", "model", result, None, "sha", "client_incompatible", False)
+        assert ledger.data["review_attempts"][receipt["id"]]["usage_incomplete"]
+        totals = Attempts.round_totals(outdir, "head", [])
+        assert totals["cost_usd"] == .2 and totals["cost_incomplete"]
 
 
 def test_partial_claude_timeout_keeps_billed_response_usage():

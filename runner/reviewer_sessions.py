@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import queue
+import selectors
 import shutil
 import signal
 import subprocess
@@ -151,8 +152,8 @@ class ClaudeSession:
         elif not result.get("cost_usd"):
             result.update(cost_usd=0, usage={})
         else:
-            result.update(is_error=True, returncode=1, text="",
-                          error_message="Claude response usage missing; cannot distinguish inherited session billing")
+            result.update(is_error=True, returncode=1, text="", cost_usd=None, usage_incomplete=True,
+                          error_message="Update Claude Code: response usage missing; cannot distinguish inherited session billing")
         return result
 
     def prime(self):
@@ -161,19 +162,21 @@ class ClaudeSession:
         if (result.get("returncode") or result.get("is_error") or result.get("parse_error")
                 or result.get("text", "").strip() != "READY"
                 or result.get("tool_trace_meta", {}).get("total_calls")):
-            return failed("Claude primer failed: " + result.get("error_message", result.get("text", "")),
-                          **{k: result[k] for k in ("cost_usd", "usage", "error_status") if k in result})
+            return {**result, **failed("Claude primer failed: " + result.get("error_message", result.get("text", "")),
+                                      error_status=result.get("error_status"))}
         # Preserve only the original conversation and minimal CLI metadata. Keep refreshed
         # credentials live, never include them in the baseline restored between forks.
-        cdir = self.home / ".claude"
-        for path in cdir.rglob(self.primer + ".jsonl"):
-            self.baseline[path.relative_to(self.home)] = path.read_bytes()
-        config = self.home / ".claude.json"
-        if config.exists():
-            self.baseline[pathlib.Path(".claude.json")] = config.read_bytes()
+        try:
+            cdir = self.home / ".claude"
+            for path in cdir.rglob(self.primer + ".jsonl"):
+                self.baseline[path.relative_to(self.home)] = path.read_bytes()
+            config = self.home / ".claude.json"
+            if config.exists():
+                self.baseline[pathlib.Path(".claude.json")] = config.read_bytes()
+        except OSError as error:
+            return {**result, **failed(f"Claude could not preserve its paid primer: {error}")}
         if not any(p.suffix == ".jsonl" for p in self.baseline):
-            return failed("Claude did not save its primer transcript; update the supported CLI",
-                          usage=result.get("usage"), cost_usd=result.get("cost_usd"))
+            return {**result, **failed("Update Claude Code: primer transcript was not saved")}
         self.ready = True
         return result
 
@@ -217,6 +220,7 @@ class Rpc:
             self.stderr.close()
             raise
         self.inbox, self.serial = queue.Queue(), 0
+        os.set_blocking(self.proc.stdin.fileno(), False)
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
         self.events = []
@@ -241,9 +245,22 @@ class Rpc:
         finally:
             self.inbox.put({"transport_error": "Codex app-server closed stdout"})
 
-    def send(self, msg):
-        self.proc.stdin.write(json.dumps(msg) + "\n")
-        self.proc.stdin.flush()
+    def send(self, msg, *, timeout=TIMEOUT):
+        payload = memoryview((json.dumps(msg) + "\n").encode())
+        deadline = time.monotonic() + timeout
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.proc.stdin.fileno(), selectors.EVENT_WRITE)
+            while payload:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise SessionError("Codex app-server stdin write timed out")
+                try:
+                    written = os.write(self.proc.stdin.fileno(), payload)
+                except BlockingIOError:
+                    continue
+                if written <= 0:
+                    raise SessionError("Codex app-server closed stdin")
+                payload = payload[written:]
 
     def receive(self, deadline):
         if time.monotonic() >= deadline:
@@ -258,7 +275,8 @@ class Rpc:
             raise SessionError(msg["transport_error"] + (": " + detail if detail else ""))
         if "method" in msg and "id" in msg:
             self.send({"id": msg["id"], "error": {"code": -32601,
-                       "message": "Review runner does not grant interactive approvals"}})
+                       "message": "Review runner does not grant interactive approvals"}},
+                      timeout=max(.001, deadline - time.monotonic()))
         if msg.get("method") in ("thread/tokenUsage/updated", "item/completed", "turn/completed", "error"):
             self.events.append(msg)
         return msg
@@ -266,7 +284,7 @@ class Rpc:
     def request(self, method, params, *, timeout=TIMEOUT):
         self.serial += 1
         call_id = self.serial
-        self.send({"id": call_id, "method": method, "params": params})
+        self.send({"id": call_id, "method": method, "params": params}, timeout=timeout)
         deadline = time.monotonic() + timeout
         while True:
             msg = self.receive(deadline)
@@ -335,7 +353,11 @@ class CodexSession:
                 or result.get("tool_trace_meta", {}).get("total_calls")):
             return {**result, **failed("Codex primer failed: " + result.get("error_message", result.get("text", "")))}
         self.primer, self.pending, self.ready = self.pending, None, True
-        self.baseline()
+        try:
+            self.baseline()
+        except (OSError, ValueError, KeyError, SessionError) as error:
+            self.ready = False
+            return {**result, **failed(f"Codex could not validate its paid primer: {error}")}
         return result
 
     def baseline(self):

@@ -422,7 +422,7 @@ def run_rubric(ctx, rubric):
         # (TauCetiReview#105). It is a closed vocabulary, so unlike the stderr it derives from, it is
         # safe in a record that gets committed and pushed.
         attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
-                                           "price_inherited", "usage", "session_id", "parse_error")
+                                           "price_inherited", "usage", "usage_incomplete", "session_id", "parse_error")
                          if r.get(k) is not None}
                         | {"model": model, "secs": round(time.monotonic() - t, 1)}
                         | ({} if has_verdict(r) else {"error_kind": error_kind(r)}))
@@ -460,6 +460,9 @@ def run_rubric(ctx, rubric):
         cost += res.get("cost_usd") or 0.0  # count every attempt
     res["cost_usd"] = round(cost, 6)
     res["usage"] = add_usage(*(attempt.get("usage") for attempt in attempts))
+    if any(attempt.get("usage_incomplete") for attempt in attempts):
+        res["usage_incomplete"] = True
+        res["cost_incomplete"] = True
     # Persist the downgrade for the rest of the run — flip the shared runner registry so later rubrics
     # skip the now-known-dead Sol call — but ONLY once the fallback has actually produced a verdict. With
     # the reconfirm above, that means: rejected twice on the default AND the fallback then worked. Runs
@@ -525,7 +528,8 @@ def run_rubric(ctx, rubric):
             "tool_trace_meta": res.get("tool_trace_meta") or None,
             "attempts": public_record(attempts),
             "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
-            "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,
+            "cost_estimated": res.get("cost_estimated"), "cost_incomplete": res.get("cost_incomplete"),
+            "usage_incomplete": res.get("usage_incomplete"), "prices_sha": PRICES_SHA,
             # Set only when prices.json had no row for this model, naming the model whose rates
             # were used, so an inherited rate is visible beside the sha of the table it came from.
             "price_inherited": res.get("price_inherited"),
@@ -1193,7 +1197,8 @@ def main():
         pr_state["rounds"].append(
             {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
              "mode": a.mode, "ran": ran, "states": states, "cost": shadow_cost,
-             "tokens": round_totals["tokens"], "prices_sha": PRICES_SHA,
+             "tokens": round_totals["tokens"], "cost_incomplete": round_totals["cost_incomplete"],
+             "prices_sha": PRICES_SHA,
              "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
              "arm": a.arm})
         print(f"\nSHADOW ROUND ({a.arm}) {overall}  (ran {len(ran)}: {ran}; "
@@ -1255,7 +1260,8 @@ def main():
     pr_state["rounds"].append(
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "mode": effective_mode, "ran": ran, "states": states, "cost": round_cost,
-         "tokens": round_totals["tokens"], "prices_sha": PRICES_SHA,
+         "tokens": round_totals["tokens"], "cost_incomplete": round_totals["cost_incomplete"],
+             "prices_sha": PRICES_SHA,
          "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
          "base_sha": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
          "rubrics_sha": a.rubrics_sha or None, "diff_sha256": prov.get("diff_sha256"),

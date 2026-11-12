@@ -55,7 +55,12 @@ inherited/resettable thread totals are never treated as new spend or refunds.
 Cache reads, writes, and ordinary input remain distinct. Pricing is per response
 using the existing dated model table, including TTL and long-context tiers, and
 derived prices remain labeled estimates. Round totals include initialization,
-retries, and recovered attempt receipts.
+retries, and recovered attempt receipts. If response usage is unavailable, the
+review is rejected and receipts/round records retain an incomplete-cost flag;
+observed spend is a lower bound, not an assertion that the request was free.
+Paid primer usage is preserved even when its transcript snapshot or history
+validation fails. Stdio writes as well as response waits have bounded deadlines,
+so an app-server that stops reading cannot strand a large prompt indefinitely.
 
 ## Reproducing validation
 

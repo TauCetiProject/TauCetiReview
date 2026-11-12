@@ -76,7 +76,8 @@ class Attempts:
             day = receipt["day"]
             cost = receipt.get("settlement_cost_usd", receipt["result"].get("cost_usd") or 0)
             self.ledger.set_spent(day, self.ledger.spent(day) + cost)
-            accounted[receipt["id"]] = {"day": day, "cost_usd": cost}
+            accounted[receipt["id"]] = {"day": day, "cost_usd": cost,
+                                         **({"usage_incomplete": True} if receipt["result"].get("usage_incomplete") else {})}
             if not self.dry_run:
                 self.ledger.persist()
 
@@ -92,16 +93,19 @@ class Attempts:
         cost = 0
         cached = set()
         usage_records = []
+        incomplete = False
         for path in directory.glob("*.json"):
             receipt = json.loads(path.read_text())
             if receipt.get("head_sha") == head_sha:
                 cost += receipt.get("settlement_cost_usd", 0)
+                incomplete = incomplete or bool(receipt["result"].get("usage_incomplete"))
                 cached.add(receipt["provider"])
                 usage_records.append({"provider": receipt["provider"], "usage": receipt.get("settlement_usage")})
         cost += sum(result.get("cost_usd") or 0 for result in run_results
                     if result.get("provider") not in cached)
         usage_records.extend(result for result in run_results if result.get("provider") not in cached)
-        return {"cost_usd": round(cost, 6), "tokens": sum_usage(usage_records)}
+        return {"cost_usd": round(cost, 6), "tokens": sum_usage(usage_records),
+                "cost_incomplete": incomplete or any(r.get("usage_incomplete") for r in run_results)}
 
     @classmethod
     def reconcile(cls, store, ledger, dry_run=False):
