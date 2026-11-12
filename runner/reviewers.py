@@ -2,7 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 
-import functools, json, os, pathlib, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, time
+import fcntl, functools, json, os, pathlib, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, time
 from contextlib import closing
 from urllib.parse import quote
 
@@ -62,15 +62,20 @@ def sweep_rev_homes(max_age_s=REV_HOME_MAX_AGE_S):
         p = os.path.join(REV_HOME_BASE, name)
         try:
             if now - os.path.getmtime(p) > max_age_s:
-                shutil.rmtree(p, ignore_errors=True)
+                with open(os.path.join(p, ".active"), "a") as lease:
+                    try:
+                        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    shutil.rmtree(p, ignore_errors=True)
         except OSError:
             pass
 
 
 
-def sh(cmd, cwd=None, env=None, stdin_text=None):
+def sh(cmd, cwd=None, env=None, stdin_text=None, timeout=None):
     return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, env=env,
-                          input=stdin_text,
+                          input=stdin_text, timeout=timeout,
                           stdin=(None if stdin_text is not None else subprocess.DEVNULL))
 
 
@@ -140,7 +145,7 @@ def _stable_claude_home(provider):
     return home
 
 
-def reviewer_env(provider, keys, subscription=False):
+def reviewer_env(provider, keys, subscription=False, *, round_home=False):
     """A minimal, isolated environment for a reviewer subprocess. Returns `(env, home)`; the caller
     must `cleanup_rev_home(home)` once the reviewer returns.
 
@@ -162,7 +167,7 @@ def reviewer_env(provider, keys, subscription=False):
     # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp. The caller
     # removes `home` once the reviewer returns (cleanup_rev_home), so these don't accumulate.
     os.makedirs(REV_HOME_BASE, exist_ok=True)
-    if provider in ("claude", "sonnet"):
+    if provider in ("claude", "sonnet") and not round_home:
         home = _stable_claude_home(provider)
     else:
         home = tempfile.mkdtemp(prefix=f"rev-{provider}-", dir=REV_HOME_BASE)
@@ -292,11 +297,9 @@ class ReviewPrompt(str):
 
     The text is the whole prompt, so every runner can keep treating it as a string. `shared` is the
     part every rubric of a review round has in common (the shared protocol and the pull request), and
-    `rubric` is the rest. run_claude sends them as two content blocks with a cache breakpoint after
-    the first, so the rubrics after the first one in a round read the pull request from the prompt
-    cache instead of paying to write it again. Anthropic only caches a prefix that ends where a
-    breakpoint is, so putting the shared part first in one text block would not be enough.
-    Codex, Kiro and pi get the same text in the same order as one string."""
+    `rubric` is the rest. RoundReviewers primes a saved user-message session with the shared
+    part, then sends each rubric independently. Plain-string runners still receive the whole text.
+    PR-authored content must never be appended to a system or developer prompt."""
 
     def __new__(cls, shared, rubric):
         self = super().__new__(cls, shared + rubric)
@@ -454,16 +457,12 @@ def _tool_trace(stream_lines, root):
     return trace, meta, result
 
 
-# Claude Code picks its own cache TTL (1h for subscribers, 5m otherwise), and the API rejects a
-# 1h breakpoint that comes after a 5m one, so the breakpoint claude_input adds must use the same
-# TTL as Claude Code's own. Pin both to 5m: a round's rubrics run back to back and every turn
-# refreshes the entry, and a 5m write costs 1.25x the input rate against 2x for 1h.
+# Pin Claude Code's own cache breakpoints to five minutes. A warm round refreshes the
+# shared primer prefix on each request. The runner never supplies an extra breakpoint.
 _CLAUDE_CACHE_TTL = "5m"
 
 
-# The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL. An older one keeps its
-# own 1h breakpoints, so the API would reject every request carrying our 5m breakpoint before them;
-# with an older or unidentifiable CLI the prompt goes as one block, uncached, as before.
+# The first release honoring the TTL override; the primer path additionally probes its flags.
 _CLAUDE_TTL_MIN_VERSION = (2, 1, 242)
 
 
@@ -481,21 +480,13 @@ def _claude_cache_env(env):
     return {**env, "CLAUDE_CODE_PROMPT_CACHE_TTL": _CLAUDE_CACHE_TTL}
 
 
-def claude_input(prompt, cache=True):
-    """The stream-json user message for one rubric. A ReviewPrompt becomes two text blocks with a
-    cache breakpoint after the shared one, so the next rubric of the round reads the pull request
-    from the cache. Claude Code passes the block's cache_control through to the API unchanged.
-    With `cache` false the whole prompt is one block with no breakpoint."""
-    shared = getattr(prompt, "shared", "")
-    if shared and cache:
-        content = [{"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}},
-                   {"type": "text", "text": prompt.rubric}]
-    else:
-        content = [{"type": "text", "text": str(prompt)}]
+def claude_input(prompt):
+    """One user block; Claude Code owns all cache breakpoints, including after tool calls."""
+    content = [{"type": "text", "text": str(prompt)}]
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
 
-def run_claude(prompt, cwd, model, env):
+def run_claude(prompt, cwd, model, env, *, session_args=(), timeout=None):
     # --disable-slash-commands drops skills entirely; read-only tools only. With the clean HOME in
     # reviewer_env this keeps the review independent of the runner's personal claude config. Stream
     # the prompt over stdin: large PR diffs can make a rendered rubric exceed the OS argv limit.
@@ -504,30 +495,36 @@ def run_claude(prompt, cwd, model, env):
     # did, and the events before it are the only record of what the reviewer looked at. Parsing is
     # tolerant — a malformed line is counted and skipped, and a stream with no result event falls
     # through to the same parse_error path a malformed json document took.
-    cache = _claude_honours_cache_ttl()
-    r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
-            "--disable-slash-commands",
-            # --tools RESTRICTS the built-in set; --allowedTools only grants permission within
-            # whatever set exists. With --allowedTools alone the reviewer still had Bash, and used
-            # it: of 427 traced tool calls, 295 were Bash and 278 of those SUCCEEDED. Reproduced
-            # directly in this environment's shape — `claude -p --allowedTools Read Grep Glob`
-            # answering "SHELL_IS_AVAILABLE" — so this was never a permission that was being
-            # declined, it was a shell nobody knew the reviewer had.
-            #
-            # That contradicts what the rest of this module is built on. reviewer_env calls the
-            # isolation load-bearing "with public transcripts and no redaction gate", and names its
-            # residual as a reviewer reading its OWN key from /proc/self/environ. A shell plus the
-            # egress a reviewer needs to reach its provider turns that residual into a direct
-            # exfiltration path. run_pi states the intended property outright: "a read-only tool set
-            # (PI_TOOLS, no bash) means it has no shell to leak it with." Now true here too.
-            #
-            # Both flags: --tools removes the tool, --allowedTools keeps the remaining three from
-            # prompting. --disallowedTools was the other candidate and is worse — it blocks Bash but
-            # leaves Write and Edit in the set.
-            "--tools", *_REVIEW_TOOLS,
-            "--allowedTools", *_REVIEW_TOOLS,
-            "--input-format", "stream-json"],
-           cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt, cache))
+    timed_out = False
+    try:
+        r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
+                "--disable-slash-commands",
+                # --tools RESTRICTS the built-in set; --allowedTools only grants permission within
+                # whatever set exists. With --allowedTools alone the reviewer still had Bash, and used
+                # it: of 427 traced tool calls, 295 were Bash and 278 of those SUCCEEDED. Reproduced
+                # directly in this environment's shape — `claude -p --allowedTools Read Grep Glob`
+                # answering "SHELL_IS_AVAILABLE" — so this was never a permission that was being
+                # declined, it was a shell nobody knew the reviewer had.
+                #
+                # That contradicts what the rest of this module is built on. reviewer_env calls the
+                # isolation load-bearing "with public transcripts and no redaction gate", and names its
+                # residual as a reviewer reading its OWN key from /proc/self/environ. A shell plus the
+                # egress a reviewer needs to reach its provider turns that residual into a direct
+                # exfiltration path. run_pi states the intended property outright: "a read-only tool set
+                # (PI_TOOLS, no bash) means it has no shell to leak it with." Now true here too.
+                #
+                # Both flags: --tools removes the tool, --allowedTools keeps the remaining three from
+                # prompting. --disallowedTools was the other candidate and is worse — it blocks Bash but
+                # leaves Write and Edit in the set.
+                "--tools", *_REVIEW_TOOLS,
+                "--allowedTools", *_REVIEW_TOOLS,
+                "--input-format", "stream-json", *session_args],
+               cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt), timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        timed_out = True
+        def decoded(value):
+            return value.decode(errors="replace") if isinstance(value, bytes) else (value or "")
+        r = subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr))
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     trace, meta = [], {}
     try:
@@ -559,6 +556,34 @@ def run_claude(prompt, cwd, model, env):
         # every persisted sink (PRIVATE_KEYS), and this says only what shape the stream had.
         out.update(text="", parse_error=str(e), tool_trace=trace, tool_trace_meta=meta,
                    raw_stdout=r.stdout[-3000:])
+    responses, active_id = {}, None
+    for line in r.stdout.splitlines():
+        try:
+            event = json.loads(line)
+            if event.get("type") == "stream_event":
+                delta = event.get("event", {})
+                if delta.get("type") == "message_start":
+                    active_id = delta["message"]["id"]
+                    responses.setdefault(active_id, {}).update(delta["message"].get("usage", {}))
+                elif delta.get("type") == "message_delta" and active_id:
+                    responses.setdefault(active_id, {}).update(delta.get("usage", {}))
+            elif event.get("type") == "assistant" and isinstance(event.get("message"), dict):
+                msg = event["message"]
+                if msg.get("usage") and msg.get("id"):
+                    # Assistant content fragments repeat start-of-message counters. The final
+                    # stream message_delta carries the actual output count; never overwrite it.
+                    usage = responses.setdefault(msg["id"], {})
+                    for key, value in msg["usage"].items():
+                        if key not in usage:
+                            usage[key] = value
+            if responses:
+                out["first_request_usage"] = next(iter(responses.values()))
+        except (ValueError, AttributeError, KeyError):
+            continue
+    if responses:
+        out["response_usage"] = list(responses.values())
+    if timed_out:
+        out.update(returncode=124, is_error=True, text="", error_message="Claude review timed out")
     return out
 
 

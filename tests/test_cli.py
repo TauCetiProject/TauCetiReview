@@ -134,6 +134,7 @@ def test_fable_review_preserves_exact_model_and_reported_cost():
         return billing._fake_runner(prompt, cwd, requested_model, env)
 
     with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(billing.review, "RoundReviewers", billing.DirectSessions))
         stack.enter_context(patch.object(billing.review, "run_claude", fake_claude))
         stack.enter_context(patch.object(billing.review, "reviewer_env", return_value=({}, None)))
         stack.enter_context(patch.object(billing.review, "cleanup_rev_home"))

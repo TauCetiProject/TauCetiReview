@@ -21,8 +21,9 @@ manual `/review` is exempt — it always re-reviews every rubric.)
 ## Rubrics
 
 Each agent's prompt is [`rubrics/_common.md`](rubrics/_common.md), then the pull request, then its
-angle file. Every rubric of a round starts with the same text, so Claude reviewers after the first
-read it from the prompt cache;
+angle file. Claude forks a shared primer; Codex reuses one thread and reverts each rubric's
+conversation before the next. Both keep PR content in user messages and reuse the shared prefix
+through the prompt cache. See [session lifecycle and validation](docs/review-prompt-caching.md);
 see [`rubrics/README.md`](rubrics/README.md) for the list and which angles can block.
 
 ## Reviewing it yourself

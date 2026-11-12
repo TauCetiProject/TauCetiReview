@@ -41,7 +41,26 @@ def _fake_runner(prompt, cwd, model, env):
             "usage": {"input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 50}}
 
 
+class DirectSessions:
+    """The billing tests stub model work, not provider-session protocol behavior."""
+    def __init__(self, *args):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def run(self, provider, prompt, cwd, model, **kwargs):
+        return {"claude": review.run_claude, "codex": review.run_codex}[provider](prompt, cwd, model, {})
+
+    def finish(self):
+        pass
+
+
 def _install_stubs():
+    review.RoundReviewers = DirectSessions
     review.run_claude = _fake_runner
     review.run_codex = _fake_runner
     review.run_pi = _fake_runner
