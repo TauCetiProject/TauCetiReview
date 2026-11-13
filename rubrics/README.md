@@ -41,3 +41,5 @@ template (TauCetiProject/TauCeti#33936), so PRs already open keep the scoreboard
 the angle does not run. Tau Ceti has a cutoff on GitHub and another on Forgejo, because each forge
 numbers its own PRs. The angle is added after the project's own list of rubrics, whether that list
 is the default or comes from its configuration.
+The review bot's own Mathlib bumps and lint repairs need no report, because no author runs the
+checklist on them.

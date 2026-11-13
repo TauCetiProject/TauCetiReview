@@ -40,11 +40,19 @@ because the checks behind it may not have run.
   one (count its code lines) and the note gives no reason it cannot be split; or a line answers
   `n/a` because the PR has no Lean declarations, and the diff adds a theorem. Leave what CI
   enforces to CI.
-- A PR that changes no Lean declaration (documentation, a toolchain bump) may answer every check
+- A PR that changes no Lean declaration (documentation, a workflow change) may answer every check
   `n/a`.
+- Two kinds of PR need no report, because the project's automation opens them and no author runs
+  the checklist.
+  - A Mathlib bump: its diff moves the Mathlib pin in `lake-manifest.json`. The same diff may
+    adapt Tau Ceti to the new Mathlib.
+  - A repair of the environment lint on `main`: its title and description say so, and its diff
+    changes or removes existing declarations without adding any.
 
 ## Verdict
 
+- `approve` a PR of either of those two kinds, with or without a report. A PR that does not fit
+  one of them in full is judged like any other, by the rest of this list.
 - `approve` when the block is complete, describes the current diff, and no line is contradicted
   by it.
 - `request_changes` when the block is missing; a check is missing or has no note; the Q2 note does
