@@ -21,6 +21,7 @@ if __name__ == "__main__" and os.environ.get("TAUCETI_CONF"):
     except Exception:
         _CONFIG_VALID = False
 
+from admission_policy import PHASED_RUBRICS, with_phased_rubrics
 from ledger import Ledger
 from verdict import is_unresolved, posts_review_thread, state_of
 
@@ -32,6 +33,33 @@ from verdict import is_unresolved, posts_review_thread, state_of
 DEFAULT_RUBRICS = ["correctness", "reuse", "scope", "attribution", "api-design",
                    "generality", "placement", "naming", "documentation", "proof-quality"]
 DEFAULT_RUBRICS = json.loads(os.environ.get("TAUCETI_RUBRICS", "[]")) or DEFAULT_RUBRICS
+
+
+def _reviewed_repository(repo):
+    """The repository under review by its qualified key, when a source binding names it. Under a
+    binding `repo` may spell that repository as a bare name or a URL, and a bare name would
+    otherwise read as GitHub's."""
+    try:
+        binding = json.loads(os.environ.get("TAUCETI_SOURCE_BINDING") or "null")
+        return binding["forge"]["kind"] + ":" + binding["forge"]["url"] + "/" + binding["name"]
+    except (ValueError, TypeError, KeyError):
+        return repo
+
+
+def rubrics_for(repo, pr):
+    """The rubrics PR number `pr` of `repo` is judged against, in run order.
+
+    The project's angles (the list in its configuration, or the defaults), then any being phased
+    in for that PR (`PHASED_RUBRICS` in admission_policy.py)."""
+    return with_phased_rubrics(DEFAULT_RUBRICS, _reviewed_repository(repo), pr)
+
+
+def table_rubrics():
+    """The rubric names read from a scoreboard that records its states only in its rendered table:
+    the project's angles and every rubric being phased in. A PR is still asked only for the
+    rubrics it is judged against, so a row no PR needs is read and ignored."""
+    return DEFAULT_RUBRICS + [rubric for rubric in PHASED_RUBRICS if rubric not in DEFAULT_RUBRICS]
+
 
 def thread_action_rubrics(candidates, ran, state_map, head):
     """Rubrics whose thread state must be reconciled by this invocation.
@@ -108,7 +136,8 @@ def main():
     parser.add_argument("--store", required=True)
     parser.add_argument("--board", required=True)
     parser.add_argument("--replies", required=True)
-    parser.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS))
+    parser.add_argument("--rubrics", default=None,
+                        help="comma-separated rubrics (default: those the PR is judged against)")
     args = parser.parse_args()
     decision, reason = "continue", "needs-review"
     try:
@@ -125,7 +154,8 @@ def main():
         pr_state = ledger["prs"].get(str(args.pr), {})
         board = json.loads(pathlib.Path(args.board).read_text())
         replies = json.loads(pathlib.Path(args.replies).read_text())
-        candidates = [r.strip() for r in args.rubrics.split(",") if r.strip()]
+        candidates = (rubrics_for(args.repo, args.pr) if args.rubrics is None
+                      else [r.strip() for r in args.rubrics.split(",") if r.strip()])
         if completed_before_preparation(board, args.head_sha, candidates, replies, pr_state):
             decision, reason = "unchanged", "completed"
     except Exception:

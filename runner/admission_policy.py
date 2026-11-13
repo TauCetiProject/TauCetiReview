@@ -16,6 +16,47 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
 
+# Rubrics being phased in: for each repository, the number of the last PR opened before the rubric
+# went live there, or None while it is not live. The rubric is run on, and required of, only PRs
+# numbered above that, after the others. A PR opened earlier keeps the scoreboard it has. Were the
+# rubric required of it, the missing row would hold the merge and nothing would add it: the worker
+# counts a head as reviewed once every row its scoreboard has is complete. The table lives in this
+# module so that the engine, the merge gate and the queue service read the same one.
+#
+# A repository is named as its review source names it: `owner/name` on GitHub, and the qualified
+# key `forgejo:<origin>/<owner>/<name>` on Forgejo. Each forge numbers its own PRs, so a repository
+# that lives on both has a cutoff on each.
+#
+# quality-pass checks the author's report of the checklist in the PR template, which only PRs
+# opened after TauCetiProject/TauCeti#33936 carry. Set its cutoff ahead of the newest PR, so that
+# the commit setting it reaches every reviewer and the queue service before a PR above it is
+# reviewed.
+PHASED_RUBRICS = {"quality-pass": {
+    "TauCetiProject/TauCeti": None,
+    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": None,
+}}
+
+
+def repository_key(repo):
+    """One spelling for each repository: a bare `owner/name` is on GitHub, and case is ignored."""
+    name = str(repo).strip().lower()
+    return name if "://" in name else "github:https://github.com/" + name
+
+
+def with_phased_rubrics(rubrics, repo, pr):
+    """`rubrics`, then each rubric being phased in that PR number `pr` of `repo` is judged against."""
+    rubrics = list(rubrics)
+    try:
+        number = int(pr)
+    except (TypeError, ValueError):
+        return rubrics
+    repo = repository_key(repo)
+    for rubric, cutoffs in PHASED_RUBRICS.items():
+        cutoff = {repository_key(name): after for name, after in cutoffs.items()}.get(repo)
+        if cutoff is not None and number > cutoff and rubric not in rubrics:
+            rubrics.append(rubric)
+    return rubrics
+
 
 def rebase_request_heads(comments, *, stalled=False):
     """Existing trusted, head-bound recovery holds, shared by sweep and service intake.

@@ -30,7 +30,7 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
     bootstrap()
 
 from merge import read_paths
-from handoff import DEFAULT_RUBRICS
+from handoff import DEFAULT_RUBRICS, rubrics_for, table_rubrics
 from admission_policy import (SCOREBOARD_MARKER, META_RE, TABLE_ROW_RE, WORD_STATE,
                               parse_meta, states_from_table as policy_states_from_table, current_scoreboards,
                               latest_current_scoreboard, load_comments, default_allow_files,
@@ -40,8 +40,8 @@ DEFAULT_ALLOW = default_allow_files(os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti
 
 
 def states_from_table(body):
-    """Preserve configured rubric names for legacy rendered scoreboards."""
-    return policy_states_from_table(body, DEFAULT_RUBRICS)
+    """Read a legacy rendered scoreboard for the project's rubric names and any being phased in."""
+    return policy_states_from_table(body, table_rubrics())
 
 
 def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_guard,
@@ -51,7 +51,7 @@ def decide_from_comments(comments, head_sha, required, paths, ci_build, bump_gua
     return evaluate_admission(comments, head_sha, required, paths, ci_build, bump_guard,
                               merge_path_prefix=merge_path_prefix,
                               merge_allow_file=DEFAULT_ALLOW if merge_allow_file is None else merge_allow_file,
-                              table_rubrics=DEFAULT_RUBRICS, scope=scope, now=now,
+                              table_rubrics=table_rubrics(), scope=scope, now=now,
                               merge_base_sha=merge_base_sha, self_tested=self_tested)
 
 
@@ -75,8 +75,9 @@ def main():
     ap.add_argument("--pr", required=True)
     ap.add_argument("--head-sha", required=True)
     ap.add_argument("--comments-file", required=True, help="JSON array of the PR's issue comments")
-    ap.add_argument("--rubrics", default=",".join(DEFAULT_RUBRICS),
-                    help="comma list of rubrics that must ALL be green to merge")
+    ap.add_argument("--rubrics", default=None,
+                    help="comma list of rubrics that must ALL be green to merge "
+                         "(default: those the PR is judged against)")
     ap.add_argument("--merge-base-sha", required=True,
                     help="merge base of the PR's base and head now; must match the scoreboard's")
     ap.add_argument("--paths-file", required=True,
@@ -91,7 +92,8 @@ def main():
     ap.add_argument("--conf")
     a = ap.parse_args()
 
-    required = {r for r in a.rubrics.split(",") if r}
+    required = (set(rubrics_for(a.repo, a.pr)) if a.rubrics is None
+                else {r for r in a.rubrics.split(",") if r})
     try:
         text = pathlib.Path(a.comments_file).read_text()
     except OSError:
