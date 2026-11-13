@@ -23,11 +23,24 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
 # counts a head as reviewed once every row its scoreboard has is complete. The table lives in this
 # module so that the engine, the merge gate and the queue service read the same one.
 #
+# A repository is named as its review source names it: `owner/name` on GitHub, and the qualified
+# key `forgejo:<origin>/<owner>/<name>` on Forgejo. Each forge numbers its own PRs, so a repository
+# that lives on both has a cutoff on each.
+#
 # quality-pass checks the author's report of the checklist in the PR template, which only PRs
 # opened after TauCetiProject/TauCeti#33936 carry. Set its cutoff ahead of the newest PR, so that
 # the commit setting it reaches every reviewer and the queue service before a PR above it is
 # reviewed.
-PHASED_RUBRICS = {"quality-pass": {"TauCetiProject/TauCeti": None}}
+PHASED_RUBRICS = {"quality-pass": {
+    "TauCetiProject/TauCeti": None,
+    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": None,
+}}
+
+
+def repository_key(repo):
+    """One spelling for each repository: a bare `owner/name` is on GitHub, and case is ignored."""
+    name = str(repo).strip().lower()
+    return name if "://" in name else "github:https://github.com/" + name
 
 
 def with_phased_rubrics(rubrics, repo, pr):
@@ -37,8 +50,9 @@ def with_phased_rubrics(rubrics, repo, pr):
         number = int(pr)
     except (TypeError, ValueError):
         return rubrics
+    repo = repository_key(repo)
     for rubric, cutoffs in PHASED_RUBRICS.items():
-        cutoff = {name.lower(): after for name, after in cutoffs.items()}.get(str(repo).lower())
+        cutoff = {repository_key(name): after for name, after in cutoffs.items()}.get(repo)
         if cutoff is not None and number > cutoff and rubric not in rubrics:
             rubrics.append(rubric)
     return rubrics

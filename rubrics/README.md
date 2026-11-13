@@ -38,4 +38,6 @@ them: in a pre-launch test on 16 merged PRs, the checklist and a plain review ea
 the other missed. It is run on, and required of, only PRs opened after the checklist reached the
 template (TauCetiProject/TauCeti#33936), so PRs already open keep the scoreboards they have:
 `PHASED_RUBRICS` in `runner/admission_policy.py` holds the cutoff PR number, and until that is set
-the angle does not run.
+the angle does not run. Tau Ceti has a cutoff on GitHub and another on Forgejo, because each forge
+numbers its own PRs. The angle is added after the project's own list of rubrics, whether that list
+is the default or comes from its configuration.

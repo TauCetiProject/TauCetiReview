@@ -26,15 +26,21 @@ import merge_from_scoreboard as gate  # noqa: E402
 import test_billing as tb  # noqa: E402  (the stubbed-reviewer harness)
 
 REPO = "TauCetiProject/TauCeti"
+FORGEJO = "forgejo:https://git.taucetiproject.org/taucetiproject/tauceti"  # as a review source names it
 HEAD = "a" * 40
 BASE = "b" * 40
 TEN = list(handoff.DEFAULT_RUBRICS)
 PHASED = "quality-pass"
 
 
+def cutoffs(table):
+    """Patch the phased rubric's cutoffs, in place, as the shipped constant is read."""
+    return patch.dict(admission_policy.PHASED_RUBRICS, {PHASED: table})
+
+
 def cutoff(value, repo=REPO):
-    """Patch the phased rubric's cutoff for `repo`, in place, as the shipped constant is read."""
-    return patch.dict(admission_policy.PHASED_RUBRICS, {PHASED: {repo: value}})
+    """Patch the phased rubric's cutoff for `repo`, the only repository it then has one for."""
+    return cutoffs({repo: value})
 
 
 def scoreboard(states):
@@ -43,7 +49,17 @@ def scoreboard(states):
              "updated_at": "2026-01-01T00:00:00Z"}]
 
 
+def table_scoreboard(words):
+    """A scoreboard from before `states` was recorded: its verdicts are only in the rendered table."""
+    meta = {"head_sha": HEAD, "merge_base_sha": BASE, "mode": "commit"}
+    rows = [f"| ✅ | [{rubric}](url) | {word} | `judge` | summary |" for rubric, word in words.items()]
+    body = "\n".join(["<!--tauceti-scoreboard-->", "| | rubric | state | judge | summary |",
+                      "|---|---|---|---|---|", *rows, f"<!--tauceti-meta:v1 {json.dumps(meta)}-->"])
+    return [{"body": body, "updated_at": "2026-01-01T00:00:00Z"}]
+
+
 TEN_GREEN = {r: "green" for r in TEN}
+TEN_APPROVED = {r: "approved" for r in TEN}
 
 
 class RubricsFor(unittest.TestCase):
@@ -73,14 +89,46 @@ class RubricsFor(unittest.TestCase):
         handoff.rubrics_for(REPO, 1).append("x")
         self.assertEqual(handoff.DEFAULT_RUBRICS, TEN)
 
-    def test_a_configured_rubric_list_is_used_as_it_is(self):
+    def test_each_forge_numbers_its_own_prs(self):
+        with cutoffs({REPO: 100, FORGEJO: 3}):
+            self.assertEqual(handoff.rubrics_for(FORGEJO, 3), TEN)
+            self.assertEqual(handoff.rubrics_for(FORGEJO, 4), TEN + [PHASED])
+            self.assertEqual(handoff.rubrics_for(REPO, 4), TEN)
+            self.assertEqual(handoff.rubrics_for(REPO, 101), TEN + [PHASED])
+        with cutoffs({REPO: 100, FORGEJO: None}):
+            self.assertEqual(handoff.rubrics_for(FORGEJO, 101), TEN)
+
+    def test_a_repository_has_one_name_however_it_is_spelled(self):
+        with cutoff(100):
+            for spelling in ("github:https://github.com/taucetiproject/tauceti", " TAUCETIPROJECT/tauceti "):
+                self.assertEqual(handoff.rubrics_for(spelling, 101), TEN + [PHASED])
+        with cutoff(3, repo="forgejo:https://git.example/Owner/Repo"):
+            self.assertEqual(handoff.rubrics_for("forgejo:https://git.example/owner/repo", 4), TEN + [PHASED])
+            self.assertEqual(handoff.rubrics_for("Owner/Repo", 4), TEN)  # the same name, on GitHub
+
+    def test_a_source_binding_names_the_repository_under_review(self):
+        binding = {"forge": {"kind": "forgejo", "url": "https://git.taucetiproject.org"},
+                   "name": "TauCetiProject/TauCeti", "id": 1}
+        with cutoffs({REPO: 100, FORGEJO: 3}):
+            with patch.dict(os.environ, TAUCETI_SOURCE_BINDING=json.dumps(binding)):
+                for spelling in (REPO, "https://git.taucetiproject.org/TauCetiProject/TauCeti", FORGEJO):
+                    self.assertEqual(handoff.rubrics_for(spelling, 3), TEN)
+                    self.assertEqual(handoff.rubrics_for(spelling, 4), TEN + [PHASED])
+            for unreadable in ("not json", "{}", "[]"):
+                with patch.dict(os.environ, TAUCETI_SOURCE_BINDING=unreadable):
+                    self.assertEqual(handoff.rubrics_for(REPO, 4), TEN)
+                    self.assertEqual(handoff.rubrics_for(FORGEJO, 4), TEN + [PHASED])
+
+    def test_a_configured_rubric_list_is_phased_in_the_same_way(self):
         code = ("import admission_policy, handoff; "
                 "admission_policy.PHASED_RUBRICS['quality-pass'] = {'Owner/Repo': 1}; "
-                "print(handoff.rubrics_for('Owner/Repo', 5))")
+                "print(handoff.rubrics_for('Owner/Repo', 1), handoff.rubrics_for('Owner/Repo', 5), "
+                "handoff.rubrics_for('Other/Repo', 5), handoff.table_rubrics())")
         out = subprocess.run([sys.executable, "-c", code], cwd=ROOT / "runner", check=True,
                              capture_output=True, text=True,
                              env={**os.environ, "TAUCETI_RUBRICS": '["custom"]'}).stdout
-        self.assertEqual(out.strip(), "['custom']")
+        self.assertEqual(out.strip(),
+                         "['custom'] ['custom', 'quality-pass'] ['custom'] ['custom', 'quality-pass']")
 
 
 class PolicyTable(unittest.TestCase):
@@ -107,11 +155,21 @@ class PolicyTable(unittest.TestCase):
         self.assertEqual(mine, ["correctness"])
 
     def test_the_shipped_table_is_well_formed(self):
-        for rubric, cutoffs in admission_policy.PHASED_RUBRICS.items():
+        for rubric, table in admission_policy.PHASED_RUBRICS.items():
             self.assertTrue((ROOT / "rubrics" / f"{rubric}.md").is_file(), rubric)
-            for repo, after in cutoffs.items():
-                self.assertRegex(repo, r"^[^/\s]+/[^/\s]+$")
-                self.assertTrue(after is None or (type(after) is int and after > 0), after)
+            keys = [admission_policy.repository_key(repo) for repo in table]
+            self.assertEqual(len(set(keys)), len(keys), keys)
+            for key, after in zip(keys, table.values()):
+                self.assertRegex(key, r"^(github|forgejo):https://[^/\s]+/[^/\s]+/[^/\s]+$")
+                self.assertTrue(after is None or (type(after) is int and after >= 0), after)
+
+    def test_repositories_are_named_as_the_review_sources_name_them(self):
+        from tauceti_tools.forge import GITHUB, Forge, RepositoryRef
+        named = {admission_policy.repository_key(repo) for repo in admission_policy.PHASED_RUBRICS[PHASED]}
+        tauceti = "TauCetiProject/TauCeti"
+        self.assertEqual(admission_policy.repository_key(tauceti), RepositoryRef(GITHUB, tauceti).key)
+        self.assertEqual(FORGEJO, RepositoryRef(Forge("forgejo", "https://git.taucetiproject.org"), tauceti).key)
+        self.assertEqual(named, {RepositoryRef(GITHUB, tauceti).key, FORGEJO})
 
     def test_the_policy_module_stays_free_of_configuration(self):
         code = ("import sys; import admission_policy; "
@@ -145,10 +203,34 @@ class MergeGate(unittest.TestCase):
             self.assertFalse(self.decide(101, TEN_GREEN | {PHASED: "blocking_request"})["merge"])
             self.assertTrue(self.decide(101, TEN_GREEN | {PHASED: "green"})["merge"])
 
-    def run_cli(self, pr, states, *extra):
+    def decide_table(self, pr, words):
+        return gate.decide_from_comments(
+            table_scoreboard(words), HEAD, set(handoff.rubrics_for(REPO, pr)), {"TauCeti/Example.lean"},
+            "SUCCESS", "", merge_path_prefix="TauCeti/", scope="SUCCESS", merge_base_sha=BASE)
+
+    def test_a_scoreboard_with_only_its_table_is_read_for_the_new_row(self):
+        with cutoff(100):
+            self.assertTrue(self.decide_table(100, TEN_APPROVED)["merge"])
+            self.assertFalse(self.decide_table(101, TEN_APPROVED)["merge"])
+            self.assertTrue(self.decide_table(101, TEN_APPROVED | {PHASED: "approved"})["merge"])
+            self.assertFalse(self.decide_table(101, TEN_APPROVED | {PHASED: "changes requested"})["merge"])
+            body = table_scoreboard(TEN_APPROVED | {PHASED: "changes requested"})[0]["body"]
+            self.assertEqual(gate.states_from_table(body), TEN_GREEN | {PHASED: "blocking_request"})
+        with cutoff(None):
+            self.assertTrue(self.decide_table(101, TEN_APPROVED)["merge"])
+
+    def test_a_table_is_not_read_for_a_rubric_the_project_does_not_have(self):
+        # An explicit --rubrics selection decides what is required, not what a legacy table is read for.
+        board = table_scoreboard(TEN_APPROVED | {"custom": "approved"})
+        with cutoff(100):
+            self.assertNotIn("custom", gate.states_from_table(board[0]["body"]))
+            self.assertFalse(self.run_cli(100, None, "--rubrics", "custom", comments=board)["merge"])
+            self.assertTrue(self.run_cli(100, None, "--rubrics", "scope", comments=board)["merge"])
+
+    def run_cli(self, pr, states, *extra, comments=None):
         with tempfile.TemporaryDirectory() as tmp:
             d = pathlib.Path(tmp)
-            (d / "comments.json").write_text(json.dumps(scoreboard(states)))
+            (d / "comments.json").write_text(json.dumps(comments or scoreboard(states)))
             (d / "paths.z").write_bytes(b"TauCeti/Example.lean\0")
             argv = ["merge_from_scoreboard", "--repo", REPO, "--pr", str(pr), "--head-sha", HEAD,
                     "--comments-file", str(d / "comments.json"), "--merge-base-sha", BASE,
