@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   tests:
-    runs-on: ${{ github.repository == 'TauCetiProject/TauCetiReview' && fromJSON(format('["nscloud-ubuntu-24.04-amd64-2x4-with-features","namespace-features:github.run-id={0}"]', github.run_id)) || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
