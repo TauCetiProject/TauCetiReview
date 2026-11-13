@@ -292,13 +292,13 @@ class HandoffProbe(unittest.TestCase):
 class Engine(unittest.TestCase):
     """The engine, run without --rubrics, reviews a PR against the rubrics it is judged by."""
 
-    def ran(self, pr, *extra):
+    def ran(self, pr, *extra, repo="Owner/Repo"):
         tb._install_stubs()
         tb._VERDICTS.clear()
         d, rubric_dir, store = tb._workspace(TEN + [PHASED])
         (rubric_dir / "references").mkdir()  # the naming rubric splices its reference document
         (rubric_dir / "references" / "naming-conventions.md").write_text("naming conventions\n")
-        argv = ["review", "--pr", str(pr), "--repo", "Owner/Repo", "--rubrics-dir", str(rubric_dir),
+        argv = ["review", "--pr", str(pr), "--repo", repo, "--rubrics-dir", str(rubric_dir),
                 "--tool-cwd", str(d / "code"), "--diff-file", str(d / "diff.txt"),
                 "--store", str(store), "--head-sha", HEAD, "--mode", "commit",
                 "--auth", "subscription", "--no-post", "--providers", "claude",
@@ -316,6 +316,13 @@ class Engine(unittest.TestCase):
             above = self.ran(101)
             self.assertEqual(above["ran"], TEN + [PHASED])
             self.assertEqual(above["states"], TEN_GREEN | {PHASED: "green"})
+
+    def test_a_native_pr_is_reviewed_by_its_own_forges_cutoff(self):
+        native = "forgejo:https://git.example/owner/repo"
+        with cutoffs({"Owner/Repo": 100, native: 3}):
+            self.assertEqual(self.ran(3, repo=native)["ran"], TEN)
+            self.assertEqual(self.ran(4, repo=native)["ran"], TEN + [PHASED])
+            self.assertEqual(self.ran(4)["ran"], TEN)
 
     def test_the_angle_does_not_run_while_it_is_not_live(self):
         with cutoff(None, repo="Owner/Repo"):
