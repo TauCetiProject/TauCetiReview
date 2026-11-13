@@ -139,6 +139,28 @@ def test_kiro_macos_uses_native_private_data_path():
         reviewers.cleanup_rev_home(isolated_home)
 
 
+
+def test_claude_attempts_reuse_one_empty_home():
+    # Claude Code puts HOME paths in its system prompt, ahead of the cached rubric prefix, so every
+    # attempt of a process must see the same HOME path. Each must still start empty.
+    env1, home1 = reviewers.reviewer_env("claude", {"anthropic": "k"})
+    try:
+        pathlib.Path(home1, "left-by-attempt-1").write_text("x")
+        assert oct(os.stat(home1).st_mode & 0o777) == "0o700"
+    finally:
+        reviewers.cleanup_rev_home(home1)
+    env2, home2 = reviewers.reviewer_env("sonnet", {"anthropic": "k"})
+    env3, home3 = reviewers.reviewer_env("claude", {"anthropic": "k"})
+    try:
+        assert home3 == home1 and env3["HOME"] == env1["HOME"]
+        assert os.listdir(home3) == []           # recreated, nothing carried over
+        assert home2 != home1                     # sonnet keeps its own
+        assert reviewers._CLAUDE_HOME_TOKEN in home1 and len(reviewers._CLAUDE_HOME_TOKEN) == 16
+    finally:
+        reviewers.cleanup_rev_home(home2)
+        reviewers.cleanup_rev_home(home3)
+    assert not os.path.exists(home1)
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:

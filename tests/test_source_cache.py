@@ -97,7 +97,7 @@ class Sources(unittest.TestCase):
         # An explicitly retained caller workspace uses its old in-place Git preparation.
         (self.base / 'retry/user-note').write_text('keep')
         with patch.object(cli, 'run', run), patch.object(source_tree, 'copy_tree', side_effect=AssertionError('copied existing work')):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(RuntimeError):
                 cli.prepare_mathlib_source(manifest, self.base / 'retry', self.directory)
         self.assertEqual((self.base / 'retry/user-note').read_text(), 'keep')
 
