@@ -30,9 +30,9 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
 # quality-pass checks the author's report of the checklist in the PR template, which only PRs
 # opened after TauCetiProject/TauCeti#33936 carry. Set its cutoff ahead of the newest PR, so that
 # the commit setting it reaches every reviewer and the queue service before a PR above it is
-# reviewed.
+# reviewed. Forgejo's stays unset while the only PRs opened there are tests of the migration.
 PHASED_RUBRICS = {"quality-pass": {
-    "TauCetiProject/TauCeti": None,
+    "TauCetiProject/TauCeti": 42500,
     "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": None,
 }}
 
