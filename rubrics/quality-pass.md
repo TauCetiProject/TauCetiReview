@@ -22,10 +22,10 @@ because the checks behind it may not have run.
 
 - The PR description carries the `Quality pass:` block, with a line for each check in the
   template. Each line begins `changed`, `checked`, `declined` or `n/a` and has a note saying what
-  changed, what was checked, or what was left unfixed or not run, and why. A placeholder left as
-  the template has it counts as missing.
-- A line that begins `declined` and says the check was not run is complete: what this rubric asks
-  of the Q2 and Q3 notes concerns checks that were run.
+  changed, what was checked, or what was left unfixed and why. A placeholder left as the template
+  has it counts as missing.
+- A check that was not run reads `declined — not run`. That line is complete: what this rubric
+  asks of the Q2 and Q3 notes concerns checks that were run.
 - The note on duplicates in Tau Ceti (Q2 in the template) says what the author looked for.
 - The note on hypotheses (Q3) names every theorem the diff adds or changes, and puts each of its
   hypotheses and instance arguments, including those from `variable` lines, in one of the
