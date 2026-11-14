@@ -57,3 +57,4 @@ jobs:
       - run: python tests/test_reviewer_no_shell.py
       - run: python tests/test_prompt_refs.py
       - run: python tests/test_prompt_cache.py
+      - run: python tests/test_reviewer_sessions.py

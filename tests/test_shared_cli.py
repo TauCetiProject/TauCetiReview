@@ -73,17 +73,41 @@ class SharedCLI(unittest.TestCase):
                 codex = binary / 'codex'
                 calls = root / 'model-calls'
                 last_prompt = root / 'last-prompt'
+                (root / '.codex').mkdir()
+                (root / '.codex/auth.json').write_text('{}')
                 codex.write_text('#!' + sys.executable + '\n' + '''import json, os, re, sys
 assert not any(key.startswith(('GH_', 'TAUCETI_FORGEJO_', 'TAUCETI_SOURCE_', 'GIT_CONFIG_')) for key in os.environ)
 assert 'GIT_NO_LAZY_FETCH' not in os.environ
 assert not any(key in os.environ for key in ('TAUCETI_CONF', 'TAUCETI_CONF_SOURCE', 'TAUCETI_CONF_SNAPSHOT'))
-prompt = sys.stdin.read()
-marker = re.search(r'TAUCETI-VERDICT-[0-9a-f]+', prompt)[0]
-with open(__CALLS__, 'a') as stream: stream.write('called\\n')
-with open(__PROMPT__, 'w') as stream: stream.write(prompt)
-print(json.dumps({'type':'item.completed','item':{'type':'agent_message',
- 'text':marker+'\\n'+json.dumps({'verdict':'approve','summary':'Style is clear.'})}}))
-print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_tokens':1}}))
+shared = ''
+turns = []
+def send(value): print(json.dumps(value), flush=True)
+for line in sys.stdin:
+ message = json.loads(line)
+ method, params = message.get('method'), message.get('params', {})
+ if method == 'initialized': continue
+ result = {}
+ if method == 'thread/start': result = {'thread': {'id': 'test-thread'}, 'model': params['model']}
+ elif method == 'thread/turns/list': result = {'data': [{'id': t} for t in turns], 'nextCursor': None}
+ elif method == 'thread/revert': turns = ['primer']
+ elif method == 'turn/start':
+  prompt = params['input'][0]['text']
+  marker = re.search(r'TAUCETI-VERDICT-[0-9a-f]+', prompt)
+  if marker:
+   turn = 'rubric'
+   text = marker[0]+'\\n'+json.dumps({'verdict':'approve','summary':'Style is clear.'})
+   with open(__CALLS__, 'a') as stream: stream.write('called\\n')
+   with open(__PROMPT__, 'w') as stream: stream.write(shared + prompt)
+  else:
+   turn, shared, text = 'primer', prompt, 'READY'
+  turns.append(turn)
+  send({'id': message['id'], 'result': {'turn': {'id': turn}}})
+  send({'method':'item/completed','params': {'turnId':turn,'item': {'type':'agentMessage','text':text}}})
+  send({'method':'thread/tokenUsage/updated','params': {'turnId':turn,'tokenUsage':{
+   'total':{'inputTokens':len(turns)},'last':{'inputTokens':1,'outputTokens':1}}}})
+  send({'method':'turn/completed','params': {'turn':{'id':turn,'status':'completed'}}})
+  continue
+ send({'id': message['id'], 'result': result})
 '''.replace('__CALLS__', repr(str(calls))).replace('__PROMPT__', repr(str(last_prompt))))
                 codex.chmod(0o700)
                 model_program = codex.read_text()

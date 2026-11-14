@@ -108,9 +108,11 @@ Add `--post` to publish. Useful flags:
 2. Fetches the head and merge-base commits shallowly once, generating the canonical patch and
    exact-head source from those objects. Builds the read-only reviewer workspace: the source, roadmap
    repo, and (unless `--no-mathlib`) the pinned Mathlib source for `reuse`/`naming` to grep.
-3. Runs each rubric through `claude -p`, `codex exec`, exact-model `kiro-cli chat`, or the `pi`
+3. Runs each rubric through `claude -p` forks from a shared primer, a local Codex app-server
+   thread reverted between rubrics, exact-model `kiro-cli chat`, or the `pi`
    agent against OpenRouter, **read-only** (`Read`/`Grep`/`Glob`, or pi's `read`/`grep`/`ls` —
-   no shell, no writes). In `--auth subscription` mode Claude, Codex, and Kiro use the logged-in
+   Claude has no shell; Codex shell commands use its read-only sandbox). In
+   `--auth subscription` mode Claude, Codex, and Kiro use the logged-in
    subscription; the OpenRouter reviewers are pay-per-token and use
    `OPENROUTER_API_KEY`. Each reviewer runs in a **clean room**: a throwaway HOME seeded with only
    its own credential, so it ignores your personal `CLAUDE.md` / `AGENTS.md`, skills, plugins, and
@@ -195,8 +197,9 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   config/`AGENTS.md`, skills, and MCP servers do **not** influence the review — two people running
   the same rubrics on the same PR get reviews that differ only by the model, not by their local
   setup. (The repo's own in-tree `CLAUDE.md` is still visible, as part of the code under review.)
-  On macOS, where the login lives in the keychain rather than a credential file, it falls back to
-  your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
+  Claude/Codex caching requires copyable credentials in the isolated HOME. If the login is
+  available only from the macOS keychain, use `--auth api` or configure an isolated credential
+  file; the cache path will not operate on your personal session directory.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
 - **Concurrent reviewers.** Before spending inference, a contributing run acquires a renewable
@@ -258,3 +261,6 @@ acquisitions, or the Fleet cleanup command using the same collector, remove
 unleased publications after the existing repository-cache publication age of one
 day, and recover interrupted publication/deletion. No cache size or worker-count
 limit is introduced. Removing the environment setting restores private preparation.
+
+See [shared PR caching](docs/review-prompt-caching.md) for primer lifecycle, cost accounting,
+client compatibility requirements, and opt-in native/live acceptance tests.

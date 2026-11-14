@@ -18,6 +18,8 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
 import archive
 from dataclasses import dataclass, field
 
+from reviewer_sessions import RoundReviewers, add_usage, subtract_usage
+from review_attempts import Attempts, fingerprint
 from ledger import Ledger
 from handoff import (DEFAULT_RUBRICS, can_reuse_completed_review, has_unhandled_contest,
                      rubrics_for, thread_action_rubrics)
@@ -41,7 +43,9 @@ from render import meta_block, render_contest_reply, render_scoreboard, render_t
 # raw_stdout joined these when the reviewer moved to stream-json: its tail is the last events of
 # the stream, and a tool_result block carries the file the reviewer just read. Kept in-process
 # for a local operator's diagnosis, never persisted.
-PRIVATE_KEYS = ("session_id", "raw_stderr", "raw_stdout", "error_message", "error_events")
+PRIVATE_KEYS = ("session_id", "raw_stderr", "raw_stdout", "error_message", "error_events",
+                "_receipt_verdict", "_receipt_prompt_sha256", "_receipt_error_kind",
+                "_receipt_model_unavailable")
 
 
 def public_record(value):
@@ -60,9 +64,10 @@ def public_record(value):
 # otherwise was raw provider text nobody may print. A named kind carries the diagnosis without the
 # payload. Ordered: the first pattern to match wins, so the specific precede `unknown`.
 _ERROR_KINDS = (
+    ("client_incompatible", re.compile(r"Update (?:Codex|Claude Code):|Review caching needs an isolated provider login", re.I)),
     ("local_admission", re.compile(r"^tauceti-local-admission:", re.M)),
     ("not_authenticated", re.compile(r"not logged in|/login|invalid authentication|unauthorized|401"
-                                     r"|token has been revoked|failed to authenticate", re.I)),
+                                     r"|token has been revoked|failed to authenticate|invalid API key", re.I)),
     # The subscription CLIs report an exhausted plan as prose, with no status code anywhere:
     # "You've hit your session limit · resets 9:30pm (UTC)", "You've hit your weekly limit",
     # "You've hit your monthly spend limit". Every one of those is a wait, never a review.
@@ -77,7 +82,7 @@ _ERROR_KINDS = (
 
 # Kinds that mean "the provider could not serve ANY rubric right now", as opposed to "this rubric's
 # call went wrong". Every one of them will hit the next rubric identically, so the round is over.
-PROVIDER_DOWN_KINDS = frozenset({"not_authenticated", "quota_exhausted", "rate_limited", "local_admission"})
+PROVIDER_DOWN_KINDS = frozenset({"not_authenticated", "quota_exhausted", "rate_limited", "local_admission", "client_incompatible"})
 
 # How many consecutive provider-down rubrics end the round. Two, not one: a single 401 can be a
 # token rotating under a long round, and the retry inside run_rubric already covers the blip. Two in
@@ -90,6 +95,7 @@ PROVIDER_DOWN_EXIT = 3
 # How the abort names each cause on its final log line. Plain operator English rather than the token,
 # because that line is what a driving worker reads to classify the failure.
 _PROVIDER_DOWN_PHRASE = {
+    "client_incompatible": "the reviewer client needs an update or an isolated login",
     "local_admission": "local Claude admission is unavailable",
     "not_authenticated": "reviewer authentication failed",
     "quota_exhausted": "the provider's subscription window is exhausted",
@@ -109,6 +115,8 @@ def error_kind(res):
 
     Adapters put native CLI error messages in `error_message`. Model answers and
     command output are never inputs to failure classification."""
+    if res.get("_receipt_error_kind") in {*[kind for kind, _ in _ERROR_KINDS], "unknown_error", "no_verdict", "rate_limited"}:
+        return res["_receipt_error_kind"]
     hay = f"{res.get('raw_stderr') or ''}\n{res.get('parse_error') or ''}\n{res.get('error_message') or ''}"
     for kind, pattern in _ERROR_KINDS:
         if pattern.search(hay):
@@ -171,7 +179,7 @@ def stderr_summary(res, limit=200):
 
 
 def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
-                       scoreboard_md, rubrics_version, mode=None):
+                       scoreboard_md, rubrics_version, mode=None, cost_incomplete=False):
     """Durable round record for the archive (production and shadow rounds alike). `mode` overrides
     a.mode so a contest-only commit round is recorded as a reply round (it must not count toward the
     review budget)."""
@@ -201,7 +209,8 @@ def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
             "rubrics_published": prov.get("rubrics_published"),
             "diff_sha256": prov.get("diff_sha256"), "ran": ran,
             "run_ids": run_ids, "states": states,
-            "overall": overall, "cost": round_cost, "halted_at": halted,
+            "overall": overall, "cost": round_cost, "cost_incomplete": cost_incomplete or None,
+            "halted_at": halted,
             "scoreboard_sha256": hashlib.sha256(scoreboard_md.encode()).hexdigest(),
             "fidelity": "exact"}
     try:
@@ -281,6 +290,7 @@ class RunContext:
     ledger: Ledger
     spent_today: float
     pr_state: dict = field(default_factory=dict)  # PR-level publication write-ahead marker
+    sessions: object = None       # round-scoped provider primers, installed by main
     codex_model_explicit: bool = False   # --codex-model was passed → honor the pin, skip auto-fallback
     ran: list = field(default_factory=list)
     run_results: list = field(default_factory=list)
@@ -349,22 +359,78 @@ def run_rubric(ctx, rubric):
     # base_context is the same for every rubric of the round, so its prompt prefix can be cached;
     # the reactivation block is per-rubric and goes after the rubric text.
     prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context, marker, reblock)
+    cached_round = ctx.sessions is not None
+    receipts = None
+    if cached_round:
+        template = str(prompt).replace(marker, "<one-time-marker>")
+        receipts = Attempts(outdir, rubric, fingerprint(a.repo, a.pr, head, round_num,
+                            rubrics_version, template, a.auth, os.path.realpath(a.tool_cwd),
+                            # Dispatch may downgrade Codex during the round. Recovery
+                            # identity uses the configured models, not mutable runners.
+                            sorted(providers), a.claude_model, a.codex_model or CODEX_MODEL,
+                            a.kiro_model),
+                            ctx.ledger, day, a.dry_run, head_sha=head)
     # Pin the provider to whoever first reviewed this rubric, so a follow-up audits its own
     # prior finding (and an author can't shop for a softer model); else roll at random over
     # the available providers. A pinned provider that is no longer available is re-drawn.
     provider = (cf_prev.get("provider") if cf_prev and cf_prev.get("provider") in providers
                 else random.choice(providers))
+    if receipts and receipts.saved and receipts.saved[0]["provider"] in providers:
+        provider = receipts.saved[0]["provider"]
     fn, model = runners[provider]
+    if (receipts and receipts.saved and provider == "codex" and not ctx.codex_model_explicit
+            and receipts.saved[0]["model"] == CODEX_FALLBACK_MODEL):
+        # A prior rubric may already have established the permitted downgrade
+        # before a crash. Recover its paid fallback attempt without re-probing.
+        model = CODEX_FALLBACK_MODEL
+    if (ctx.sessions is not None and provider in ("claude", "sonnet", "codex")
+            and hasattr(ctx.sessions, "needs_primer") and not (receipts and receipts.saved)
+            and ctx.sessions.needs_primer(provider, prompt, a.tool_cwd, model)
+            and ctx.spent_today + 2 * a.max_call_cost > a.daily_budget):
+        return False  # reserve for both the primer and the rubric
     started_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     attempts, t0 = [], time.monotonic()
 
     def attempt():
+        nonlocal marker, prompt
         t = time.monotonic()
-        env, rev_home = reviewer_env(provider, keys, subscription)
-        try:
-            r = fn(prompt, a.tool_cwd, model, env)
-        finally:
-            cleanup_rev_home(rev_home)   # throwaway HOME, one per attempt — don't accumulate
+        marker = "TAUCETI-VERDICT-" + secrets.token_hex(12)
+        prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context, marker, reblock)
+        if ctx.sessions is not None and hasattr(ctx.sessions, "release_other_providers"):
+            ctx.sessions.release_other_providers(provider)
+        cached = ctx.sessions is not None and provider in ("claude", "sonnet", "codex")
+        if cached:
+            receipt = receipts.replay(provider, model)
+            if receipt is not None:
+                r = dict(receipt["result"])
+                r.update(_receipt_verdict=receipt["verdict"],
+                         _receipt_prompt_sha256=receipt["prompt_sha256"],
+                         _receipt_error_kind=receipt["error_kind"],
+                         _receipt_model_unavailable=receipt["model_unavailable"])
+            else:
+                primer_cost, primer_usage = 0, {}
+                def checkpoint_primer(result):
+                    nonlocal primer_cost, primer_usage
+                    primer_cost = result.get("cost_usd") or 0
+                    primer_usage = result.get("usage") or {}
+                    receipts.record(provider, model, public_record(result), None,
+                                    hashlib.sha256(prompt.shared.encode()).hexdigest(), None, False,
+                                    phase="primer")
+                r = ctx.sessions.run(provider, prompt, a.tool_cwd, model, on_primer=checkpoint_primer)
+                verdict = extract_verdict(r.get("text", ""), marker) if not _cli_reports_failure(r) else None
+                receipts.record(provider, model, public_record(r), verdict,
+                                hashlib.sha256(prompt.encode()).hexdigest(),
+                                error_kind(r) if verdict is None else None, codex_model_unavailable(r),
+                                settlement_cost=max(0, (r.get("cost_usd") or 0) - primer_cost),
+                                settlement_usage=subtract_usage(r.get("usage"), primer_usage))
+                ctx.sessions.finish()
+            ctx.spent_today = ctx.ledger.spent(day)
+        else:
+            env, rev_home = reviewer_env(provider, keys, subscription)
+            try:
+                r = fn(prompt, a.tool_cwd, model, env)
+            finally:
+                cleanup_rev_home(rev_home)
         # Keep each attempt's execution facts: the retry path returns only the last result, but the
         # first attempt's spend/usage/failure is provenance too. error_kind rides along because it is
         # the only field that says *why* an attempt failed: a total auth failure otherwise reads as
@@ -372,7 +438,8 @@ def run_rubric(ctx, rubric):
         # (TauCetiReview#105). It is a closed vocabulary, so unlike the stderr it derives from, it is
         # safe in a record that gets committed and pushed.
         attempts.append({k: r[k] for k in ("returncode", "cost_usd", "cost_estimated",
-                                           "price_inherited", "usage", "session_id", "parse_error")
+                                           "price_inherited", "usage", "first_request_usage", "initialization",
+                                           "usage_incomplete", "session_id", "parse_error")
                          if r.get(k) is not None}
                         | {"model": model, "secs": round(time.monotonic() - t, 1)}
                         | ({} if has_verdict(r) else {"error_kind": error_kind(r)}))
@@ -383,7 +450,8 @@ def run_rubric(ctx, rubric):
         # a partial or injected result could carry a syntactically valid marker and object, and
         # accepting it would publish an outage or an injection as a verdict.
         return (r["returncode"] == 0 and not _cli_reports_failure(r)
-                and extract_verdict(r.get("text", ""), marker) is not None)
+                and (r.get("_receipt_verdict") if "_receipt_verdict" in r
+                     else extract_verdict(r.get("text", ""), marker)) is not None)
 
     res = attempt()
     cost = res.get("cost_usd") or 0.0
@@ -396,10 +464,10 @@ def run_rubric(ctx, rubric):
     # (openai/codex#14190), so reconfirm on the same model before downgrading: a transient rejection
     # clears on the second try; a real unavailability repeats.
     if (provider == "codex"
-            and not ctx.codex_model_explicit and codex_model_unavailable(res)):
+            and not ctx.codex_model_explicit and (res.get("_receipt_model_unavailable") or codex_model_unavailable(res))):
         res = attempt()  # reconfirm on the same model
         cost += res.get("cost_usd") or 0.0
-        if not has_verdict(res) and codex_model_unavailable(res):
+        if not has_verdict(res) and (res.get("_receipt_model_unavailable") or codex_model_unavailable(res)):
             model = CODEX_FALLBACK_MODEL  # rejected twice → treat as persistent → try the fallback
             res = attempt()
             cost += res.get("cost_usd") or 0.0
@@ -408,6 +476,10 @@ def run_rubric(ctx, rubric):
         res = attempt()  # the ordinary one retry (unchanged for every non-codex-downgrade case)
         cost += res.get("cost_usd") or 0.0  # count every attempt
     res["cost_usd"] = round(cost, 6)
+    res["usage"] = add_usage(*(attempt.get("usage") for attempt in attempts))
+    if any(attempt.get("usage_incomplete") for attempt in attempts):
+        res["usage_incomplete"] = True
+        res["cost_incomplete"] = True
     # Persist the downgrade for the rest of the run — flip the shared runner registry so later rubrics
     # skip the now-known-dead Sol call — but ONLY once the fallback has actually produced a verdict. With
     # the reconfirm above, that means: rejected twice on the default AND the fallback then worked. Runs
@@ -427,8 +499,9 @@ def run_rubric(ctx, rubric):
                        f"-{a.pr}-{rubric}-{rid}"),
                started_at=started_at, duration_s=round(time.monotonic() - t0, 1),
                attempts=attempts,
-               prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
-               verdict_obj=extract_verdict(res.get("text", ""), marker)
+               prompt_sha256=res.get("_receipt_prompt_sha256") or hashlib.sha256(prompt.encode()).hexdigest(),
+               verdict_obj=(res.get("_receipt_verdict") if "_receipt_verdict" in res
+                            else extract_verdict(res.get("text", ""), marker))
                if has_verdict(res) else None)
     # Normalize finding file paths to PR-relative (strip the reviewer-workspace prefix) so the
     # rendered locations and the thread anchor are valid PR paths.
@@ -471,8 +544,10 @@ def run_rubric(ctx, rubric):
             "tool_trace": res.get("tool_trace") or None,
             "tool_trace_meta": res.get("tool_trace_meta") or None,
             "attempts": public_record(attempts),
-            "usage": res.get("usage"), "cost_usd": res.get("cost_usd"),
-            "cost_estimated": res.get("cost_estimated"), "prices_sha": PRICES_SHA,
+            "usage": res.get("usage"), "first_request_usage": res.get("first_request_usage"),
+            "initialization": res.get("initialization"), "cost_usd": res.get("cost_usd"),
+            "cost_estimated": res.get("cost_estimated"), "cost_incomplete": res.get("cost_incomplete"),
+            "usage_incomplete": res.get("usage_incomplete"), "prices_sha": PRICES_SHA,
             # Set only when prices.json had no row for this model, naming the model whose rates
             # were used, so an inherited rate is visible beside the sha of the table it came from.
             "price_inherited": res.get("price_inherited"),
@@ -504,7 +579,8 @@ def run_rubric(ctx, rubric):
     nr = newest_reply_id(cf)
     if nr is not None:
         cf["last_reply_seen"] = nr
-    spent_today += cost
+    spent_today = (ctx.spent_today if ctx.sessions is not None and provider in ("claude", "sonnet", "codex")
+                   else spent_today + cost)
     ran.append(rubric)
     run_results.append(res)
     # `--store` is a checkout of the `reviews` branch and the review workflow commits and pushes it,
@@ -512,6 +588,8 @@ def run_rubric(ctx, rubric):
     (outdir / f"{rubric}.json").write_text(json.dumps(public_record(res), indent=2))
     # Persist spend + state incrementally so a later crash cannot lose what was billed.
     ctx.ledger.set_spent(day, spent_today)
+    if receipts:
+        receipts.complete()
     if not a.dry_run:
         ctx.ledger.persist()
     ctx.spent_today = spent_today
@@ -751,6 +829,7 @@ def main():
     store = pathlib.Path(a.store)
     ledger_path = store / "ledger.json"
     led = Ledger(ledger_path)
+    Attempts.reconcile(store, led, a.dry_run)
     ledger = led.data   # the rest of main mutates this dict directly; led.persist() writes it
     if a.shadow and ledger["prs"]:
         sys.exit("--shadow refused: this store already holds review state. A shadow arm takes "
@@ -1005,7 +1084,6 @@ def main():
 
     day = today()
     spent_today = ledger["days"].get(day, 0.0)
-    spent_start = spent_today
     outdir = store / "reviews" / str(a.pr) / str(round_num)
     outdir.mkdir(parents=True, exist_ok=True)
     runners = {"claude": (run_claude, a.claude_model), "codex": (run_codex, a.codex_model or CODEX_MODEL),
@@ -1038,46 +1116,53 @@ def main():
                      prov=prov, diff_full=diff_full, outdir=outdir, day=day, ledger=led,
                      spent_today=spent_today, codex_model_explicit=a.codex_model is not None)
 
-    # Phase 1: the queued rubrics. Reserve before spending so a call can't breach the cap.
-    # A `block` verdict halts the round: blocked code gets reworked or abandoned, and approvals
-    # bought on this commit go stale at the fix push anyway, so reviewing the remaining rubrics
-    # now is spend with nothing kept. They stay `absent` and queue again once the block clears.
-    # Manual mode is exempt: a human's /review forces the full picture, block or not.
-    for rubric in queue:
-        if ctx.spent_today + a.max_call_cost > a.daily_budget:
-            stopped = rubric
-            break
-        run_rubric(ctx, rubric)
-        if ctx.provider_is_down():
-            abort_provider_down(ctx)
-        if a.mode != "manual" and state_of(state_map.get(rubric), head) == "blocking_block":
-            halted = rubric
-            break
+    with RoundReviewers(keys, subscription) as sessions:
+        ctx.sessions = sessions
+        # Phase 1: the queued rubrics. Reserve before spending so a call can't breach the cap.
+        # A `block` verdict halts the round: blocked code gets reworked or abandoned, and approvals
+        # bought on this commit go stale at the fix push anyway, so reviewing the remaining rubrics
+        # now is spend with nothing kept. They stay `absent` and queue again once the block clears.
+        # Manual mode is exempt: a human's /review forces the full picture, block or not.
+        for rubric in queue:
+            if ctx.spent_today + a.max_call_cost > a.daily_budget:
+                stopped = rubric
+                break
+            if run_rubric(ctx, rubric) is False:
+                stopped = rubric
+                break
+            if ctx.provider_is_down():
+                abort_provider_down(ctx)
+            if a.mode != "manual" and state_of(state_map.get(rubric), head) == "blocking_block":
+                halted = rubric
+                break
 
-    # Phase 2: once no rubric holds an adverse verdict, run what is not yet judged on HEAD —
-    # never-run rubrics (deferred by an earlier block halt) and stale greens. A reply that
-    # clears the last blocker finalizes toward merge the same way. A fresh `block` halts this
-    # phase just like phase 1.
-    if a.mode in ("commit", "manual", "reply") and not stopped and not halted:
-        while not any(is_unresolved(effective_state(r)) for r in candidates):
-            todo = [r for r in candidates
-                    if effective_state(r) in ("absent", "stale")]
-            if not todo:
-                break
-            for rubric in todo:
-                if ctx.spent_today + a.max_call_cost > a.daily_budget:
-                    stopped = rubric
+        # Phase 2: once no rubric holds an adverse verdict, run what is not yet judged on HEAD —
+        # never-run rubrics (deferred by an earlier block halt) and stale greens. A reply that
+        # clears the last blocker finalizes toward merge the same way. A fresh `block` halts this
+        # phase just like phase 1.
+        if a.mode in ("commit", "manual", "reply") and not stopped and not halted:
+            while not any(is_unresolved(effective_state(r)) for r in candidates):
+                todo = [r for r in candidates
+                        if effective_state(r) in ("absent", "stale")]
+                if not todo:
                     break
-                run_rubric(ctx, rubric)
-                if ctx.provider_is_down():
-                    abort_provider_down(ctx)
-                if state_of(state_map.get(rubric), head) == "blocking_block":
-                    halted = rubric
+                for rubric in todo:
+                    if ctx.spent_today + a.max_call_cost > a.daily_budget:
+                        stopped = rubric
+                        break
+                    if run_rubric(ctx, rubric) is False:
+                        stopped = rubric
+                        break
+                    if ctx.provider_is_down():
+                        abort_provider_down(ctx)
+                    if state_of(state_map.get(rubric), head) == "blocking_block":
+                        halted = rubric
+                        break
+                if stopped or halted:
                     break
-            if stopped or halted:
-                break
 
     spent_today, ran, run_results = ctx.spent_today, ctx.ran, ctx.run_results
+    round_totals = Attempts.round_totals(outdir, head, run_results)
     states = {r: effective_state(r) for r in candidates}
     overall = overall_label(list(states.values()), stopped)
     # Every blocking rubric green on this head (fresh, not stale). Drives both the auto-merge gate
@@ -1118,7 +1203,7 @@ def main():
 
     # This PR's running review spend (across its rounds), in small text at the foot of the
     # scoreboard. The current round's spend is not yet in a round record, so add it in.
-    this_run_cost = round(spent_today - spent_start, 6)
+    this_run_cost = round_totals["cost_usd"]
     pr_total = sum(r.get("cost", 0) for r in pr_state.get("rounds", [])) + this_run_cost
     cost_line = f"Review spend: ${pr_total:.2f}."
 
@@ -1132,13 +1217,14 @@ def main():
     if a.shadow:
         # Archive-only: no thread bodies, no post plan, no merge decision — nothing exists for
         # a posting step to act on. The scoreboard above is informational (printed by the CLI).
-        shadow_cost = round(spent_today - spent_start, 6)
+        shadow_cost = round_totals["cost_usd"]
         emit_round_archive(a, prov, head, ran, run_results, states, overall, halted,
-                           shadow_cost, scoreboard_md, rubrics_version)
+                           shadow_cost, scoreboard_md, rubrics_version, cost_incomplete=round_totals["cost_incomplete"])
         pr_state["rounds"].append(
             {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
              "mode": a.mode, "ran": ran, "states": states, "cost": shadow_cost,
-             "tokens": sum_usage(run_results), "prices_sha": PRICES_SHA,
+             "tokens": round_totals["tokens"], "cost_incomplete": round_totals["cost_incomplete"],
+             "prices_sha": PRICES_SHA,
              "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
              "arm": a.arm})
         print(f"\nSHADOW ROUND ({a.arm}) {overall}  (ran {len(ran)}: {ran}; "
@@ -1196,11 +1282,12 @@ def main():
             led.persist()
         return
 
-    round_cost = round(spent_today - spent_start, 6)
+    round_cost = round_totals["cost_usd"]
     pr_state["rounds"].append(
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "mode": effective_mode, "ran": ran, "states": states, "cost": round_cost,
-         "tokens": sum_usage(run_results), "prices_sha": PRICES_SHA,
+         "tokens": round_totals["tokens"], "cost_incomplete": round_totals["cost_incomplete"],
+             "prices_sha": PRICES_SHA,
          "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
          "base_sha": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
          "rubrics_sha": a.rubrics_sha or None, "diff_sha256": prov.get("diff_sha256"),
@@ -1212,7 +1299,8 @@ def main():
           + f"cost ${round_cost:.2f}, today ${spent_today:.2f}/{a.daily_budget})")
 
     emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
-                       scoreboard_md, rubrics_version, mode=effective_mode)
+                       scoreboard_md, rubrics_version, mode=effective_mode,
+                       cost_incomplete=round_totals["cost_incomplete"])
 
     if a.dry_run:
         print("[dry-run] not writing ledger.")
