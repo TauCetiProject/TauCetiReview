@@ -71,6 +71,7 @@ tauceti-review 42 --post                # also post the scoreboard + threads, as
 tauceti-review 42 --rubrics scope,correctness,reuse
 tauceti-review 42 --reviewer claude     # use only Claude even if both are installed
 tauceti-review 42 --reviewer claude --claude-model claude-fable-5-1
+tauceti-review 42 --reviewer codex --codex-model gpt-6-astra
 tauceti-review 42 --reviewer kiro --kiro-model gpt-5.6-sol
 tauceti-review 42 --reviewer kiro --kiro-model claude-opus-5
 tauceti-review 42 --reviewer deepseek   # use DeepSeek via OpenRouter + the `pi` agent
@@ -95,6 +96,7 @@ Add `--post` to publish. Useful flags:
 | `--rubrics a,b,c` | review only these rubrics (default: all of them) |
 | `--reviewer claude\|codex\|kiro\|sonnet\|deepseek\|minimax\|grok` | restrict to these reviewers (default: every auto-drawn one you have — `claude` and `codex`). Direct `claude` defaults to exact `claude-opus-5-5`; override with `--claude-model`. `kiro` is explicit-only and always uses the exact `--kiro-model`. `sonnet` is the `claude` CLI pinned to Sonnet. `deepseek`/`minimax`/`grok` run an OpenRouter model through the [`pi`](https://github.com/badlogic/pi-mono) agent and need `pi` on PATH + `OPENROUTER_API_KEY`. All but `claude`/`codex` are explicit-only (never auto-drawn) |
 | `--claude-model MODEL` | exact direct-Claude model ID, also configurable through `TAUCETI_CLAUDE_MODEL` for managed workers. The flag takes precedence. Unset: use the selected engine's default. A model with no entry in `runner/prices.json` still runs, billed at the newest rate on its own model line; its exact ID is recorded in review provenance |
+| `--codex-model MODEL` | exact Codex model ID, also configurable through `TAUCETI_CODEX_MODEL` for managed workers. The flag takes precedence. Unset: use the selected engine's default (`gpt-6.1-sol`), which falls back to `gpt-5.6-terra` when the account cannot use Sol. Setting it pins the model as chosen and turns that fallback off, so an account without access to the pinned model fails its Codex rubrics. Pricing follows the same rule as `--claude-model` |
 | `--kiro-model MODEL` | exact Kiro model ID; defaults to `gpt-5.6-sol`. Use `claude-opus-5` for Kiro's current Opus |
 | `--mode manual` | re-run every rubric. The default, `commit`, reuses a completed published review of the current head across workers. A new unanswered author contest reopens its rubric while retaining the other published decisions. Missing history still permits ordinary investigation. Incomplete or different-head reviews retain the existing stale-approval and review rules |
 | `--no-mathlib` | skip fetching pinned Mathlib source; `reuse`/`naming` can't grep Mathlib |
