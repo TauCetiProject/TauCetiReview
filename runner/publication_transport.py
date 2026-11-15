@@ -45,8 +45,15 @@ class ConfiguredPublisher:
     def comments(self):
         return self.call('comments') if hasattr(self.backend, 'comments') else None
 
+    @contextlib.contextmanager
     def scope(self):
-        return self.call('scope') if hasattr(self.backend, 'scope') else contextlib.nullcontext()
+        try:
+            with self.call('scope') if hasattr(self.backend, 'scope') else contextlib.nullcontext():
+                yield
+        except (PermissionError, ImportError, AttributeError, TypeError, ValueError) as error:
+            raise publisher_blocked(f'native publication requires operator repair ({type(error).__name__})') from error
+        except OSError as error:
+            raise Incomplete(f'native publication lease unavailable ({type(error).__name__})') from error
 
     def superseded(self, body):
         return self.call('superseded', body) if hasattr(self.backend, 'superseded') else False

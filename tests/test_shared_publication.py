@@ -224,6 +224,25 @@ class SharedPublication(unittest.TestCase):
             assert w.api.writes == writes
             assert not w.source.findings(7)
 
+    def test_backend_lease_failures_preserve_paid_output(self):
+        for error in (PermissionError('invalid authority'), OSError('lease unavailable')):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+                w = workflow('forgejo', pathlib.Path(directory), stack)
+                @contextlib.contextmanager
+                def lease():
+                    raise error
+                    yield
+                backend = publication_transport.ConfiguredPublisher(types.SimpleNamespace(scope=lease))
+                stack.enter_context(patch.object(publication_transport.NativePublication,
+                                                'scoreboard_publisher', lambda self: backend))
+                if isinstance(error, PermissionError):
+                    with self.assertRaises(publication.PublicationBlocked):
+                        publish(w)
+                else:
+                    assert publish(w) == 85
+                assert json.loads(w.receipt.read_text())['state'] == 'prepared'
+                assert not w.source.findings(7)
+
     def test_ordinary_native_path_cannot_edit_or_delete_receipt_history(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
             w = workflow('forgejo', pathlib.Path(directory), stack)
