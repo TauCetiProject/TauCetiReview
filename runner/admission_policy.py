@@ -87,7 +87,7 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
     green bump-guard; lakefiles and other root files always need the build. The merge path is
     self-sufficient on comment events. Every
     blocking rubric is green on it (fresh, not stale), and every changed path is under `prefix` or an
-    allowed root file (`allow`), and CI's trusted scope status is green. A PR touching either Lake
+    allowed root file (`allow`), and ordinary CI's trusted scope status is green unless inline local-test eligibility established the scope. A PR touching either Lake
     pin additionally requires the bump-guard check to be green (a CI-validated forward-only bump).
     Returns (merge_ok, reason)."""
     allow = set(allow or [])
@@ -106,7 +106,7 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
         return False, f"build is not green on HEAD (={ci_build or 'missing'}); refusing to merge"
     if not all_green:
         return False, f"not all rubrics green on HEAD: {[r for r in candidates if states[r] != 'green']}"
-    if (scope or "").upper() != "SUCCESS":
+    if not trusted_local and (scope or "").upper() != "SUCCESS":
         return False, (f"trusted CI scope status is not green on HEAD (={scope or 'missing'}); "
                        f"refusing to merge")
     if not code_only:

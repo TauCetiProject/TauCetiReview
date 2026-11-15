@@ -21,7 +21,8 @@ class AdmissionPolicyTests(unittest.TestCase):
         result = policy.decide_from_comments(**args)
         self.assertTrue(result["merge"], result)
         self.assertTrue(result["self_tested"])
-        for change in ({"scope": ""}, {"paths": ["lake-manifest.json"]},
+        self.assertTrue(policy.decide_from_comments(**(args | {"scope": ""}))["merge"])
+        for change in ({"paths": ["lake-manifest.json"]},
                        {"paths": ["scripts/tool.py"]}, {"comments": []}, {"self_tested": False}):
             self.assertFalse(policy.decide_from_comments(**(args | change))["merge"])
 
@@ -39,7 +40,7 @@ class AdmissionPolicyTests(unittest.TestCase):
         for change in ({"bump_guard": ""}, {"bump_guard": "FAILURE"}, {"bump_guard": "pending"},
                        {"paths": ["lake-manifest.json", "lakefile.toml"]}, {"paths": ["lakefile.lean"]},
                        {"paths": ["lean-toolchain", "TauCeti.lean"]},
-                       {"paths": ["lean-toolchain", "scripts/tool.py"]}, {"scope": ""},
+                       {"paths": ["lean-toolchain", "scripts/tool.py"]},
                        {"self_tested": False}):
             with self.subTest(change=change):
                 self.assertFalse(policy.decide_from_comments(**(args | change))["merge"])
