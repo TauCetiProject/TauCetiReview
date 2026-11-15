@@ -22,15 +22,15 @@ because the checks behind it may not have run.
 
 - The PR description carries the `Quality pass:` block, with a line for each check in the
   template. Each line begins `changed`, `checked`, `declined` or `n/a` and has a note saying what
-  changed, what was checked, or what was left unfixed and why. A placeholder left as the template
-  has it counts as missing.
+  changed, what was checked, or what was left unfixed and why. One or two sentences are enough: do
+  not ask for a longer note. A placeholder left as the template has it counts as missing.
+- A check that was not run reads `declined — not run`. That line is complete: what this rubric
+  asks of the Q2 and Q3 notes concerns checks that were run.
 - The note on duplicates in Tau Ceti (Q2 in the template) says what the author looked for.
-- The note on hypotheses (Q3) names every theorem the diff adds or changes, and puts each of its
-  hypotheses and instance arguments, including those from `variable` lines, in one of the
-  template's four states. A `kept` one comes with a counterexample. A hypothesis kept for any other
-  reason, such as consistency with another lemma, the docstring, or that removing it needs a new
-  argument, belongs on a line that begins `declined`: there it is fine, and the other angles judge
-  it.
+- The note on hypotheses (Q3) says what was dropped or derived, and gives a counterexample for
+  each hypothesis it says was kept. A hypothesis kept for any other reason, such as consistency with
+  another lemma, the docstring, or that removing it needs a new argument, belongs on a line that
+  begins `declined`: there it is fine, and the other angles judge it.
 - The block describes the PR as it now stands. When commits made after it was written add or
   change declarations, for instance to answer review findings, the author runs the checks again
   over those and updates the lines. Judge the lines against the current diff, whenever they were
@@ -55,9 +55,9 @@ because the checks behind it may not have run.
   one of them in full is judged like any other, by the rest of this list.
 - `approve` when the block is complete, describes the current diff, and no line is contradicted
   by it.
-- `request_changes` when the block is missing; a check is missing or has no note; the Q2 note does
-  not say what was looked for; the Q3 note leaves out a theorem or argument, keeps one without a
-  counterexample, or keeps one for another reason on a line not marked `declined`; or a line is
+- `request_changes` when the block is missing; a check is missing or has no note; for a check that
+  was run, the Q2 note does not say what was looked for, or the Q3 note keeps a hypothesis without
+  a counterexample, or for another reason on a line not marked `declined`; or a line is
   contradicted by the current diff.
   Quote the check and, for a contradiction, the line of the diff. When the block is missing, say in
   the fix that the checks and the format are in `.github/pull_request_template.md`, and that
