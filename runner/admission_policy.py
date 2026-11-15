@@ -32,8 +32,8 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
 # the commit setting it reaches every reviewer and the queue service before a PR above it is
 # reviewed.
 PHASED_RUBRICS = {"quality-pass": {
-    "TauCetiProject/TauCeti": None,
-    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": None,
+    "TauCetiProject/TauCeti": 45000,
+    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": 100,
 }}
 
 
