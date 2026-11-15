@@ -262,6 +262,9 @@ limit is introduced. Removing the environment setting restores private preparati
 Native installations can supply a trusted scoreboard backend through the operator
 process environment: `TAUCETI_NATIVE_REVIEW_PUBLISHER=module:factory`. The factory
 receives the native publication transport and returns an object with `publish(body)`.
+An optional `preflight()` validates configuration and publisher access before
+inference; returning `True` requests publication through the existing init renderer
+before any reviewer is invoked.
 It must durably reconcile retries and return a confirmed positive comment `id`, or
 `{"superseded": true}` when a newer intent supersedes this one. Temporary failures
 raise `tauceti_tools.forge.Incomplete`; the existing rendered-output recovery retries
@@ -269,3 +272,7 @@ publication without new inference. Required findings still publish before the
 scoreboard, using the same posting flow as GitHub. A backend owns its immutable
 scoreboard history, so ordinary comment editing and duplicate cleanup do not run
 for its records. PR/project configuration never selects this executable factory.
+Policy/identity errors raise `PermissionError` and become a blocked publication
+requiring operator repair. Supersession uses exit 87, separately from a changed
+head before inference (82). Ordinary native posting also refuses to edit or delete
+receipt-bound scoreboard comments when the trusted backend is unavailable.

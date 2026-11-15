@@ -208,9 +208,59 @@ class SharedPublication(unittest.TestCase):
             publisher = types.SimpleNamespace(publish=lambda body: {'superseded': True})
             stack.enter_context(patch.object(publication_transport.NativePublication,
                                             'scoreboard_publisher', lambda self: publisher))
-            assert publish(w) == 82
+            assert publish(w) == 87
             assert json.loads(w.receipt.read_text())['state'] == 'superseded'
             assert not w.api.conversation
+
+    def test_ordinary_native_path_cannot_edit_or_delete_receipt_history(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            row = w.api.request('POST', 'repos/o/r/issues/7/comments',
+                                {'body': '<!--tauceti-scoreboard-->\n<!--tauceti-source:v2 {}-->'})
+            transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
+            writes = list(w.api.writes)
+            with self.assertRaises(publication.PublicationBlocked):
+                transport.comment('PATCH', row['id'], w.receipt.parent / 'scoreboard.md')
+            assert transport.comment('DELETE', row['id']) is None
+            assert w.api.writes == writes
+
+    def test_native_factory_is_selected_only_by_operator_environment(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            factory = types.SimpleNamespace(make=lambda transport: types.SimpleNamespace(
+                preflight=lambda: True, publish=lambda body: {'id': 900}))
+            stack.enter_context(patch.dict('os.environ', TAUCETI_NATIVE_REVIEW_PUBLISHER='test_publisher:make'))
+            stack.enter_context(patch.dict(sys.modules, test_publisher=factory))
+            transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
+            assert transport.scoreboard_publisher().preflight() is True
+            assert transport.scoreboard_publisher().publish('board') == {'id': 900}
+            github = publication_transport.GitHubPublication('o/r', 7, HEAD, {}, post, source=w.source)
+            assert github.scoreboard_publisher() is None
+            with patch.dict('os.environ', TAUCETI_NATIVE_REVIEW_PUBLISHER='missing_publisher:make'):
+                with self.assertRaises(publication.PublicationBlocked):
+                    transport.scoreboard_publisher()
+
+    def test_preflight_uses_existing_init_renderer_before_inference_without_removing_inputs(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            root = pathlib.Path(directory)
+            w = workflow('forgejo', root, stack)
+            code = root / 'code'; code.mkdir(); (code / 'paid-input.lean').write_text('input')
+            plan = root / 'init-plan.json'
+            transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
+            events = []
+            publisher = types.SimpleNamespace(preflight=lambda: events.append('preflight') or True,
+                                               publish=lambda body: events.append('publish') or {'id': 900})
+            stack.enter_context(patch.object(transport, 'scoreboard_publisher', lambda: publisher))
+            def render(command, **kwargs):
+                assert command[command.index('--mode') + 1] == 'init'
+                events.append('init')
+                board = root / 'init.md'; board.write_text('<!--tauceti-scoreboard-->\nRunning')
+                plan.write_text(json.dumps(dict(in_progress=True, head_sha=HEAD, scoreboard_body=str(board), threads=[])))
+                return types.SimpleNamespace(returncode=0)
+            assert publication.prepare_review(transport, ['review', '--mode', 'commit'], plan,
+                                                w.ledger, '', render, {}) == 0
+            assert events == ['preflight', 'init', 'publish']
+            assert (code / 'paid-input.lean').exists() and not plan.exists()
 
     def test_backend_requires_a_confirmed_positive_comment_id(self):
         for answer in (None, {}, {'id': True}, {'id': -1}):

@@ -491,7 +491,7 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, ex
             repo, pr, plan["scoreboard_body"], plan.get("scoreboard_comment_id"), pr_state, failures,
             mine=me, transport=transport)
     except PublicationSuperseded:
-        return 82
+        return 87
     atomic_write_json(ledger_path, ledger)
     if not scoreboard_ok:
         archive_outcome(archive_dir, repo, pr, plan, sb_id, False, posted_threads, failures)

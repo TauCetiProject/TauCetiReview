@@ -1116,8 +1116,14 @@ def _main(cleanup, leases, phase):
     if current != head:
         write_review_result(current, False, outcome='head-changed', expected_head=head)
         return HEAD_CHANGED_EXIT
-    publisher = publication.post.transport_for(a.repo, int(a.pr), head, {},
-                                               publication.post).identity() if a.post else None
+    posting_transport = publication.post.transport_for(a.repo, int(a.pr), head, {},
+                                                       publication.post) if a.post else None
+    publisher = posting_transport.identity() if posting_transport else None
+    if posting_transport:
+        status = publication.prepare_review(posting_transport, cmd, plan, store / 'ledger.json', outbox,
+                                             run, inference_environment(engine_env))
+        if status:
+            return status
     context_path = work / 'review-context.json'
     write_context(context_path, dict(json.loads(context_path.read_text()), publisher=publisher, archive_dir=outbox))
     cleanup.pop_all()

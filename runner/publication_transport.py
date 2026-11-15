@@ -14,6 +14,31 @@ class PublicationSuperseded(Exception):
     """A durable backend has already published a newer intent for this head."""
 
 
+def publisher_blocked(message):
+    try:
+        from .publication import PublicationBlocked
+    except ImportError:
+        from publication import PublicationBlocked
+    return PublicationBlocked(message)
+
+
+class ConfiguredPublisher:
+    def __init__(self, backend):
+        self.backend = backend
+
+    def call(self, method, *args):
+        try:
+            return getattr(self.backend, method)(*args)
+        except (PermissionError, ImportError, AttributeError, TypeError, ValueError) as error:
+            raise publisher_blocked(f'native publication requires operator repair ({type(error).__name__})') from error
+
+    def preflight(self):
+        return self.call('preflight') if hasattr(self.backend, 'preflight') else False
+
+    def publish(self, body):
+        return self.call('publish', body)
+
+
 class PublicationTransport:
     def __init__(self, repo, number, head, plan, helpers, source=None):
         self.repo, self.number, self.head, self.plan, self.helpers = repo, number, head, plan, helpers
@@ -98,8 +123,11 @@ class NativePublication(PublicationTransport):
         factory = os.environ.get('TAUCETI_NATIVE_REVIEW_PUBLISHER')
         if not factory:
             return None
-        module, name = factory.split(':', 1)
-        return getattr(importlib.import_module(module), name)(self)
+        try:
+            module, name = factory.split(':', 1)
+            return ConfiguredPublisher(getattr(importlib.import_module(module), name)(self))
+        except (PermissionError, ImportError, AttributeError, TypeError, ValueError) as error:
+            raise publisher_blocked(f'native publication backend unavailable ({type(error).__name__})') from error
 
     def current_pull(self):
         return self.source.pull(self.number)
@@ -193,6 +221,14 @@ class NativePublication(PublicationTransport):
                       key=lambda row: (row['updated_at'], row['id']), reverse=True)
 
     def comment(self, method, identifier, body_file=None, failures=None, action=''):
+        if method in {'PATCH', 'DELETE'}:
+            row = next((row for row in self.source.comments(self.number) if row['id'] == identifier), None)
+            if row is None:
+                raise Incomplete('native comment ownership is unavailable')
+            if '<!--tauceti-source:v2 ' in row.get('body', ''):
+                if method == 'DELETE':
+                    return None  # Immutable history is never ordinary duplicate cleanup.
+                raise publisher_blocked('receipt-backed scoreboard requires its trusted publisher')
         endpoint = (f'{self.prefix}/issues/{self.number}/comments' if method == 'POST'
                     else f'{self.prefix}/issues/comments/{identifier}')
         result = self.api.request(method, endpoint, {'body': self.body(body_file)} if body_file else None)

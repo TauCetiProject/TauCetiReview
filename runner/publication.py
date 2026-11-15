@@ -19,6 +19,7 @@ from tauceti_tools.review_source import source_for
 
 PUBLICATION_WAIT_EXIT = 85
 PUBLICATION_BLOCKED_EXIT = 86
+PUBLICATION_SUPERSEDED_EXIT = 87
 
 
 class PublicationPending(RuntimeError):
@@ -47,6 +48,29 @@ def source_record(source):
 def cleanup_inputs(work):
     for name in ('code', 'mathlib', 'dependencies', 'roadmap', 'review', 'rubric-source'):
         shutil.rmtree(pathlib.Path(work) / name, ignore_errors=True)
+
+
+def prepare_review(transport, command, plan_path, ledger_path, archive_dir, run, env):
+    """Validate an optional backend and publish the existing init plan before inference."""
+    backend = getattr(transport, 'scoreboard_publisher', lambda: None)()
+    if backend is None or not getattr(backend, 'preflight', lambda: False)():
+        return 0
+    initial = list(command)
+    initial[initial.index('--mode') + 1] = 'init'
+    result = run(initial, allow_fail=True, env=env)
+    if result.returncode:
+        raise PublicationPending('in-progress review preparation requires retry')
+    plan_path = pathlib.Path(plan_path)
+    plan = json.loads(plan_path.read_text())
+    if not plan.get('in_progress') or plan.get('head_sha') != transport.head:
+        raise PublicationBlocked('in-progress review plan has another head or mode')
+    # No paid output exists yet. The backend freezes its own durable intent;
+    # retaining a Review receipt here would remove the upcoming inference inputs.
+    status = post.execute_post(transport.repo, transport.number, plan, ledger_path,
+                               archive_dir, transport=transport)
+    if status == 0:
+        plan_path.unlink()
+    return status
 
 
 def retain(repo, number, plan_path, ledger_path, *, actor=None, archive_dir=None):
@@ -81,7 +105,7 @@ def publish(repo, path, ledger_path):
     if value['state'] == 'published':
         return 0
     if value['state'] == 'superseded':
-        return 82
+        return value.get('superseded_code', 82)
     # The version-one native receipt already contains rendered paid output. Keep
     # its source binding, original native actor, round and thread IDs intact.
     actor = value.get('actor')
@@ -109,8 +133,9 @@ def publish(repo, path, ledger_path):
                                        transport=transport, expected_publisher=actor)
         if status == 0:
             value['state'] = 'published'
-        elif status == 82:
+        elif status in (82, 87):
             value['state'] = 'superseded'
+            value['superseded_code'] = status
         elif status == PUBLICATION_BLOCKED_EXIT:
             raise PublicationBlocked('retained review requires its original publisher')
         else:
