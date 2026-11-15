@@ -1,11 +1,17 @@
 """Native API operations for the shared trusted publication policy in post.py."""
 import hashlib
+import importlib
 import json
+import os
 import pathlib
 import re
 
 from tauceti_tools.forge import AmbiguousWrite, Incomplete
 from tauceti_tools.review_source import source_for
+
+
+class PublicationSuperseded(Exception):
+    """A durable backend has already published a newer intent for this head."""
 
 
 class PublicationTransport:
@@ -15,6 +21,10 @@ class PublicationTransport:
 
     def body(self, path):
         return pathlib.Path(path).read_text()
+
+    def scoreboard_publisher(self):
+        """Optional operator-supplied backend; ordinary posting remains the default."""
+        return None
 
     def current_pull(self):
         raise NotImplementedError
@@ -81,6 +91,15 @@ class NativePublication(PublicationTransport):
         super().__init__(*args)
         self.source, self.api, self.repository = source, source.api, source.repository
         self.prefix = 'repos/' + self.repository.name
+
+    def scoreboard_publisher(self):
+        # Only the trusted process environment selects executable code. PR and
+        # project configuration must never select a publication implementation.
+        factory = os.environ.get('TAUCETI_NATIVE_REVIEW_PUBLISHER')
+        if not factory:
+            return None
+        module, name = factory.split(':', 1)
+        return getattr(importlib.import_module(module), name)(self)
 
     def current_pull(self):
         return self.source.pull(self.number)

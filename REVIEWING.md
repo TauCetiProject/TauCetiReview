@@ -258,3 +258,14 @@ acquisitions, or the Fleet cleanup command using the same collector, remove
 unleased publications after the existing repository-cache publication age of one
 day, and recover interrupted publication/deletion. No cache size or worker-count
 limit is introduced. Removing the environment setting restores private preparation.
+
+Native installations can supply a trusted scoreboard backend through the operator
+process environment: `TAUCETI_NATIVE_REVIEW_PUBLISHER=module:factory`. The factory
+receives the native publication transport and returns an object with `publish(body)`.
+It must durably reconcile retries and return a confirmed positive comment `id`, or
+`{"superseded": true}` when a newer intent supersedes this one. Temporary failures
+raise `tauceti_tools.forge.Incomplete`; the existing rendered-output recovery retries
+publication without new inference. Required findings still publish before the
+scoreboard, using the same posting flow as GitHub. A backend owns its immutable
+scoreboard history, so ordinary comment editing and duplicate cleanup do not run
+for its records. PR/project configuration never selects this executable factory.
