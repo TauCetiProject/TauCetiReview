@@ -263,8 +263,14 @@ Native installations can supply a trusted scoreboard backend through the operato
 process environment: `TAUCETI_NATIVE_REVIEW_PUBLISHER=module:factory`. The factory
 receives the native publication transport and returns an object with `publish(body)`.
 An optional `preflight()` validates configuration and publisher access before
-inference; returning `True` requests publication through the existing init renderer
-before any reviewer is invoked.
+inference. An optional `reserve()` returns an opaque JSON reservation, saved in the
+common paid receipt and supplied to later transports as `plan['backend_run']`.
+This reserves verdict order before inference without publishing an early board or
+changing unchanged-review decisions. A backend can supply `comments()` to select
+receipt-verified prior scoreboards instead of mutable discussion. Optional `scope()`
+serializes all finding/scoreboard writes; `superseded(body)` stops obsolete runs
+before any finding mutation. `--publication-protocol` reports the supported
+backend protocol without accessing a repository or running inference.
 It must durably reconcile retries and return a confirmed positive comment `id`, or
 `{"superseded": true}` when a newer intent supersedes this one. Temporary failures
 raise `tauceti_tools.forge.Incomplete`; the existing rendered-output recovery retries
@@ -276,3 +282,6 @@ Policy/identity errors raise `PermissionError` and become a blocked publication
 requiring operator repair. Supersession uses exit 87, separately from a changed
 head before inference (82). Ordinary native posting also refuses to edit or delete
 receipt-bound scoreboard comments when the trusted backend is unavailable.
+A backend with `historical = True` publishes retained commit-bound verdicts after a
+PR closes or its head moves. Native findings then use the existing head-bound
+conversation fallback, preserving required-finding ordering and contestability.
