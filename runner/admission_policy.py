@@ -33,7 +33,7 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
 # reviewed.
 PHASED_RUBRICS = {"quality-pass": {
     "TauCetiProject/TauCeti": 45000,
-    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": 100,
+    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": 300,
 }}
 
 
