@@ -178,6 +178,140 @@ def publish(w):
 
 class SharedPublication(unittest.TestCase):
 
+    def test_operator_backend_reuses_common_retention_and_recovery(self):
+        from tauceti_tools.forge import Incomplete
+
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            calls = []
+            class Publisher:
+                def publish(self, body):
+                    calls.append(body)
+                    if len(calls) == 1:
+                        raise Incomplete('temporary receipt outage')
+                    return {'id': 900}
+            stack.enter_context(patch.object(publication_transport.NativePublication,
+                                            'scoreboard_publisher', lambda self: Publisher()))
+            assert publish(w) == 85
+            assert json.loads(w.receipt.read_text())['state'] == 'prepared'
+            assert len(w.source.findings(7)) == 1
+            assert publication.recover(w.source.key, w.receipt.parent.parent, w.ledger)
+            assert len(w.source.findings(7)) == 1
+            assert json.loads(w.receipt.read_text())['state'] == 'published'
+            assert json.loads(w.ledger.read_text())['prs']['7']['scoreboard_comment_id'] == 900
+            assert calls[0] == calls[1]
+            assert not w.api.conversation  # Backend owns immutable scoreboard history.
+
+    def test_backend_supersession_finishes_without_republishing_old_output(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            publisher = types.SimpleNamespace(publish=lambda body: {'superseded': True})
+            stack.enter_context(patch.object(publication_transport.NativePublication,
+                                            'scoreboard_publisher', lambda self: publisher))
+            assert publish(w) == 87
+            assert json.loads(w.receipt.read_text())['state'] == 'superseded'
+            assert not w.api.conversation
+
+    def test_superseded_backend_stops_before_required_thread_mutations(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            publisher = types.SimpleNamespace(superseded=lambda body: True,
+                publish=lambda body: self.fail('obsolete scoreboard posted'))
+            stack.enter_context(patch.object(publication_transport.NativePublication,
+                                            'scoreboard_publisher', lambda self: publisher))
+            writes = list(w.api.writes)
+            assert publish(w) == 87
+            assert w.api.writes == writes
+            assert not w.source.findings(7)
+
+    def test_backend_lease_failures_preserve_paid_output(self):
+        for error in (PermissionError('invalid authority'), OSError('lease unavailable')):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+                w = workflow('forgejo', pathlib.Path(directory), stack)
+                @contextlib.contextmanager
+                def lease():
+                    raise error
+                    yield
+                backend = publication_transport.ConfiguredPublisher(types.SimpleNamespace(scope=lease))
+                stack.enter_context(patch.object(publication_transport.NativePublication,
+                                                'scoreboard_publisher', lambda self: backend))
+                if isinstance(error, PermissionError):
+                    with self.assertRaises(publication.PublicationBlocked):
+                        publish(w)
+                else:
+                    assert publish(w) == 85
+                assert json.loads(w.receipt.read_text())['state'] == 'prepared'
+                assert not w.source.findings(7)
+
+    def test_ordinary_native_path_cannot_edit_or_delete_receipt_history(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            row = w.api.request('POST', 'repos/o/r/issues/7/comments',
+                                {'body': '<!--tauceti-scoreboard-->\n<!--tauceti-source:v2 {}-->'})
+            transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
+            writes = list(w.api.writes)
+            with self.assertRaises(publication.PublicationBlocked):
+                transport.comment('PATCH', row['id'], w.receipt.parent / 'scoreboard.md')
+            assert transport.comment('DELETE', row['id']) is None
+            assert w.api.writes == writes
+
+    def test_native_factory_is_selected_only_by_operator_environment(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            factory = types.SimpleNamespace(make=lambda transport: types.SimpleNamespace(
+                preflight=lambda: True, publish=lambda body: {'id': 900}))
+            stack.enter_context(patch.dict('os.environ', TAUCETI_NATIVE_REVIEW_PUBLISHER='test_publisher:make'))
+            stack.enter_context(patch.dict(sys.modules, test_publisher=factory))
+            transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
+            assert transport.scoreboard_publisher().preflight() is True
+            assert transport.scoreboard_publisher().publish('board') == {'id': 900}
+            github = publication_transport.GitHubPublication('o/r', 7, HEAD, {}, post, source=w.source)
+            assert github.scoreboard_publisher() is None
+            with patch.dict('os.environ', TAUCETI_NATIVE_REVIEW_PUBLISHER='missing_publisher:make'):
+                with self.assertRaises(publication.PublicationBlocked):
+                    transport.scoreboard_publisher()
+
+    def test_preflight_reserves_order_without_posting_an_early_board(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            root = pathlib.Path(directory)
+            w = workflow('forgejo', root, stack)
+            code = root / 'code'; code.mkdir(); (code / 'paid-input.lean').write_text('input')
+            plan = w.receipt.parent / 'post_plan.json'
+            transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
+            events = []
+            publisher = types.SimpleNamespace(preflight=lambda: events.append('preflight'),
+                                               reserve=lambda: events.append('reserve') or 'a' * 32)
+            stack.enter_context(patch.object(transport, 'scoreboard_publisher', lambda: publisher))
+            publication.prepare_review(transport, plan)
+            assert events == ['preflight', 'reserve']
+            assert not w.api.writes and (code / 'paid-input.lean').exists()
+            receipt = publication.retain(w.source.key, 7, plan, w.ledger)
+            assert json.loads(receipt.read_text())['backend_run'] == 'a' * 32
+
+    def test_historical_receipt_finding_uses_head_bound_conversation(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            w.api.head = 'b' * 40
+            captured = []
+            publisher = types.SimpleNamespace(historical=True, publish=lambda body: captured.append(body) or {'id':900})
+            stack.enter_context(patch.object(publication_transport.NativePublication,
+                                            'scoreboard_publisher', lambda self: publisher))
+            assert publish(w) == 0
+            assert captured
+            assert len(w.api.conversation) == 1
+            assert '<!--tauceti-source-head:' + HEAD + '-->' in w.api.conversation[0]['body']
+
+
+    def test_backend_requires_a_confirmed_positive_comment_id(self):
+        for answer in (None, {}, {'id': True}, {'id': -1}):
+            with self.subTest(answer=answer), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+                w = workflow('forgejo', pathlib.Path(directory), stack)
+                publisher = types.SimpleNamespace(publish=lambda body: answer)
+                stack.enter_context(patch.object(publication_transport.NativePublication,
+                                                'scoreboard_publisher', lambda self: publisher))
+                assert publish(w) == 85
+                assert json.loads(w.receipt.read_text())['state'] == 'prepared'
+
     def test_required_root_then_board_and_idempotent_replay(self):
         for kind in ("github", "forgejo"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:

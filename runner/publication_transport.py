@@ -1,11 +1,66 @@
 """Native API operations for the shared trusted publication policy in post.py."""
 import hashlib
+import contextlib
+import importlib
 import json
+import os
 import pathlib
 import re
 
 from tauceti_tools.forge import AmbiguousWrite, Incomplete
 from tauceti_tools.review_source import source_for
+
+
+class PublicationSuperseded(Exception):
+    """A durable backend has already published a newer intent for this head."""
+
+
+def publisher_blocked(message):
+    try:
+        from .publication import PublicationBlocked
+    except ImportError:
+        from publication import PublicationBlocked
+    return PublicationBlocked(message)
+
+
+class ConfiguredPublisher:
+    def __init__(self, backend):
+        self.backend = backend
+
+    def call(self, method, *args):
+        try:
+            return getattr(self.backend, method)(*args)
+        except (PermissionError, ImportError, AttributeError, TypeError, ValueError) as error:
+            raise publisher_blocked(f'native publication requires operator repair ({type(error).__name__})') from error
+
+    def preflight(self):
+        return self.call('preflight') if hasattr(self.backend, 'preflight') else False
+
+    def publish(self, body):
+        return self.call('publish', body)
+
+    def reserve(self):
+        return self.call('reserve') if hasattr(self.backend, 'reserve') else None
+
+    def comments(self):
+        return self.call('comments') if hasattr(self.backend, 'comments') else None
+
+    @contextlib.contextmanager
+    def scope(self):
+        try:
+            with self.call('scope') if hasattr(self.backend, 'scope') else contextlib.nullcontext():
+                yield
+        except (PermissionError, ImportError, AttributeError, TypeError, ValueError) as error:
+            raise publisher_blocked(f'native publication requires operator repair ({type(error).__name__})') from error
+        except OSError as error:
+            raise Incomplete(f'native publication lease unavailable ({type(error).__name__})') from error
+
+    def superseded(self, body):
+        return self.call('superseded', body) if hasattr(self.backend, 'superseded') else False
+
+    @property
+    def historical(self):
+        return getattr(self.backend, 'historical', False) is True
 
 
 class PublicationTransport:
@@ -15,6 +70,19 @@ class PublicationTransport:
 
     def body(self, path):
         return pathlib.Path(path).read_text()
+
+    def scoreboard_publisher(self):
+        """Optional operator-supplied backend; ordinary posting remains the default."""
+        return None
+
+    def prior_board_comments(self):
+        return None
+
+    def publication_scope(self):
+        return contextlib.nullcontext()
+
+    def publication_superseded(self, body_file):
+        return False
 
     def current_pull(self):
         raise NotImplementedError
@@ -82,8 +150,47 @@ class NativePublication(PublicationTransport):
         self.source, self.api, self.repository = source, source.api, source.repository
         self.prefix = 'repos/' + self.repository.name
 
+    def scoreboard_publisher(self):
+        # Only the trusted process environment selects executable code. PR and
+        # project configuration must never select a publication implementation.
+        factory = os.environ.get('TAUCETI_NATIVE_REVIEW_PUBLISHER')
+        if hasattr(self, '_scoreboard_backend') and getattr(self, '_scoreboard_factory', None) == factory:
+            return self._scoreboard_backend
+        self._scoreboard_factory = factory
+        if not factory:
+            self._scoreboard_backend = None
+            return None
+        try:
+            module, name = factory.split(':', 1)
+            self._scoreboard_backend = ConfiguredPublisher(getattr(importlib.import_module(module), name)(self))
+            return self._scoreboard_backend
+        except (PermissionError, ImportError, AttributeError, TypeError, ValueError) as error:
+            raise publisher_blocked(f'native publication backend unavailable ({type(error).__name__})') from error
+
     def current_pull(self):
         return self.source.pull(self.number)
+
+    def prior_board_comments(self):
+        backend = self.scoreboard_publisher()
+        return backend.comments() if backend is not None else None
+
+    def publication_scope(self):
+        backend = self.scoreboard_publisher()
+        return getattr(backend, 'scope', contextlib.nullcontext)()
+
+    def publication_superseded(self, body_file):
+        backend = self.scoreboard_publisher()
+        return getattr(backend, 'superseded', lambda body: False)(self.body(body_file))
+
+    def current(self):
+        backend = self.scoreboard_publisher()
+        if backend is None or not getattr(backend, 'historical', False):
+            return super().current()
+        row = self.current_pull()
+        if not isinstance(row, dict) or row.get('state') not in {'open', 'closed'}:
+            raise Incomplete('native publication source is unavailable')
+        self.historical_head = row['state'] == 'closed' or row.get('head', {}).get('sha') != self.head
+        return True  # Receipt-backed verdicts belong to the retained commit.
 
     def identity(self):
         return self.source.publisher_key()
@@ -120,7 +227,7 @@ class NativePublication(PublicationTransport):
         # Native reviews need a changed-line position; use the prepared exact
         # diff. Unrepresentable filenames/anchors use a head-bound conversation
         # finding, retaining the same rubric/reply semantics.
-        if action.get('conversation'):
+        if action.get('conversation') or getattr(self, 'historical_head', False):
             return None
         path = action.get('path') or ''
         diff = pathlib.Path(self.plan['scoreboard_body']).parent / 'diff.txt'
@@ -174,6 +281,14 @@ class NativePublication(PublicationTransport):
                       key=lambda row: (row['updated_at'], row['id']), reverse=True)
 
     def comment(self, method, identifier, body_file=None, failures=None, action=''):
+        if method in {'PATCH', 'DELETE'}:
+            row = next((row for row in self.source.comments(self.number) if row['id'] == identifier), None)
+            if row is None:
+                raise Incomplete('native comment ownership is unavailable')
+            if '<!--tauceti-source:v2 ' in row.get('body', ''):
+                if method == 'DELETE':
+                    return None  # Immutable history is never ordinary duplicate cleanup.
+                raise publisher_blocked('receipt-backed scoreboard requires its trusted publisher')
         endpoint = (f'{self.prefix}/issues/{self.number}/comments' if method == 'POST'
                     else f'{self.prefix}/issues/comments/{identifier}')
         result = self.api.request(method, endpoint, {'body': self.body(body_file)} if body_file else None)

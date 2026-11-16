@@ -783,7 +783,11 @@ def _main(cleanup, leases, phase):
     # Older workers pass this flag. Accept it during rolling upgrades without limiting reviews.
     ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--conf")
+    ap.add_argument("--publication-protocol", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.publication_protocol:
+        print(json.dumps({"native_publisher": 2}))
+        return
     # The source adapter validates both legacy GitHub names and qualified native
     # selectors, including their repository/server identity binding.
     if not a.sync_only:
@@ -972,7 +976,9 @@ def _main(cleanup, leases, phase):
     # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
     prior_board = None
     if a.mode == "commit" and not (a.fresh or a.shadow):
-        prior_board = latest_scoreboard(issue_comments(a.repo, a.pr) or [])
+        board_transport = publication.post.transport_for(a.repo, int(a.pr), head, {}, publication.post)
+        trusted = getattr(board_transport, 'prior_board_comments', lambda: None)()
+        prior_board = latest_scoreboard((issue_comments(a.repo, a.pr) or []) if trusted is None else trusted)
     prior_board_path = work / "prior_scoreboard.json"
     prior_board_path.write_text(json.dumps(prior_board or {}))
     if replies:
@@ -1116,8 +1122,11 @@ def _main(cleanup, leases, phase):
     if current != head:
         write_review_result(current, False, outcome='head-changed', expected_head=head)
         return HEAD_CHANGED_EXIT
-    publisher = publication.post.transport_for(a.repo, int(a.pr), head, {},
-                                               publication.post).identity() if a.post else None
+    posting_transport = publication.post.transport_for(a.repo, int(a.pr), head, {},
+                                                       publication.post) if a.post else None
+    publisher = posting_transport.identity() if posting_transport else None
+    if posting_transport:
+        publication.prepare_review(posting_transport, plan)
     context_path = work / 'review-context.json'
     write_context(context_path, dict(json.loads(context_path.read_text()), publisher=publisher, archive_dir=outbox))
     cleanup.pop_all()
