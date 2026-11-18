@@ -155,6 +155,7 @@ def test_the_rates_in_force_are_the_providers_list_prices():
         "gpt-6-sol":                (2.0,   10.0, 0.2),
         "gpt-6.1-sol":              (2.0,   10.0, 0.1),
         "gpt-6-luna":               (0.1,   0.5,  0.01),
+        "gpt-6-astra":              (10.0,  50.0, 1.0),
         "deepseek/deepseek-v4-pro": (0.435, 0.87, 0.004),
         "minimax/minimax-m3":       (0.3,   1.2,  0.3),
         "x-ai/grok-4.3":            (1.25,  2.5,  1.25),

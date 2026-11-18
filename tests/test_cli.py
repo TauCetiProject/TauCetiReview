@@ -38,7 +38,9 @@ def test_pr_ref_lookup_does_not_require_new_pr_view_field():
     assert '"headRefOid,baseRefOid"' not in source
 
 
-def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
+def _engine_model_arg(reviewer, env_var, env_model, flags, engine_flag):
+    """Run the CLI front end up to the engine invocation and return the value it forwards for
+    `engine_flag` (None when the flag is not forwarded)."""
     class EngineCalled(Exception):
         def __init__(self, cmd):
             self.cmd = cmd
@@ -48,6 +50,40 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
             raise EngineCalled(cmd)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+        argv = ["tauceti-review", "1", "--reviewer", reviewer, "--no-archive",
+                "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
+                "--submitted-by", "test-reviewer", "--max-rounds-per-day", "1", *flags]
+        stack.enter_context(patch.object(sys, "argv", argv))
+        stack.enter_context(patch.dict(os.environ, {"TAUCETI_CLAUDE_MODEL": "",
+                                                    "TAUCETI_CODEX_MODEL": "",
+                                                    env_var: env_model}))
+        stack.enter_context(patch.object(cli, "run", fake_run))
+        stack.enter_context(patch.object(cli, "need"))
+        stack.enter_context(patch.object(cli.shutil, "which",
+                                        side_effect=lambda name: f"/bin/{name}" if name == reviewer else None))
+        stack.enter_context(patch.object(cli.subprocess, "run", return_value=types.SimpleNamespace(
+            returncode=0, stdout=b"diff --git a/x.lean b/x.lean\n+x\n", stderr=b"")))
+        stack.enter_context(patch.object(cli, "resolve_repo_dir",
+                                        return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
+        stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
+        stack.enter_context(patch.object(cli, "gh_json", return_value={}))
+        stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
+        stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
+        stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
+        stack.enter_context(patch.object(cli, "prepare_review_source"))
+        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        try:
+            cli.main()
+        except EngineCalled as call:
+            cmd = call.cmd
+        else:
+            raise AssertionError("CLI did not invoke the review engine")
+    assert "--max-rounds-per-day" not in cmd, cmd
+    return cmd[cmd.index(engine_flag) + 1] if engine_flag in cmd else None
+
+
+def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
     cases = [
         ("", [], None),
         # Whitespace-only is truthy and easy to produce from a CI variable; it must not reach
@@ -59,36 +95,24 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
         ("claude-fable-5-1", ["--claude-model", "claude-opus-5"], "claude-opus-5"),
     ]
     for env_model, flags, expected in cases:
-        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
-            argv = ["tauceti-review", "1", "--reviewer", "claude", "--no-archive",
-                    "--no-mathlib", "--workdir", tmp, "--store", tmp + "/store",
-                    "--submitted-by", "test-reviewer", "--max-rounds-per-day", "1", *flags]
-            stack.enter_context(patch.object(sys, "argv", argv))
-            stack.enter_context(patch.dict(os.environ, {"TAUCETI_CLAUDE_MODEL": env_model}))
-            stack.enter_context(patch.object(cli, "run", fake_run))
-            stack.enter_context(patch.object(cli, "need"))
-            stack.enter_context(patch.object(cli.shutil, "which",
-                                            side_effect=lambda name: "/bin/claude" if name == "claude" else None))
-            stack.enter_context(patch.object(cli.subprocess, "run", return_value=types.SimpleNamespace(
-                returncode=0, stdout=b"diff --git a/x.lean b/x.lean\n+x\n", stderr=b"")))
-            stack.enter_context(patch.object(cli, "resolve_repo_dir",
-                                            return_value=pathlib.Path(cli.__file__).resolve().parent.parent))
-            stack.enter_context(patch.object(cli, "pr_ref_oids", return_value=("a" * 40, "b" * 40)))
-            stack.enter_context(patch.object(cli, "gh_json", return_value={}))
-            stack.enter_context(patch.object(cli, "fetch_thread_replies", return_value={}))
-            stack.enter_context(patch.object(cli, "rubrics_repo_sha", return_value=("c" * 40, False)))
-            stack.enter_context(patch.object(cli, "merge_base_sha", return_value="b" * 40))
-            stack.enter_context(patch.object(cli, "prepare_review_source"))
-            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
-            try:
-                cli.main()
-            except EngineCalled as call:
-                cmd = call.cmd
-            else:
-                raise AssertionError("CLI did not invoke the review engine")
-            assert "--max-rounds-per-day" not in cmd, cmd
-            actual = cmd[cmd.index("--claude-model") + 1] if "--claude-model" in cmd else None
-            assert actual == expected, (env_model, flags, cmd)
+        actual = _engine_model_arg("claude", "TAUCETI_CLAUDE_MODEL", env_model, flags, "--claude-model")
+        assert actual == expected, (env_model, flags, actual)
+
+
+def test_codex_model_reaches_engine_and_flag_overrides_worker_environment():
+    # Unset must forward nothing: an explicit --codex-model opts the engine out of the
+    # Sol->Terra fallback, so the default path has to stay flag-free.
+    cases = [
+        ("", [], None),
+        ("   ", [], None),
+        ("gpt-6-astra", [], "gpt-6-astra"),
+        ("", ["--codex-model", "  gpt-6-astra  "], "gpt-6-astra"),
+        ("", ["--codex-model", "gpt-6-astra"], "gpt-6-astra"),
+        ("gpt-6-astra", ["--codex-model", "gpt-6.1-sol"], "gpt-6.1-sol"),
+    ]
+    for env_model, flags, expected in cases:
+        actual = _engine_model_arg("codex", "TAUCETI_CODEX_MODEL", env_model, flags, "--codex-model")
+        assert actual == expected, (env_model, flags, actual)
 
 
 
