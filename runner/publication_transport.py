@@ -285,10 +285,6 @@ class NativePublication(PublicationTransport):
             row = next((row for row in self.source.comments(self.number) if row['id'] == identifier), None)
             if row is None:
                 raise Incomplete('native comment ownership is unavailable')
-            if '<!--tauceti-source:v2 ' in row.get('body', ''):
-                if method == 'DELETE':
-                    return None  # Immutable history is never ordinary duplicate cleanup.
-                raise publisher_blocked('receipt-backed scoreboard requires its trusted publisher')
         endpoint = (f'{self.prefix}/issues/{self.number}/comments' if method == 'POST'
                     else f'{self.prefix}/issues/comments/{identifier}')
         result = self.api.request(method, endpoint, {'body': self.body(body_file)} if body_file else None)
