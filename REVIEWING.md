@@ -199,6 +199,14 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
+- **Crashed rubrics.** A rubric that produces no verdict (a refused tool call, an unreadable CLI
+  stream, an answer with no parseable verdict) is a crash, not a review. When crashes would decide
+  the scoreboard, because no rubric holds a `request_changes` or `block` made on this head, nothing
+  is posted: the run exits with status 4, its last line `review withheld: ...` names each crash
+  kind, the round is recorded as `withheld` (not a full review pass), and the next run re-runs the
+  crashed rubrics. A scoreboard published beside a genuine adverse verdict lists each errored
+  rubric's kind under `errors` in its hidden metadata. The engine log shows
+  `[<rubric>] no verdict: <kind>` for every crash.
 - **Concurrent reviewers.** Before spending inference, a contributing run acquires a renewable
   Git lease for the repository, PR and exact head. Another holder makes the run yield without
   inference (exit status 81), regardless of model. Leases release on exit and expire after crashes.

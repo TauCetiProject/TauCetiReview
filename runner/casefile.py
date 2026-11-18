@@ -141,6 +141,12 @@ def update_case_file(state_map, rubric, res, head_sha, digest=None, rubrics_vers
         # An infrastructure error blocks the scoreboard but is not a contestable finding and must
         # never produce a review thread.
         cf.pop("pending_thread_run_id", None)
+    # Why the last run produced no verdict (review.error_kind's closed vocabulary), so a scoreboard
+    # that shows this rubric as `error` can say why. Dropped once a run produces a verdict.
+    if verdict == "error":
+        cf["error_kind"] = res.get("error_kind") or "unknown_error"
+    else:
+        cf.pop("error_kind", None)
     cf.setdefault("thread", None)
     cf.setdefault("author_replies", [])
     return cf

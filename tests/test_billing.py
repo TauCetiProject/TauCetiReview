@@ -220,12 +220,13 @@ def main():
     check("only one rubric ran (reserved)", pr["rounds"][0]["ran"], ["correctness"])
     check("spend = 1*COST", round(led["days"][today()], 6), round(COST, 6))
 
-    # --- H: report errors from this actual review invocation in the trusted post plan.
+    # --- H: report errors from this actual review invocation in the trusted post plan. A crash
+    # alone is withheld (tests/test_crash_withhold.py), so pair it with a genuine adverse verdict.
     print("H. unparseable reviewer output signals a failed review after publication")
-    _VERDICTS.clear(); _VERDICTS.update(correctness="error")
-    d, rd, store = _workspace(["correctness"])
+    _VERDICTS.clear(); _VERDICTS.update(correctness="error", reuse="request_changes")
+    d, rd, store = _workspace(["correctness", "reuse"])
     plan_path = d / "plan.json"
-    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness"],
+    led = _run(store, rd, d / "diff.txt", mode="commit", rubrics=["correctness", "reuse"],
                extra=["--post-plan-file", str(plan_path)])
     check("error verdict retained", led["prs"]["1"]["state"]["correctness"]["verdict"], "error")
     check("post plan signals review error", json.loads(plan_path.read_text())["review_error"], True)

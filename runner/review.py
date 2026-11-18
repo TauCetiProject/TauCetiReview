@@ -9,7 +9,7 @@ run stay deferred until the block clears. With `--auto-subset`, a re-review runs
 rubrics whose last round was not `approve`. The workflow commits the store after the run.
 """
 
-import argparse, datetime, hashlib, json, os, pathlib, random, re, secrets, sys, time
+import argparse, copy, datetime, hashlib, json, os, pathlib, random, re, secrets, sys, time
 
 if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--conf=") for arg in sys.argv[1:]):
     from tauceti_tools.review_project import bootstrap
@@ -87,6 +87,12 @@ PROVIDER_DOWN_LIMIT = 2
 # Exit status for that abort, distinct from an ordinary engine failure so the CLI can name the cause.
 PROVIDER_DOWN_EXIT = 3
 
+# Exit status for a round withheld because the reviewer crashed (withhold_crashed_round). Distinct
+# from PROVIDER_DOWN_EXIT on purpose: a driving worker refunds a provider outage as machine-wide, but
+# a crash may be specific to this PR, so it is charged as an ordinary failed review, exactly as the
+# errored scoreboard it replaces was, and that worker's review-error budget still bounds the retries.
+REVIEWER_CRASHED_EXIT = 4
+
 # How the abort names each cause on its final log line. Plain operator English rather than the token,
 # because that line is what a driving worker reads to classify the failure.
 _PROVIDER_DOWN_PHRASE = {
@@ -115,9 +121,23 @@ def error_kind(res):
             return kind
     if res.get("error_status") == 429:
         return "rate_limited"
+    # Structured facts the CLI reported about its own run, for the failures no provider message
+    # names. These are the crashes a reviewer machine's local setup causes (a tool the CLI refused,
+    # an output stream this runner cannot read), and each points its operator at a different fix.
+    if (res.get("tool_trace_meta") or {}).get("denied_calls"):
+        return "tool_denied"
+    subtype = res.get("error_subtype")
+    if subtype == "error_max_turns":
+        return "max_turns"
+    if subtype == "error_during_execution":
+        return "execution_error"
     if res.get("returncode"):
         return "unknown_error"
-    return "no_verdict"  # the CLI exited 0 but emitted nothing this runner could parse
+    if res.get("parse_error"):
+        return "unparseable_output"  # the CLI exited cleanly but its own output stream did not parse
+    if _cli_reports_failure(res):
+        return "cli_error"  # the CLI flagged its run as failed without saying why
+    return "no_verdict"  # the CLI exited cleanly, but its answer carried no parseable verdict
 
 
 def abort_provider_down(ctx):
@@ -168,6 +188,88 @@ def stderr_summary(res, limit=200):
             return line.strip()[:limit]
     return ""
 
+
+
+def crash_decides_verdict(states, crashed, state_map, head):
+    """True when this round's crashes, and not a review, would decide the scoreboard's verdict.
+
+    `crashed` are the rubrics that ran this round and produced no verdict. Any one of them turns an
+    otherwise green scoreboard into "changes requested", and the merge queue drops a PR whose
+    scoreboard is not green, so a threshold above one would still let a single crash block a
+    merge. Only a genuine adverse verdict at this head (a `request_changes` or `block` reviewed on
+    this commit, or one on the published board this round reuses) makes the crashes irrelevant to
+    the outcome: the PR is not mergeable either way, and that verdict's findings must still reach
+    the author."""
+    if not crashed:
+        return False
+
+    def adverse_here(rubric):
+        if states.get(rubric) not in ("blocking_request", "blocking_block"):
+            return False
+        cf = state_map.get(rubric) or {}
+        return not cf.get("verdict") or cf.get("reviewed_sha") == head
+
+    return not any(adverse_here(r) for r in states)
+
+
+def withhold_crashed_round(ctx, crashed, before, had_contest, round_record):
+    """End the round without publishing, because the reviewer crashed rather than reviewed.
+
+    The provider-down abort's sibling. A rubric that produced no verdict (a refused tool, an
+    unreadable stream, an answer with no parseable verdict) says nothing about the code, yet it
+    renders as an `error` row, and the merge queue treats that scoreboard as not approved and drops
+    even an admin's merge. A reviewer group whose local setup crashes most rubrics posted such
+    scoreboards for 92% of its rubric runs, blocking PRs until someone else re-reviewed them.
+
+    As there, the error case files stay (they carry the crash kind, and an `error` state re-runs on
+    the next round), spend stays in the ledger, the publication write-ahead marker is cleared, and
+    nothing reaches the PR. A rubric that produced a verdict keeps it, so the next round re-runs only
+    the crashed ones, except where the verdict had publication still owed: an approval that would
+    close an open thread or answer a contest is rolled back to its case file from before this round
+    (`before`), and a crashed rubric's contest watermark likewise, so the next round re-runs them and
+    publishes what this one could not. The round is recorded as `withheld` so its spend counts and
+    its run records keep distinct round numbers; it is not a full review pass."""
+    state_map = ctx.state_map
+    for rubric in set(ctx.ran):
+        cf = state_map.get(rubric) or {}
+        owed = (cf.get("verdict") == "approve"
+                and ((cf.get("thread") or {}).get("comment_id") or rubric in had_contest))
+        if owed:
+            if rubric in before:
+                state_map[rubric] = before[rubric]
+            else:
+                state_map.pop(rubric, None)
+        elif rubric in crashed and rubric in had_contest:
+            prior = (before.get(rubric) or {}).get("last_reply_seen")
+            if prior is None:
+                cf.pop("last_reply_seen", None)
+            else:
+                cf["last_reply_seen"] = prior
+    ctx.pr_state.pop("pending_publication_head_sha", None)
+    ctx.pr_state.setdefault("rounds", []).append(round_record)
+    # A caller may hold an earlier plan at these paths (CI writes the in-progress board's there and
+    # posts whatever plan it finds at the end). Leave nothing for it to post.
+    for path in (ctx.a.post_plan_file, ctx.a.scoreboard_file):
+        if path:
+            pathlib.Path(path).unlink(missing_ok=True)
+    if not ctx.a.dry_run:
+        ctx.ledger.persist()
+    kinds = {}
+    for rubric in crashed:
+        kind = (state_map.get(rubric) or {}).get("error_kind") or "unknown_error"
+        kinds.setdefault(kind, []).append(rubric)
+    print(
+        f"\nWithholding the scoreboard: {len(crashed)} rubric(s) have no verdict at this head and no "
+        f"rubric holds an adverse verdict here, so the outcome would be decided by crashes. Nothing "
+        f"was posted to #{ctx.a.pr}; the rubrics that crashed re-run on the next round.",
+        file=sys.stderr,
+    )
+    # Last line, for the same reason as the provider-down abort's: a driving worker reports a failed
+    # review by the last non-empty line of this log.
+    detail = "; ".join(f"{kind}: {', '.join(sorted(rs))}" for kind, rs in sorted(kinds.items()))
+    print(f"review withheld: the reviewer crashed on {len(crashed)} rubric(s) ({detail})",
+          file=sys.stderr)
+    sys.exit(REVIEWER_CRASHED_EXIT)
 
 
 def emit_round_archive(a, prov, head, ran, run_results, states, overall, halted, round_cost,
@@ -430,6 +532,11 @@ def run_rubric(ctx, rubric):
                prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
                verdict_obj=extract_verdict(res.get("text", ""), marker)
                if has_verdict(res) else None)
+    if res["verdict_obj"] is None:
+        # Why the rubric crashed, from the final attempt. A closed vocabulary, so unlike the stderr
+        # it is read from it travels to the case file, the archive and the scoreboard's metadata,
+        # where a reviewer machine's operator can read it without that machine's logs.
+        res["error_kind"] = error_kind(res)
     # Normalize finding file paths to PR-relative (strip the reviewer-workspace prefix) so the
     # rendered locations and the thread anchor are valid PR paths.
     vo = res.get("verdict_obj")
@@ -477,6 +584,7 @@ def run_rubric(ctx, rubric):
             # were used, so an inherited rate is visible beside the sha of the table it came from.
             "price_inherited": res.get("price_inherited"),
             "verdict": vo.get("verdict") or "error",
+            "error_kind": res.get("error_kind"),
             "summary": vo.get("summary"), "findings": vo.get("findings") or [],
             "fidelity": "exact",
         }
@@ -525,7 +633,7 @@ def run_rubric(ctx, rubric):
     # line is not — under GITHUB_ACTIONS the workflow log is as public as the repo — so it prints only
     # for a local operator, which is precisely the case that had nothing to go on.
     if not v:
-        kind = error_kind(res)
+        kind = res["error_kind"]
         print(f"[{rubric}] no verdict: {kind}", file=sys.stderr)
         # Count the ATTEMPTS this rubric spent confirming the diagnosis, not the rubric. Each of them
         # was a separate dispatch to the same provider seconds apart, so two of them are the two
@@ -916,7 +1024,7 @@ def main():
         # here, so this reflects the ledger's existing full-round count).
         if a.budget_file:
             prior_full = sum(1 for r in pr_state.get("rounds", [])
-                             if r.get("mode") not in ("reply", "repair", "carry"))
+                             if r.get("mode") not in ("reply", "repair", "carry", "withheld"))
             full_rounds = prior_full
             budget_spent = full_rounds >= a.review_budget and not all_green
             pathlib.Path(a.budget_file).write_text(json.dumps(
@@ -1038,6 +1146,9 @@ def main():
                      prov=prov, diff_full=diff_full, outdir=outdir, day=day, ledger=led,
                      spent_today=spent_today, codex_model_explicit=a.codex_model is not None)
 
+    # The case files as they stood before any rubric ran, for withhold_crashed_round to roll back.
+    before_round = copy.deepcopy(state_map)
+
     # Phase 1: the queued rubrics. Reserve before spending so a call can't breach the cap.
     # A `block` verdict halts the round: blocked code gets reworked or abandoned, and approvals
     # bought on this commit go stale at the fix push anyway, so reviewing the remaining rubrics
@@ -1079,6 +1190,19 @@ def main():
 
     spent_today, ran, run_results = ctx.spent_today, ctx.ran, ctx.run_results
     states = {r: effective_state(r) for r in candidates}
+    # Every local `error` row the board would show, not only this invocation's: a round that ran
+    # nothing (the daily budget already spent) must not publish the crash it withheld last time.
+    # A shadow round publishes nothing, so it keeps its archive record of the crash.
+    crashed = sorted(r for r in candidates
+                     if states[r] == "error" and (state_map.get(r) or {}).get("verdict"))
+    if not a.shadow and crash_decides_verdict(states, crashed, state_map, head):
+        withheld_cost = round(ctx.spent_today - spent_start, 6)
+        withhold_crashed_round(ctx, crashed, before_round, had_contest, {
+            "round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "mode": "withheld", "ran": ran, "states": states, "cost": withheld_cost,
+            "tokens": sum_usage(run_results), "prices_sha": PRICES_SHA, "halted_at": halted,
+            "head_sha": head, "rubrics_version": rubrics_version, "patch_digest": digest,
+            "run_ids": [r.get("run_id") for r in run_results]})
     overall = overall_label(list(states.values()), stopped)
     # Every blocking rubric green on this head (fresh, not stale). Drives both the auto-merge gate
     # and the budget signal below.
@@ -1105,7 +1229,7 @@ def main():
                       else "carry" if (a.mode == "commit" and not ran and carried)
                       else a.mode)
     prior_full = sum(1 for r in pr_state.get("rounds", [])
-                     if r.get("mode") not in ("reply", "repair", "carry"))
+                     if r.get("mode") not in ("reply", "repair", "carry", "withheld"))
     full_rounds = prior_full + (0 if effective_mode in ("reply", "repair", "carry") else 1)
     prov["mode"] = effective_mode
     prov["full_rounds"] = full_rounds
