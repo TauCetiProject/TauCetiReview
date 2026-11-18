@@ -57,6 +57,9 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
     bootstrap()
 
 PROVIDER_DOWN_EXIT = 3
+# review.py's status for a round it withheld because the reviewer crashed on rubrics whose verdicts
+# would have decided the scoreboard. Same duplication, pinned by tests/test_crash_withhold.py.
+REVIEWER_CRASHED_EXIT = 4
 COORDINATED_ELSEWHERE_EXIT = 81
 HEAD_CHANGED_EXIT = 82
 PREPARATION_WAIT_EXIT = repository_diff.PREPARATION_WAIT_EXIT
@@ -1139,6 +1142,12 @@ def _main(cleanup, leases, phase):
     # keep the status distinct so a driving worker can tell "wait and retry" from "this round failed".
     if r.returncode == PROVIDER_DOWN_EXIT:
         sys.exit(PROVIDER_DOWN_EXIT)
+    # Likewise a round withheld because the reviewer crashed: the engine's last line names the crash
+    # kinds and nothing was rendered to post. Exit on that line rather than a generic "command
+    # failed". A driving worker charges it as a failed review, as it did the errored scoreboard.
+    if r.returncode == REVIEWER_CRASHED_EXIT:
+        publication.cleanup_inputs(work)
+        sys.exit(REVIEWER_CRASHED_EXIT)
     if r.returncode != 0:
         if a.post and plan.is_file() and json.loads(plan.read_text()).get('head_sha') == head:
             publication.retain(a.repo, a.pr, plan, store / 'ledger.json', actor=publisher, archive_dir=outbox)

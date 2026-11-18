@@ -403,7 +403,7 @@ def _tool_trace(stream_lines, root):
     Returns `(trace, meta, result_event)`. Events are consumed as they are parsed and only the
     terminal result is retained, so a long review does not sit in memory twice."""
     trace, pending, result = [], {}, None
-    total = malformed = successful = 0
+    total = malformed = successful = denied = 0
     for line in stream_lines:
         line = line.strip()
         if not line.startswith("{"):
@@ -416,6 +416,11 @@ def _tool_trace(stream_lines, root):
         kind = ev.get("type")
         if kind == "result":
             result = ev  # last one wins; multi-result streams are not expected
+            continue
+        # The CLI's own announcement that it refused a tool call. Counted, never read further: its
+        # `message` names the command that was refused, which is the reviewer's input, not ours.
+        if kind == "system" and ev.get("subtype") == "permission_denied":
+            denied += 1
             continue
         msg = ev.get("message")
         # Only assistant/user events carry the message objects this trace reads. Other stream
@@ -451,6 +456,12 @@ def _tool_trace(stream_lines, root):
             "trace_truncated": total > len(trace)}
     if malformed:
         meta["malformed_events"] = malformed
+    # The terminal event lists the calls the CLI refused as well; take whichever count is larger, so
+    # a CLI that reports denials in only one of the two places is still seen.
+    refusals = (result or {}).get("permission_denials")
+    denied = max(denied, len(refusals) if isinstance(refusals, list) else 0)
+    if denied:
+        meta["denied_calls"] = denied
     return trace, meta, result
 
 
