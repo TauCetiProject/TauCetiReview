@@ -43,22 +43,23 @@ def repository(tmp, files):
 
 def test_violations_are_the_shared_measure_admission_applies():
     with tempfile.TemporaryDirectory() as tmp:
-        files = {f"TauCeti/Part{i}.lean": 700 for i in range(3)}
+        files = {f"TauCeti/Part{i}.lean": 700 for i in range(5)}
         directory, base, head = repository(tmp, files)
         found = cli.diff_guard_violations(directory, base, head)
         with ci_git.repository_reader(directory) as reader:
             expected = tuple(ci_git.pr_guards(reader, base, head, scope=False)["violations"])
         assert found == expected and len(found) == 1, found
-        assert found[0].startswith("too large to review: +2100 / -0 lines across 3 files"), found
+        assert found[0].startswith("too large to review: +3500 / -0 lines across 5 files"), found
 
 
 def test_new_file_cap_and_a_passing_diff():
     with tempfile.TemporaryDirectory() as tmp:
-        directory, base, head = repository(tmp, {"TauCeti/Long.lean": 1001})
+        directory, base, head = repository(tmp, {"TauCeti/Long.lean": 1251})
         (found,) = cli.diff_guard_violations(directory, base, head)
-        assert found.startswith("TauCeti/Long.lean: new Lean files must be at most 1000 lines (found 1001)")
+        assert found.startswith(
+            f"TauCeti/Long.lean: new Lean files must be at most {ci_git.NEW_FILE_LINE_CAP} lines (found 1251)")
     with tempfile.TemporaryDirectory() as tmp:
-        directory, base, head = repository(tmp, {"TauCeti/Short.lean": 1000})
+        directory, base, head = repository(tmp, {"TauCeti/Short.lean": ci_git.NEW_FILE_LINE_CAP})
         assert cli.diff_guard_violations(directory, base, head) == ()
 
 
