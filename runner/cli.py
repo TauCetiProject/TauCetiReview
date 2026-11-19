@@ -44,9 +44,11 @@ from tauceti_tools.review_source import source_for
 try:
     from . import pr_diff as repository_diff
     from . import source_cache, source_tree, publication
+    from .admission_policy import comment_id
 except ImportError:
     import pr_diff as repository_diff
     import source_cache, source_tree, publication
+    from admission_policy import comment_id
 
 # review.py's abort status when the provider itself is unusable. Duplicated rather than imported:
 # this CLI drives the engine as a subprocess and never imports it (the engine's modules use flat
@@ -517,7 +519,10 @@ def latest_scoreboard(comments):
     """The newest completed scoreboard on the PR, at any head and by any poster, as
     {comment_id, by, head_sha, states}; None if there is none. In-progress (init) boards carry no
     verdicts and are skipped. Duplicates merge_from_scoreboard's parsing: this CLI never imports the
-    engine's modules (see PROVIDER_DOWN_EXIT above)."""
+    engine's modules (see PROVIDER_DOWN_EXIT above), only admission_policy's dependency-free
+    comment_id. Ordered as admission_policy's latest_current_scoreboard orders them: newest update
+    timestamp, then the larger comment id, so a same-second tie resolves the same way whatever order
+    the comments arrive in; input position is the last tie-break, for comments without an id."""
     best = None
     for index, c in enumerate(comments):
         body = c.get("body") or ""
@@ -533,7 +538,7 @@ def latest_scoreboard(comments):
         if (not isinstance(meta.get("states"), dict) or not isinstance(meta.get("head_sha"), str)
                 or not re.fullmatch(r"[0-9a-f]{40}", meta["head_sha"])):
             continue
-        key = (c.get("updated_at") or c.get("created_at") or meta.get("ts") or "", index)
+        key = (c.get("updated_at") or c.get("created_at") or meta.get("ts") or "", comment_id(c), index)
         if best is None or key > best[0]:
             best = (key, {"comment_id": c.get("id"), "by": (c.get("user") or {}).get("login"),
                           "head_sha": meta["head_sha"], "states": meta["states"],

@@ -48,6 +48,13 @@ comments = [
 check("newest completed board wins, init and plain comments skipped", cli.latest_scoreboard(comments),
       {"comment_id": 2, "by": "bob", "head_sha": H2, "states": {"reuse": "stale"}})
 check("no board", cli.latest_scoreboard(comments[3:]), None)
+same_second = [
+    board_comment(11, "alice", H1, {"reuse": "green"}, "2026-09-06T00:00:00Z"),
+    board_comment(12, "bob", H2, {"reuse": "blocking_request"}, "2026-09-06T00:00:00Z"),
+]
+for name, ordered in (("in id order", same_second), ("in reverse order", same_second[::-1])):
+    check(f"a same-second tie goes to the larger comment id, {name}",
+          cli.latest_scoreboard(ordered)["comment_id"], 12)
 
 print("seed_stale_approvals")
 HEAD = tb.HEAD
