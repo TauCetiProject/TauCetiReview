@@ -268,17 +268,20 @@ def merge_base_sha(repo, base, head, number=None):
 
 
 def prepare_review_source(repo, head, merge_base, work):
-    """One endpoint fetch supplies the canonical patch and exact source, without history."""
+    """One endpoint fetch supplies the canonical patch and exact source, without history.
+
+    Returns the PR-level diff guards this exact diff fails (see `diff_guard_violations`)."""
     if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, merge_base)):
         raise RuntimeError("invalid review comparison identity")
     source = review_source(repo)
     partial = work / "diff.txt.partial"
+    cache = CACHE_DIR / 'git' / source.cache_key
     try:
         with partial.open('wb') as out:
             paths = repository_diff.git_diff(source.repository.clone_url, merge_base, head,
                                             diff_out=out, limit=None, fetch_limit=None,
                                             source_dir=work / 'code',
-                                            cache_dir=CACHE_DIR / 'git' / source.cache_key,
+                                            cache_dir=cache,
                                             environment=source.git_environment())
         os.replace(partial, work / 'diff.txt')
         repository_diff.write_paths(work / 'paths.z', paths)
@@ -289,6 +292,32 @@ def prepare_review_source(repo, head, merge_base, work):
         raise
     finally:
         partial.unlink(missing_ok=True)
+    return diff_guard_violations(cache, merge_base, head)
+
+
+# The queue's sentence for a diff it cannot measure (TauCetiWorker tauceti_queue/diff_guard.py).
+DIFF_GUARD_UNMEASURABLE = "could not measure the PR's diff from local Git objects"
+
+
+def diff_guard_violations(cache, merge_base, head):
+    """The PR-level diff guards PR CI, queue admission and staging apply, on the fetched objects.
+
+    This is TauCetiTools' `ci_git.pr_guards` without path scope, the measure admission uses for a
+    PR that skipped PR CI, so a head it refuses is never reviewed. Unreadable line statistics
+    fail closed as a violation, as they do there; a host or Git failure is a preparation retry.
+    """
+    try:
+        from tauceti_tools.assets.scripts import ci_git
+    except ImportError:
+        return ()  # A Tools release without the shared measure; admission still applies it.
+    try:
+        with ci_git.repository_reader(cache) as git:
+            return tuple(ci_git.pr_guards(git, merge_base, head, scope=False)["violations"])
+    except ValueError:
+        return (DIFF_GUARD_UNMEASURABLE,)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise repository_diff.PreparationUnavailable(
+            f"could not measure the PR-level diff guards ({type(error).__name__})") from error
 
 
 def rubrics_repo_sha(repo_dir):
@@ -1009,7 +1038,7 @@ def _main(cleanup, leases, phase):
         if not merge_base:
             die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
         with preparation_step("exact Git source and diff"):
-            prepare_review_source(a.repo, head, merge_base, work)
+            guards = tuple(prepare_review_source(a.repo, head, merge_base, work) or ())
     except RuntimeError as error:
         if re.search(r"HTTP (?:404|422)|not our ref|unadvertised object", str(error), re.I):
             current, current_base = pr_ref_oids(a.repo, a.pr)
@@ -1033,6 +1062,16 @@ def _main(cleanup, leases, phase):
         ci_build = ci_build_status(build_meta, head)
     except Exception:
         ci_build = ""
+    if guards and ci_build.lower() != "success" and not a.shadow:
+        # A head without a green PR build (a self-tested PR skips PR CI) never met the PR-level
+        # diff guards there, and queue admission refuses it on exactly these. Spend no review on
+        # it; admission tells the author why, and a push to a new head is reviewed as usual.
+        print(f"PR #{a.pr} @ {head[:12]}: not reviewed, fails the PR-level diff guards: "
+              + "; ".join(guards), file=sys.stderr)
+        write_review_result(head, False, outcome="diff-guard", violations=list(guards))
+        if not a.keep and not a.workdir:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
     meta = gh_json(a.repo, a.pr, "title,body")
     (work / "pr_desc.txt").write_text(
         f"# {meta.get('title','')}\n\n{meta.get('body','') or ''}\n")
