@@ -262,6 +262,9 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
 
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
+# Forgejo scoreboards from the retired receipt publisher. They still count as ordinary posted
+# scoreboards, but the native transport refuses to edit or delete them, so a new board is posted.
+RECEIPT_SCOREBOARD_MARKER = "<!--tauceti-source:v2 "
 REVIEW_BOT = "tauceti-review-bot[bot]"
 
 
@@ -323,10 +326,11 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
 
     Prefer the store/plan id when discovery proves it is ours; otherwise reuse our newest discovered
     scoreboard. A foreign or missing known id is never PATCHed, and a new scoreboard is posted only
-    when this identity has none to reuse. Discovery is required: on failure, mutate nothing and let
-    the publication retry. A failed edit of our own comment is likewise a real error, never silently
-    re-posted. Identical text needs no PATCH only when this comment is strictly
-    newest: updated_at determines which scoreboard supersedes others. Our
+    when this identity has none to reuse. A legacy receipt-backed board is never reused: the newer
+    board posted beside it supersedes it, as any newer scoreboard does. Discovery is required: on
+    failure, mutate nothing and let the publication retry. A failed edit of our own comment is
+    likewise a real error, never silently re-posted. Identical text needs no PATCH only when this
+    comment is strictly newest: updated_at determines which scoreboard supersedes others. Our
     obsolete duplicates are still removed. Returns (sb_id, ok). `mine` overrides
     the actor login."""
     transport = transport or GitHubPublication(repo, pr, "", {}, sys.modules[__name__])
@@ -351,8 +355,9 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
 
     known_id = pr_state.get("scoreboard_comment_id") or plan_sb_id
     known = next((c for c in existing if c.get("id") == known_id), None) if known_id else None
-    ours = [c for c in existing if c.get("login") == me]
-    if known and known.get("login") == me:
+    ours = [c for c in existing if c.get("login") == me
+            and RECEIPT_SCOREBOARD_MARKER not in (c.get("body") or "")]
+    if known and any(c is known for c in ours):
         sb_id = known_id
     else:
         # The stored comment is foreign or gone. Reuse our newest scoreboard if one exists; unlike
