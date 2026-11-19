@@ -326,10 +326,10 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
 
     Prefer the store/plan id when discovery proves it is ours; otherwise reuse our newest discovered
     scoreboard. A foreign or missing known id is never PATCHed, and a new scoreboard is posted only
-    when this identity has none to reuse. A legacy receipt-backed board is never reused: the newer
-    board posted beside it supersedes it, as any newer scoreboard does. Discovery is required: on
-    failure, mutate nothing and let the publication retry. A failed edit of our own comment is
-    likewise a real error, never silently re-posted. Identical text needs no PATCH only when this
+    when this identity has none to reuse. A legacy receipt-backed board is never reused: the board
+    posted beside it supersedes it once completed, as any newer scoreboard does. Discovery is
+    required: on failure, mutate nothing and let the publication retry. A failed edit of our own
+    comment is likewise a real error, never silently re-posted. Identical text needs no PATCH only when this
     comment is strictly newest: updated_at determines which scoreboard supersedes others. Our
     obsolete duplicates are still removed. Returns (sb_id, ok). `mine` overrides
     the actor login."""

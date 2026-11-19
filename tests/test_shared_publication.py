@@ -259,17 +259,22 @@ class SharedPublication(unittest.TestCase):
         """Without the retired receipt publisher, our legacy receipt-backed board is not edited
         (the native transport refuses, which ended rounds with exit 86): a new board is posted
         beside it, and admission and the worker's reader both select the new board."""
-        from tauceti_tools.survey_facts import scoreboard_order
+        from tauceti_tools import survey_facts
 
         from runner import admission_policy
 
         with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
             w = workflow('forgejo', pathlib.Path(directory), stack)
-            meta = '<!--tauceti-meta:v1 ' + json.dumps(dict(head_sha=HEAD, mode='full')) + '-->'
-            legacy_body = '<!--tauceti-scoreboard-->\nOld\n' + meta + '\n<!--tauceti-source:v2 {}-->'
+            def meta(round):
+                return '<!--tauceti-meta:v1 ' + json.dumps(dict(head_sha=HEAD, mode='full', round=round)) + '-->'
+            legacy_body = '<!--tauceti-scoreboard-->\nOld\n' + meta(1) + '\n<!--tauceti-source:v2 {}-->'
             legacy = w.api.request('POST', 'repos/o/r/issues/7/comments', {'body': legacy_body})
+            # The ledger still names the legacy board as this PR's scoreboard.
+            ledger = json.loads(w.ledger.read_text())
+            ledger['prs']['7']['scoreboard_comment_id'] = legacy['id']
+            w.ledger.write_text(json.dumps(ledger))
             receipt = json.loads(w.receipt.read_text())
-            w.receipt.write_text(json.dumps(dict(receipt, scoreboard='<!--tauceti-scoreboard-->\nNew\n' + meta)))
+            w.receipt.write_text(json.dumps(dict(receipt, scoreboard='<!--tauceti-scoreboard-->\nNew\n' + meta(2))))
             assert publish(w) == 0
             assert legacy['body'] == legacy_body
             assert ('PATCH', f"repos/team/project/issues/comments/{legacy['id']}") not in w.api.writes
@@ -283,7 +288,7 @@ class SharedPublication(unittest.TestCase):
             for rows in (boards, boards[::-1]):
                 comment, _ = admission_policy.latest_current_scoreboard(rows, HEAD)
                 assert comment['id'] == new['id']
-                assert max(rows, key=scoreboard_order)['id'] == new['id']
+                assert survey_facts.scoreboard(rows)['round'] == 2
             # The next round edits the new board in place and still leaves the legacy one alone.
             transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
             board = w.receipt.parent / 'scoreboard.md'
