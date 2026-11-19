@@ -88,6 +88,14 @@ class BuildMetadata:
         return {}
 
 
+def test_a_tools_release_without_the_shared_measure_reviews_as_before():
+    older = types.ModuleType("ci_git")  # ci_git predating pr_guards and repository_reader
+    from tauceti_tools.assets import scripts
+    with patch.object(scripts, "ci_git", older), patch.dict(sys.modules, {
+            "tauceti_tools.assets.scripts.ci_git": older}):
+        assert cli.diff_guard_violations("/unused", "b" * 40, "a" * 40) == ()
+
+
 def run_cli(tmp, guards, build):
     """Run the CLI to the inference boundary; returns (exit code, engine invoked, result file)."""
     head = "a" * 40

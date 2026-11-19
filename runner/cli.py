@@ -309,6 +309,8 @@ def diff_guard_violations(cache, merge_base, head):
     try:
         from tauceti_tools.assets.scripts import ci_git
     except ImportError:
+        ci_git = None
+    if not (hasattr(ci_git, "pr_guards") and hasattr(ci_git, "repository_reader")):
         return ()  # A Tools release without the shared measure; admission still applies it.
     try:
         with ci_git.repository_reader(cache) as git:
