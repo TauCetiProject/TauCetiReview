@@ -255,6 +255,47 @@ class SharedPublication(unittest.TestCase):
             assert transport.comment('DELETE', row['id']) is None
             assert w.api.writes == writes
 
+    def test_new_board_is_posted_beside_our_receipt_backed_board(self):
+        """Without the retired receipt publisher, our legacy receipt-backed board is not edited
+        (the native transport refuses, which ended rounds with exit 86): a new board is posted
+        beside it, and admission and the worker's reader both select the new board."""
+        from tauceti_tools import survey_facts
+
+        from runner import admission_policy
+
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            w = workflow('forgejo', pathlib.Path(directory), stack)
+            def meta(round):
+                return '<!--tauceti-meta:v1 ' + json.dumps(dict(head_sha=HEAD, mode='full', round=round)) + '-->'
+            legacy_body = '<!--tauceti-scoreboard-->\nOld\n' + meta(1) + '\n<!--tauceti-source:v2 {}-->'
+            legacy = w.api.request('POST', 'repos/o/r/issues/7/comments', {'body': legacy_body})
+            # The ledger still names the legacy board as this PR's scoreboard.
+            ledger = json.loads(w.ledger.read_text())
+            ledger['prs']['7']['scoreboard_comment_id'] = legacy['id']
+            w.ledger.write_text(json.dumps(ledger))
+            receipt = json.loads(w.receipt.read_text())
+            w.receipt.write_text(json.dumps(dict(receipt, scoreboard='<!--tauceti-scoreboard-->\nNew\n' + meta(2))))
+            assert publish(w) == 0
+            assert legacy['body'] == legacy_body
+            assert ('PATCH', f"repos/team/project/issues/comments/{legacy['id']}") not in w.api.writes
+            boards = [row for row in w.api.conversation if '<!--tauceti-scoreboard-->' in row['body']]
+            assert len(boards) == 2
+            new = next(row for row in boards if row['id'] != legacy['id'])
+            state = json.loads(w.ledger.read_text())['prs']['7']
+            assert state['scoreboard_comment_id'] == new['id']
+            # A same-second tie still selects the new board (the larger comment id).
+            new['updated_at'] = legacy['updated_at']
+            for rows in (boards, boards[::-1]):
+                comment, _ = admission_policy.latest_current_scoreboard(rows, HEAD)
+                assert comment['id'] == new['id']
+                assert survey_facts.scoreboard(rows)['round'] == 2
+            # The next round edits the new board in place and still leaves the legacy one alone.
+            transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
+            board = w.receipt.parent / 'scoreboard.md'
+            assert post.upsert_scoreboard(w.source.key, 7, board, None, {}, [], transport=transport) == (new['id'], True)
+            assert legacy['body'] == legacy_body
+            assert all(not endpoint.endswith(f"/comments/{legacy['id']}") for _, endpoint in w.api.writes)
+
     def test_native_factory_is_selected_only_by_operator_environment(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
             w = workflow('forgejo', pathlib.Path(directory), stack)
