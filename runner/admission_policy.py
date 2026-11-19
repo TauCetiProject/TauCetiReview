@@ -149,14 +149,22 @@ def current_scoreboards(comments, head_sha):
             out.append((comment, meta))
     return out
 
+def comment_id(comment):
+    """A comment's numeric id, or -1 when it has none; booleans and padded strings are not ids."""
+    value = comment.get("id")
+    text = str(value) if isinstance(value, (int, str)) and not isinstance(value, bool) else ""
+    return int(text) if re.fullmatch(r"[0-9]+", text) else -1
+
 def latest_current_scoreboard(comments, head_sha):
     """The newest completed scoreboard for this exact head.
 
     Review init posts an in-progress scoreboard before running models. Ignore those while any
     completed scoreboard exists: starting a second review must not temporarily replace a green
     completed verdict with an empty in-progress one. If init is the only current-head scoreboard,
-    retain it and fail closed from its states. Comments normally arrive in creation order; use their
-    update timestamp first and their input position as a deterministic fallback/tie-break.
+    retain it and fail closed from its states. Order by update timestamp, then by the larger comment
+    id, as the worker's reader (TauCetiTools `survey_facts.scoreboard_order`) does, so that two
+    scoreboards edited in the same second resolve the same way whatever order a source returns
+    them in. Input position is the last tie-break, for comments without a numeric id.
     """
     boards = current_scoreboards(comments, head_sha)
     if not boards:
@@ -168,7 +176,7 @@ def latest_current_scoreboard(comments, head_sha):
         index, (comment, meta) = item
         timestamp = (comment.get("updated_at") or comment.get("created_at")
                      or meta.get("ts") or "")
-        return timestamp, index
+        return timestamp, comment_id(comment), index
 
     return max(enumerate(candidates), key=order)[1]
 
