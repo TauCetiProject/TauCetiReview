@@ -88,8 +88,10 @@ for line in sys.stdin:
  if method == 'initialized': continue
  result = {}
  if method == 'thread/start': result = {'thread': {'id': 'test-thread'}, 'model': params['model']}
- elif method == 'thread/turns/list': result = {'data': [{'id': t} for t in turns], 'nextCursor': None}
- elif method == 'thread/revert': turns = ['primer']
+ elif method == 'thread/turns/list':
+  assert params['itemsView'] == 'full'
+  result = {'data': turns, 'nextCursor': None}
+ elif method == 'thread/revert': turns = turns[:1]
  elif method == 'turn/start':
   prompt = params['input'][0]['text']
   marker = re.search(r'TAUCETI-VERDICT-[0-9a-f]+', prompt)
@@ -100,7 +102,11 @@ for line in sys.stdin:
    with open(__PROMPT__, 'w') as stream: stream.write(shared + prompt)
   else:
    turn, shared, text = 'primer', prompt, 'READY'
-  turns.append(turn)
+  # Retain what the app-server actually received/emitted. The production
+  # baseline check must validate full persisted history, not a synthetic READY.
+  turns.append({'id': turn, 'itemsView': 'full', 'items': [
+   {'type': 'userMessage', 'content': [{'type': 'inputText', 'text': prompt}]},
+   {'type': 'agentMessage', 'text': text}]})
   send({'id': message['id'], 'result': {'turn': {'id': turn}}})
   send({'method':'item/completed','params': {'turnId':turn,'item': {'type':'agentMessage','text':text}}})
   send({'method':'thread/tokenUsage/updated','params': {'turnId':turn,'tokenUsage':{
