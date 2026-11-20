@@ -201,7 +201,7 @@ def codex_primer_acknowledges(turn):
             continue  # the shared PR is untrusted user data, not an acknowledgement
         if kind == "agentMessage" and isinstance(item.get("text"), str):
             texts.append(item["text"])
-        elif kind == "reasoning" and not any(item.get(key) for key in ("summary", "content", "encryptedContent")):
+        elif kind == "reasoning" and not any(value for key, value in item.items() if key not in ("id", "type")):
             continue
         else:
             return False  # tools, substantive reasoning or unknown retained assistant content
