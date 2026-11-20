@@ -19,7 +19,7 @@ import archive
 from dataclasses import dataclass, field
 
 from reviewer_sessions import RoundReviewers, add_usage, subtract_usage
-from review_attempts import Attempts, fingerprint
+from review_attempts import Attempts, context_identity, fingerprint
 from ledger import Ledger
 from handoff import (DEFAULT_RUBRICS, can_reuse_completed_review, has_unhandled_contest,
                      rubrics_for, thread_action_rubrics)
@@ -254,7 +254,8 @@ def withhold_crashed_round(ctx, crashed, before, had_contest, round_record):
             else:
                 cf["last_reply_seen"] = prior
     ctx.pr_state.pop("pending_publication_head_sha", None)
-    ctx.pr_state.setdefault("rounds", []).append(round_record)
+    if ctx.ran or round_record.get("cost"):
+        ctx.pr_state.setdefault("rounds", []).append(round_record)
     # A caller may hold an earlier plan at these paths (CI writes the in-progress board's there and
     # posts whatever plan it finds at the end). Leave nothing for it to post.
     for path in (ctx.a.post_plan_file, ctx.a.scoreboard_file):
@@ -393,6 +394,8 @@ class RunContext:
     spent_today: float
     pr_state: dict = field(default_factory=dict)  # PR-level publication write-ahead marker
     sessions: object = None       # round-scoped provider primers, installed by main
+    input_identity: str | None = None
+    attempt_receipts: dict = field(default_factory=dict)
     codex_model_explicit: bool = False   # --codex-model was passed → honor the pin, skip auto-fallback
     ran: list = field(default_factory=list)
     run_results: list = field(default_factory=list)
@@ -464,9 +467,12 @@ def run_rubric(ctx, rubric):
     cached_round = ctx.sessions is not None
     receipts = None
     if cached_round:
-        template = str(prompt).replace(marker, "<one-time-marker>")
-        receipts = Attempts(outdir, rubric, fingerprint(a.repo, a.pr, head, round_num,
-                            rubrics_version, template, a.auth, os.path.realpath(a.tool_cwd),
+        template = str(prompt).replace(marker, "<one-time-marker>").replace(
+            str(pathlib.Path(a.tool_cwd).resolve()), "<review-workspace>")
+        if ctx.input_identity is None:
+            ctx.input_identity = context_identity(a)
+        receipts = Attempts(outdir, rubric, fingerprint(a.repo, a.pr, head,
+                            rubrics_version, template, a.auth, ctx.input_identity,
                             # Dispatch may downgrade Codex during the round. Recovery
                             # identity uses the configured models, not mutable runners.
                             sorted(providers), a.claude_model, a.codex_model or CODEX_MODEL,
@@ -485,11 +491,17 @@ def run_rubric(ctx, rubric):
         # A prior rubric may already have established the permitted downgrade
         # before a crash. Recover its paid fallback attempt without re-probing.
         model = CODEX_FALLBACK_MODEL
-    if (ctx.sessions is not None and provider in ("claude", "sonnet", "codex")
-            and hasattr(ctx.sessions, "needs_primer") and not (receipts and receipts.saved)
-            and ctx.sessions.needs_primer(provider, prompt, a.tool_cwd, model)
-            and ctx.spent_today + 2 * a.max_call_cost > a.daily_budget):
-        return False  # reserve for both the primer and the rubric
+    class NewCallBudgetUnavailable(Exception):
+        pass
+
+    def reserve(cached):
+        calls = 1
+        if (cached and hasattr(ctx.sessions, "needs_primer")
+                and ctx.sessions.needs_primer(provider, prompt, a.tool_cwd, model)):
+            calls += 1
+        if ctx.spent_today + calls * getattr(a, "max_call_cost", 0) > getattr(a, "daily_budget", float("inf")):
+            raise NewCallBudgetUnavailable
+
     started_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     attempts, t0 = [], time.monotonic()
 
@@ -510,6 +522,7 @@ def run_rubric(ctx, rubric):
                          _receipt_error_kind=receipt["error_kind"],
                          _receipt_model_unavailable=receipt["model_unavailable"])
             else:
+                reserve(True)
                 primer_cost, primer_usage = 0, {}
                 def checkpoint_primer(result):
                     nonlocal primer_cost, primer_usage
@@ -526,13 +539,19 @@ def run_rubric(ctx, rubric):
                                 settlement_cost=max(0, (r.get("cost_usd") or 0) - primer_cost),
                                 settlement_usage=subtract_usage(r.get("usage"), primer_usage))
                 ctx.sessions.finish()
+            ctx.attempt_receipts.update(receipts.used)
             ctx.spent_today = ctx.ledger.spent(day)
         else:
+            reserve(False)
             env, rev_home = reviewer_env(provider, keys, subscription)
             try:
                 r = fn(prompt, a.tool_cwd, model, env)
             finally:
                 cleanup_rev_home(rev_home)
+            ctx.spent_today += r.get("cost_usd") or 0
+            ctx.ledger.set_spent(day, ctx.spent_today)
+            if not a.dry_run:
+                ctx.ledger.persist()
         # Keep each attempt's execution facts: the retry path returns only the last result, but the
         # first attempt's spend/usage/failure is provenance too. error_kind rides along because it is
         # the only field that says *why* an attempt failed: a total auth failure otherwise reads as
@@ -555,28 +574,33 @@ def run_rubric(ctx, rubric):
                 and (r.get("_receipt_verdict") if "_receipt_verdict" in r
                      else extract_verdict(r.get("text", ""), marker)) is not None)
 
-    res = attempt()
-    cost = res.get("cost_usd") or 0.0
-    requested = model
-    downgraded = False
-    # Seamless codex model downgrade: the default model (Sol) needs a paid ChatGPT tier; a Free/Go
-    # subscription gets Terra and would otherwise fail EVERY codex rubric. Only the DEFAULT model
-    # auto-falls-back — an explicit --codex-model pin is honored as chosen. Codex has been seen to wrap
-    # a TRANSIENT server error in the same "model not supported" 400 an entitlement failure uses
-    # (openai/codex#14190), so reconfirm on the same model before downgrading: a transient rejection
-    # clears on the second try; a real unavailability repeats.
-    if (provider == "codex"
-            and not ctx.codex_model_explicit and (res.get("_receipt_model_unavailable") or codex_model_unavailable(res))):
-        res = attempt()  # reconfirm on the same model
-        cost += res.get("cost_usd") or 0.0
-        if not has_verdict(res) and (res.get("_receipt_model_unavailable") or codex_model_unavailable(res)):
-            model = CODEX_FALLBACK_MODEL  # rejected twice → treat as persistent → try the fallback
-            res = attempt()
+    try:
+        res = attempt()
+        cost = res.get("cost_usd") or 0.0
+        requested = model
+        downgraded = False
+        # Seamless codex model downgrade: the default model (Sol) needs a paid ChatGPT tier; a Free/Go
+        # subscription gets Terra and would otherwise fail EVERY codex rubric. Only the DEFAULT model
+        # auto-falls-back — an explicit --codex-model pin is honored as chosen. Codex has been seen to wrap
+        # a TRANSIENT server error in the same "model not supported" 400 an entitlement failure uses
+        # (openai/codex#14190), so reconfirm on the same model before downgrading: a transient rejection
+        # clears on the second try; a real unavailability repeats.
+        if (provider == "codex"
+                and not ctx.codex_model_explicit and (res.get("_receipt_model_unavailable") or codex_model_unavailable(res))):
+            res = attempt()  # reconfirm on the same model
             cost += res.get("cost_usd") or 0.0
-            downgraded = True
-    elif not has_verdict(res):
-        res = attempt()  # the ordinary one retry (unchanged for every non-codex-downgrade case)
-        cost += res.get("cost_usd") or 0.0  # count every attempt
+            if not has_verdict(res) and (res.get("_receipt_model_unavailable") or codex_model_unavailable(res)):
+                model = CODEX_FALLBACK_MODEL  # rejected twice → treat as persistent → try the fallback
+                res = attempt()
+                cost += res.get("cost_usd") or 0.0
+                downgraded = True
+        elif not has_verdict(res):
+            res = attempt()  # the ordinary one retry (unchanged for every non-codex-downgrade case)
+            cost += res.get("cost_usd") or 0.0  # count every attempt
+    except NewCallBudgetUnavailable:
+        if receipts:
+            ctx.attempt_receipts.update(receipts.used)
+        return False
     res["cost_usd"] = round(cost, 6)
     res["usage"] = add_usage(*(attempt.get("usage") for attempt in attempts))
     if any(attempt.get("usage_incomplete") for attempt in attempts):
@@ -689,6 +713,8 @@ def run_rubric(ctx, rubric):
         cf["last_reply_seen"] = nr
     spent_today = (ctx.spent_today if ctx.sessions is not None and provider in ("claude", "sonnet", "codex")
                    else spent_today + cost)
+    if receipts:
+        res["attempt_receipt_ids"] = list(receipts.used)
     ran.append(rubric)
     run_results.append(res)
     # `--store` is a checkout of the `reviews` branch and the review workflow commits and pushes it,
@@ -1252,9 +1278,6 @@ def main():
         # now is spend with nothing kept. They stay `absent` and queue again once the block clears.
         # Manual mode is exempt: a human's /review forces the full picture, block or not.
         for rubric in queue:
-            if ctx.spent_today + a.max_call_cost > a.daily_budget:
-                stopped = rubric
-                break
             if run_rubric(ctx, rubric) is False:
                 stopped = rubric
                 break
@@ -1275,9 +1298,6 @@ def main():
                 if not todo:
                     break
                 for rubric in todo:
-                    if ctx.spent_today + a.max_call_cost > a.daily_budget:
-                        stopped = rubric
-                        break
                     if run_rubric(ctx, rubric) is False:
                         stopped = rubric
                         break
@@ -1290,7 +1310,9 @@ def main():
                     break
 
     spent_today, ran, run_results = ctx.spent_today, ctx.ran, ctx.run_results
-    round_totals = Attempts.round_totals(outdir, head, run_results)
+    reported = [rid for prior in pr_state["rounds"] for rid in prior.get("attempt_receipt_ids", [])]
+    round_totals = Attempts.round_totals(outdir, head, run_results,
+                                        ctx.attempt_receipts.values(), reported, dry_run=a.dry_run)
     states = {r: effective_state(r) for r in candidates}
     # Every local `error` row the board would show, not only this invocation's: a round that ran
     # nothing (the daily budget already spent) must not publish the crash it withheld last time.
@@ -1298,13 +1320,26 @@ def main():
     crashed = sorted(r for r in candidates
                      if states[r] == "error" and (state_map.get(r) or {}).get("verdict"))
     if not a.shadow and crash_decides_verdict(states, crashed, state_map, head):
-        withheld_cost = round(ctx.spent_today - spent_start, 6)
+        withheld_cost = round_totals["cost_usd"]
         withhold_crashed_round(ctx, crashed, before_round, had_contest, {
             "round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "mode": "withheld", "ran": ran, "states": states, "cost": withheld_cost,
+            "attempt_receipt_ids": round_totals["attempt_receipt_ids"],
             "tokens": sum_usage(run_results), "prices_sha": PRICES_SHA, "halted_at": halted,
             "head_sha": head, "rubrics_version": rubrics_version, "patch_digest": digest,
             "run_ids": [r.get("run_id") for r in run_results]})
+    if (stopped and not (ran or carried or had_contest)
+            and pr_state.get("pending_publication_head_sha") != head
+            and not thread_action_rubrics(candidates, [], state_map, head)):
+        # No verdict changed. Preserve receipts for the same logical work rather
+        # than manufacturing a round or a publication from an unfunded retry.
+        for destination in (a.post_plan_file, a.scoreboard_file):
+            if destination:
+                pathlib.Path(destination).unlink(missing_ok=True)
+        if not a.dry_run:
+            led.persist()
+        print(f"[budget] deferred {stopped}; no new review round or publication")
+        return
     overall = overall_label(list(states.values()), stopped)
     # Every blocking rubric green on this head (fresh, not stale). Drives both the auto-merge gate
     # and the budget signal below.
@@ -1365,6 +1400,7 @@ def main():
             {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
              "mode": a.mode, "ran": ran, "states": states, "cost": shadow_cost,
              "tokens": round_totals["tokens"], "cost_incomplete": round_totals["cost_incomplete"],
+             "attempt_receipt_ids": round_totals["attempt_receipt_ids"],
              "prices_sha": PRICES_SHA,
              "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
              "arm": a.arm})
@@ -1428,6 +1464,7 @@ def main():
         {"round": round_num, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "mode": effective_mode, "ran": ran, "states": states, "cost": round_cost,
          "tokens": round_totals["tokens"], "cost_incomplete": round_totals["cost_incomplete"],
+         "attempt_receipt_ids": round_totals["attempt_receipt_ids"],
              "prices_sha": PRICES_SHA,
          "halted_at": halted, "head_sha": head, "rubrics_version": rubrics_version,
          "base_sha": a.base_sha or None, "merge_base_sha": a.merge_base_sha or None,
