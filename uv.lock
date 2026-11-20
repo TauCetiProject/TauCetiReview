@@ -16,7 +16,7 @@ requires-dist = [{ name = "tauceti-tools", git = "https://github.com/TauCetiProj
 [[package]]
 name = "tauceti-tools"
 version = "0.1.0"
-source = { git = "https://github.com/TauCetiProject/TauCetiTools?rev=main#1aea401ffaaa89b4b0af8fd4fb20a971176db889" }
+source = { git = "https://github.com/TauCetiProject/TauCetiTools?rev=main#7c5d7b6681155103592d7bc16d4d4d2c6501b6ae" }
 dependencies = [
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
