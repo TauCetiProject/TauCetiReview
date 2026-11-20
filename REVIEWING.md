@@ -199,7 +199,11 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   the same rubrics on the same PR get reviews that differ only by the model, not by their local
   setup. (The repo's own in-tree `CLAUDE.md` is still visible, as part of the code under review.)
   An explicit `CLAUDE_CONFIG_DIR` selects its credential file on every platform. A missing or
-  unreadable explicit file stops preparation rather than selecting the operator's login. The
+  unreadable explicit file stops preparation before any provider runs, rather than selecting the
+  operator's login. Explicit directories therefore select the file route even on macOS; if you
+  previously used such a directory only for a Keychain login, unset it for the legacy login route
+  or provide a dedicated agent file. This file route does not implement the separate exported-token
+  route proposed in PR #234. The
   separate `TAUCETI_CLAUDE_USAGE_CREDENTIALS` login is never copied or passed to a reviewer.
   With no configured directory or credential file, macOS falls back to
   your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.

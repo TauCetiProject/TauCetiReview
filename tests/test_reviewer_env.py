@@ -211,14 +211,14 @@ def test_claude_subscription_honors_configured_file_and_keeps_usage_login_out():
                 reviewers.reviewer_env("claude", {}, subscription=True)
                 raise AssertionError("missing explicit file unexpectedly accepted")
             except ValueError as error:
-                assert str(error) == "Configured Claude subscription credential file is unavailable"
+                assert "CLAUDE_CONFIG_DIR" in str(error) and "--auth api" in str(error)
             assert not any(pathlib.Path(reviewers.REV_HOME_BASE).iterdir())
             (source / ".credentials.json").write_text("invalid explicit JSON")
             try:
                 reviewers.reviewer_env("claude", {}, subscription=True)
                 raise AssertionError("invalid explicit file unexpectedly accepted")
             except ValueError as error:
-                assert str(error) == "Configured Claude subscription credential file is unavailable"
+                assert "CLAUDE_CONFIG_DIR" in str(error) and "--auth api" in str(error)
             assert not any(pathlib.Path(reviewers.REV_HOME_BASE).iterdir())
     finally:
         reviewers.REV_HOME_BASE = old_base
@@ -269,6 +269,28 @@ def test_default_claude_file_and_unset_legacy_fallback_are_preserved():
     finally:
         os.environ.clear()
         os.environ.update(old)
+
+
+def test_unusable_explicit_file_refuses_before_mixed_provider_round_preparation():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import review
+
+    with tempfile.TemporaryDirectory() as directory:
+        err = io.StringIO()
+        # No input files/ledger exist: reaching their read or a rubric means preflight was too late.
+        argv = ["review", "--repo", "o/r", "--pr", "1", "--providers", "claude,codex", "--auth", "subscription",
+                "--store", str(pathlib.Path(directory) / "store"), "--rubrics-dir", "/not/a/rubric/directory",
+                "--diff-file", "/not/a/diff", "--tool-cwd", directory]
+        with patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(pathlib.Path(directory) / "missing")), patch.object(sys, "argv", argv), patch.object(review, "run_rubric", side_effect=AssertionError("must not infer")), contextlib.redirect_stderr(err):
+            try:
+                review.main()
+                raise AssertionError("invalid configured file unexpectedly accepted")
+            except SystemExit as error:
+                assert "CLAUDE_CONFIG_DIR" in str(error)
+        assert not (pathlib.Path(directory) / "store").exists()
+        assert not err.getvalue()  # No traceback, token, or arbitrary file content.
 
 
 if __name__ == "__main__":

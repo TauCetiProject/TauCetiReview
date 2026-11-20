@@ -140,6 +140,25 @@ def _stable_claude_home(provider):
     return home
 
 
+def configured_claude_access():
+    """Read the explicit agent source without creating a reviewer home or touching its owner."""
+    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if not configured:
+        return None
+    try:
+        source = pathlib.Path(configured).expanduser()
+        if not source.is_absolute():
+            raise ValueError("relative Claude source")
+        value = json.loads((source / ".credentials.json").read_text(encoding="utf-8"))
+        oauth = value.get("claudeAiOauth") if isinstance(value, dict) else None
+        if not isinstance(oauth, dict) or not isinstance(oauth.get("accessToken"), str) or not oauth["accessToken"].strip():
+            raise ValueError("invalid Claude credential")
+        return {key: value for key, value in oauth.items() if key != "refreshToken"}
+    except (OSError, ValueError):
+        raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
+                         "provide the agent file, unset it for the normal login route, or select --auth api") from None
+
+
 def reviewer_env(provider, keys, subscription=False):
     """A minimal, isolated environment for a reviewer subprocess. Returns `(env, home)`; the caller
     must `cleanup_rev_home(home)` once the reviewer returns.
@@ -187,20 +206,16 @@ def reviewer_env(provider, keys, subscription=False):
                 try:
                     cdir.mkdir(mode=0o700, exist_ok=True)
                     if configured:
-                        # The owner keeps the refresh chain. Disposable reviewers get only the
-                        # current access credential, as Worker file-route admission requires.
-                        value = json.loads(src.read_text(encoding="utf-8"))
-                        oauth = value.get("claudeAiOauth") if isinstance(value, dict) else None
-                        if not isinstance(oauth, dict) or not isinstance(oauth.get("accessToken"), str) or not oauth["accessToken"].strip():
-                            raise ValueError("invalid Claude credential")
-                        access = {key: value for key, value in oauth.items() if key != "refreshToken"}
+                        # The owner keeps the refresh chain; file-route admission checks its life.
+                        access = configured_claude_access()
                         (cdir / ".credentials.json").write_text(json.dumps({"claudeAiOauth": access}), encoding="utf-8")
                     else:
                         shutil.copyfile(src, cdir / ".credentials.json")
                     (cdir / ".credentials.json").chmod(0o600)
                 except (OSError, ValueError):
                     cleanup_rev_home(home)
-                    raise ValueError("Configured Claude subscription credential file is unavailable") from None
+                    raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
+                                     "provide the agent file, unset it for the normal login route, or select --auth api") from None
                 # Use this fresh private directory even when the parent names a different one.
                 env["CLAUDE_CONFIG_DIR"] = str(cdir)
             else:
