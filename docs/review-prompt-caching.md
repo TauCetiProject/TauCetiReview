@@ -68,9 +68,11 @@ when the CLI creates a new temporary workspace or the next invocation uses a
 different round directory. Recovery identity includes the PR head, rubric and
 reactivation text, model/auth configuration, input artifacts, and readable source
 content. Git sources use immutable tree IDs plus dirty, untracked, ignored,
-in-root symlink-target, flagged-file and submodule content; exported trees are
-hashed once per invocation. Identity computation never traverses links outside a
-declared source root. Dangling/cyclic/external links or unreadable source entries
+in-root link paths, flagged-file and submodule content; exported trees are
+hashed once per invocation. Link identity records its literal text and resolved
+relative path; target contents are covered once by the ordinary tree inventory,
+so shared-target fan-out cannot multiply hashing work. Identity computation never traverses links outside a
+declared source root. Dangling links, unresolvable link cycles, external links or unreadable source entries
 disable recovery with a fresh per-invocation identity instead of aborting review
 or certifying unobserved content. Receipts from such an invocation cannot be
 reused after a reset. Temporary workspace names and round numbers are excluded.
