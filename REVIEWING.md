@@ -24,7 +24,8 @@ On your `PATH`, all logged in:
   into a ChatGPT subscription. You need **at least one**; each rubric is judged by whichever you
   have. With both, the reviewer is drawn per rubric, like CI. For a dedicated Claude
   agent login, set `CLAUDE_CONFIG_DIR` to the directory containing its `.credentials.json`;
-  the reviewer copies only that file into its private config directory.
+  the reviewer copies its current access credential into a private config directory, leaving
+  the refresh token with the source owner. Refresh the source before a long review if necessary.
 - For explicit Kiro reviews, `kiro-cli` signed in with `kiro-cli login` (or a
   headless `KIRO_API_KEY`). Kiro is never auto-drawn.
 - Python ≥ 3.10.

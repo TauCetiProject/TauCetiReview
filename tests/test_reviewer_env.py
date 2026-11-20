@@ -2,6 +2,7 @@
 """The isolated reviewer environment keeps login identity without inheriting personal config."""
 
 import os
+import json
 import pathlib
 import sys
 import tempfile
@@ -171,7 +172,7 @@ def test_claude_subscription_honors_configured_file_and_keeps_usage_login_out():
             source.mkdir()
             (operator / ".claude" / ".credentials.json").write_text("OPERATOR-CREDENTIAL")
             (operator / ".claude" / "settings.json").write_text("OPERATOR-SETTINGS")
-            (source / ".credentials.json").write_text("AGENT-ONE")
+            (source / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "AGENT-ONE", "refreshToken": "OWNER-REFRESH", "expiresAt": 9999999999999}, "ownerOnly": "must-not-copy"}))
             (source / "CLAUDE.md").write_text("AGENT-PERSONAL-CONFIG")
             usage.write_text("USAGE-ONLY-CREDENTIAL")
             reviewers.REV_HOME_BASE = str(root / "reviews")
@@ -185,21 +186,22 @@ def test_claude_subscription_honors_configured_file_and_keeps_usage_login_out():
                     private = pathlib.Path(env["CLAUDE_CONFIG_DIR"])
                     assert env["HOME"] == home != str(operator)
                     assert private == pathlib.Path(home) / ".claude"
-                    assert (private / ".credentials.json").read_text() == "AGENT-ONE"
+                    assert json.loads((private / ".credentials.json").read_text()) == {"claudeAiOauth": {"accessToken": "AGENT-ONE", "expiresAt": 9999999999999}}
+                    assert json.loads((source / ".credentials.json").read_text())["claudeAiOauth"]["refreshToken"] == "OWNER-REFRESH"
                     assert (private / ".credentials.json").stat().st_mode & 0o777 == 0o600
                     assert set(p.name for p in private.iterdir()) == {".credentials.json"}
                     assert not any(key in env for key in ("GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "TAUCETI_CLAUDE_USAGE_CREDENTIALS"))
                     # The final subprocess sees the private config, not the parent config or usage login.
                     child = reviewers.subprocess.run(
-                        [sys.executable, "-c", "import os,pathlib; print((pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])/'.credentials.json').read_text()); print('TAUCETI_CLAUDE_USAGE_CREDENTIALS' in os.environ)"],
+                        [sys.executable, "-c", "import os,pathlib,json; print(json.loads((pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])/'.credentials.json').read_text())['claudeAiOauth']['accessToken']); print('TAUCETI_CLAUDE_USAGE_CREDENTIALS' in os.environ)"],
                         env=env, capture_output=True, text=True, check=True)
                     assert child.stdout.splitlines() == ["AGENT-ONE", "False"]
                 finally:
                     reviewers.cleanup_rev_home(home)
-            (source / ".credentials.json").write_text("AGENT-TWO")
+            (source / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "AGENT-TWO", "refreshToken": "OWNER-REFRESH-TWO"}}))
             env, home = reviewers.reviewer_env("claude", {}, subscription=True)
             try:
-                assert (pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text() == "AGENT-TWO"
+                assert json.loads((pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text()) == {"claudeAiOauth": {"accessToken": "AGENT-TWO"}}
                 assert usage.read_text() == "USAGE-ONLY-CREDENTIAL"
             finally:
                 reviewers.cleanup_rev_home(home)
@@ -208,6 +210,13 @@ def test_claude_subscription_honors_configured_file_and_keeps_usage_login_out():
             try:
                 reviewers.reviewer_env("claude", {}, subscription=True)
                 raise AssertionError("missing explicit file unexpectedly accepted")
+            except ValueError as error:
+                assert str(error) == "Configured Claude subscription credential file is unavailable"
+            assert not any(pathlib.Path(reviewers.REV_HOME_BASE).iterdir())
+            (source / ".credentials.json").write_text("invalid explicit JSON")
+            try:
+                reviewers.reviewer_env("claude", {}, subscription=True)
+                raise AssertionError("invalid explicit file unexpectedly accepted")
             except ValueError as error:
                 assert str(error) == "Configured Claude subscription credential file is unavailable"
             assert not any(pathlib.Path(reviewers.REV_HOME_BASE).iterdir())

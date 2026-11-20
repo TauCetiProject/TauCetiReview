@@ -186,9 +186,19 @@ def reviewer_env(provider, keys, subscription=False):
                 cdir = pathlib.Path(home) / ".claude"
                 try:
                     cdir.mkdir(mode=0o700, exist_ok=True)
-                    shutil.copyfile(src, cdir / ".credentials.json")
+                    if configured:
+                        # The owner keeps the refresh chain. Disposable reviewers get only the
+                        # current access credential, as Worker file-route admission requires.
+                        value = json.loads(src.read_text(encoding="utf-8"))
+                        oauth = value.get("claudeAiOauth") if isinstance(value, dict) else None
+                        if not isinstance(oauth, dict) or not isinstance(oauth.get("accessToken"), str) or not oauth["accessToken"].strip():
+                            raise ValueError("invalid Claude credential")
+                        access = {key: value for key, value in oauth.items() if key != "refreshToken"}
+                        (cdir / ".credentials.json").write_text(json.dumps({"claudeAiOauth": access}), encoding="utf-8")
+                    else:
+                        shutil.copyfile(src, cdir / ".credentials.json")
                     (cdir / ".credentials.json").chmod(0o600)
-                except OSError:
+                except (OSError, ValueError):
                     cleanup_rev_home(home)
                     raise ValueError("Configured Claude subscription credential file is unavailable") from None
                 # Use this fresh private directory even when the parent names a different one.
