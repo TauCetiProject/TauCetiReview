@@ -153,9 +153,59 @@ def journal_private(path, value):
 
 
 def acknowledges(result):
-    # Native CLIs can emit commentary before the final acknowledgement.
-    text = result.get("text", "").strip().splitlines()
-    return bool(text) and text[-1].strip().rstrip(".! ").upper() == "READY"
+    text = result.get("text")
+    return isinstance(text, str) and text.strip() == "READY"
+
+
+def claude_primer_acknowledges(data):
+    """Validate the assistant content actually saved for replay, not just its final result."""
+    texts = []
+    try:
+        for line in data.decode("utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                return False
+            message = record.get("message", {})
+            if record.get("type") != "assistant" and not (isinstance(message, dict) and message.get("role") == "assistant"):
+                continue
+            if not isinstance(message, dict):
+                return False
+            content = message.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "text" or not isinstance(block.get("text"), str):
+                        return False
+                    texts.append(block["text"])
+            else:
+                return False
+    except (UnicodeError, ValueError):
+        return False
+    return acknowledges({"text": "".join(texts)})
+
+
+def codex_primer_acknowledges(turn):
+    """History is authoritative: commentary omitted from events must not enter a baseline."""
+    items = turn.get("items")
+    if not isinstance(items, list):
+        return False
+    texts = []
+    for item in items:
+        if not isinstance(item, dict):
+            return False
+        kind = item.get("type")
+        if kind == "userMessage":
+            continue  # the shared PR is untrusted user data, not an acknowledgement
+        if kind == "agentMessage" and isinstance(item.get("text"), str):
+            texts.append(item["text"])
+        elif kind == "reasoning" and not any(item.get(key) for key in ("summary", "content", "encryptedContent")):
+            continue
+        else:
+            return False  # tools, substantive reasoning or unknown retained assistant content
+    return acknowledges({"text": "".join(texts)})
 
 
 def primer_failure(provider, result):
@@ -214,15 +264,20 @@ class ClaudeSession:
         # credentials live, never include them in the baseline restored between forks.
         try:
             cdir = self.home / ".claude"
+            baseline = {}
             for path in cdir.rglob(self.primer + ".jsonl"):
-                self.baseline[path.relative_to(self.home)] = path.read_bytes()
+                data = path.read_bytes()
+                if not claude_primer_acknowledges(data):
+                    return primer_failure("Claude", result)
+                baseline[path.relative_to(self.home)] = data
             config = self.home / ".claude.json"
             if config.exists():
-                self.baseline[pathlib.Path(".claude.json")] = config.read_bytes()
+                baseline[pathlib.Path(".claude.json")] = config.read_bytes()
         except OSError as error:
             return {**result, **failed(f"Claude could not preserve its paid primer: {error}")}
-        if not any(p.suffix == ".jsonl" for p in self.baseline):
+        if not any(p.suffix == ".jsonl" for p in baseline):
             return {**result, **failed("Update Claude Code: primer transcript was not saved")}
+        self.baseline = baseline
         self.ready = True
         return result
 
@@ -423,6 +478,8 @@ class CodexSession:
                                                      "sortDirection": "asc"})
         if [t.get("id") for t in data.get("data", [])] != [self.primer] or data.get("nextCursor"):
             raise SessionError("Codex primer history was not restored; refusing another rubric")
+        if not codex_primer_acknowledges(data["data"][0]):
+            raise SessionError("Codex retained primer was not acknowledgement-only")
 
     def run(self, tail):
         if self.ready:
@@ -515,6 +572,7 @@ class RoundReviewers:
     def __init__(self, keys, subscription):
         self.keys, self.subscription = keys, subscription
         self.sessions, self.pending, self.incompatible = {}, None, {}
+        self.evidence_provider = None
         os.makedirs(reviewers.REV_HOME_BASE, exist_ok=True)
         self.journal = pathlib.Path(tempfile.mkdtemp(prefix="rev-round-", dir=reviewers.REV_HOME_BASE))
         self.leases = []
@@ -590,8 +648,12 @@ class RoundReviewers:
         for previous in list(self.sessions):
             if previous[0] != provider:
                 self.discard(previous)
-                for path in self.journal.glob("*.json"):
-                    path.unlink()
+        # Failed primers/calls and reset failures discard their session before this transition.
+        # Evidence ownership therefore cannot be inferred from the surviving session map.
+        if self.evidence_provider is not None and self.evidence_provider != provider:
+            for path in self.journal.glob("*.json"):
+                path.unlink()  # fail closed: do not launch the next provider if removal fails
+        self.evidence_provider = provider
 
     def finish(self):
         key, self.pending = self.pending, None
