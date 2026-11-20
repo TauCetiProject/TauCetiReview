@@ -722,6 +722,21 @@ def main():
             _release_active_claims()
 
 
+def budget_deferred(work, head):
+    """Accept only a fresh engine-authored deferral with no publishable review output."""
+    path = work / "review-deferred.json"
+    if not path.exists():
+        return False
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        die("review step wrote an unreadable budget-deferral marker")
+    expected = {"schema": "tauceti.review-deferred/v1", "head_sha": head, "reason": "daily-budget"}
+    if value != expected or (work / "scoreboard.md").exists() or (work / "post_plan.json").exists():
+        die("review step wrote an invalid or conflicting budget-deferral marker")
+    return True
+
+
 def _main(cleanup, leases, phase):
     ap = argparse.ArgumentParser(
         prog="tauceti-review",
@@ -1186,6 +1201,8 @@ def _main(cleanup, leases, phase):
     write_context(context_path, dict(json.loads(context_path.read_text()), publisher=publisher, archive_dir=outbox))
     cleanup.pop_all()
     phase['inference'] = True
+    # A reused workdir must not let a stale marker hide a broken engine.
+    (work / "review-deferred.json").unlink(missing_ok=True)
     r = run(cmd, allow_fail=True, env=inference_environment(engine_env))
     # The engine aborts with PROVIDER_DOWN_EXIT when consecutive rubrics failed because the provider
     # itself is unusable (expired credential, exhausted subscription window). It has already said
@@ -1206,6 +1223,17 @@ def _main(cleanup, leases, phase):
         else:
             publication.cleanup_inputs(work)
         die(f"command failed ({r.returncode}): {' '.join(cmd)}")
+
+    if budget_deferred(work, head):
+        print("Review deferred: daily budget cannot fund a new call; no review was posted.", file=sys.stderr)
+        if a.post:
+            write_review_result(head, False)
+        publication.cleanup_inputs(work)
+        context = json.loads(context_path.read_text())
+        write_context(context_path, dict(context, complete="budget-deferred"))
+        if not a.keep and not a.workdir:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
 
     # The review step exits 0 having written a scoreboard on every path this CLI drives (commit /
     # manual / shadow). A clean exit with no scoreboard means the engine did not actually run: a
