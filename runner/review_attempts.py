@@ -190,13 +190,21 @@ def source_identity(path):
         # workspace path enters the key, and symlink targets are measured as read.
         others = git("ls-files", "--others", "-z").split(b"\0")
         extra = [(os.fsdecode(name), content(root / os.fsdecode(name))) for name in others if name]
-        links = []
+        links, submodules, flagged = [], [], []
         for entry in git("ls-files", "--stage", "-z").split(b"\0"):
-            if entry.startswith(b"120000 "):
+            if entry.startswith((b"120000 ", b"160000 ")):
                 name = os.fsdecode(entry.split(b"\t", 1)[1])
-                if (root / name).is_symlink():
+                if entry.startswith(b"160000 "):
+                    submodules.append((name, source_identity(root / name)))
+                elif (root / name).is_symlink():
                     links.append((name, content(root / name)))
-        return ["git", head, dirty, extra, links]
+        # Git's stat cache deliberately ignores assume-unchanged / skip-worktree
+        # paths. Their actual readable bytes must still invalidate recovery.
+        for entry in git("ls-files", "-v", "-z").split(b"\0"):
+            if entry and (entry[:1].islower() or entry[:1].upper() == b"S"):
+                name = os.fsdecode(entry[2:])
+                flagged.append((name, content(root / name) if (root / name).exists() else ["missing"]))
+        return ["git", head, dirty, extra, links, submodules, flagged]
     return content(root)
 
 

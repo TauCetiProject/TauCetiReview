@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from reviewer_sessions import RoundReviewers, add_usage, subtract_usage
 from review_attempts import Attempts, context_identity, fingerprint
-from ledger import Ledger
+from ledger import Ledger, atomic_write_json
 from handoff import (DEFAULT_RUBRICS, can_reuse_completed_review, has_unhandled_contest,
                      rubrics_for, thread_action_rubrics)
 from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, sum_usage, warn_unpriced
@@ -916,6 +916,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--conf")
     a = ap.parse_args()
+    # An old invocation's budget signal cannot describe this invocation.
+    deferred_marker = pathlib.Path(a.tool_cwd) / "review-deferred.json"
+    deferred_marker.unlink(missing_ok=True)
     try:
         a.kiro_model = exact_kiro_model(a.kiro_model)
         reject_retired_opus(a.claude_model)
@@ -1338,6 +1341,8 @@ def main():
                 pathlib.Path(destination).unlink(missing_ok=True)
         if not a.dry_run:
             led.persist()
+        atomic_write_json(deferred_marker, {"schema": "tauceti.review-deferred/v1",
+                                            "head_sha": head, "reason": "daily-budget"})
         print(f"[budget] deferred {stopped}; no new review round or publication")
         return
     overall = overall_label(list(states.values()), stopped)

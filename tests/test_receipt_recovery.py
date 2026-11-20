@@ -62,6 +62,7 @@ def test_fresh_workspace_replays_at_exhausted_budget_and_zero_allowance():
         ledger = json.loads((store / "ledger.json").read_text())
         ledger["prs"]["1"]["rounds"].append({"round": 1, "mode": "manual", "cost": 0})
         (store / "ledger.json").write_text(json.dumps(ledger))
+        (b / "review-deferred.json").write_text(json.dumps({"head_sha": "stale"}))
         with patch.object(review, "RoundReviewers", NoNewCalls):
             recovered = billing._run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness"],
                 daily_budget=billing.COST, max_call_cost=0,
@@ -69,6 +70,7 @@ def test_fresh_workspace_replays_at_exhausted_budget_and_zero_allowance():
         assert recovered["prs"]["1"]["state"]["correctness"]["verdict"] == "approve"
         assert sum(recovered["days"].values()) == billing.COST
         assert recovered["prs"]["1"]["rounds"][-1]["cost"] == billing.COST
+        assert not (b / "review-deferred.json").exists(), "paid replay is a completed review, not a deferral"
     finally:
         shutil.rmtree(d)
 
@@ -93,6 +95,8 @@ def test_replay_precedes_positive_call_reservation_and_does_not_append_empty_rou
                 daily_budget=0, max_call_cost=billing.COST,
                 extra=["--tool-cwd", str(b), "--post-plan-file", str(plan)])
         assert not stopped["prs"]["1"]["rounds"] and not plan.exists()
+        assert json.loads((b / "review-deferred.json").read_text()) == {
+            "schema": "tauceti.review-deferred/v1", "head_sha": billing.HEAD, "reason": "daily-budget"}
     finally:
         shutil.rmtree(d)
 
@@ -229,6 +233,11 @@ def test_source_identity_git_clean_dirty_untracked_and_exported_equivalence():
             subprocess.run(["git", "-C", str(p), "add", "."], check=True)
             subprocess.run(["git", "-C", str(p), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "source"], check=True)
         assert source_identity(root / "a") == source_identity(root / "b")
+        subprocess.run(["git", "-C", str(root / "b"), "update-index", "--assume-unchanged", "A.lean"], check=True)
+        flagged_before = source_identity(root / "b")
+        (root / "b/A.lean").write_text("hidden changed source\n")
+        assert source_identity(root / "b") != flagged_before
+        subprocess.run(["git", "-C", str(root / "b"), "update-index", "--no-assume-unchanged", "A.lean"], check=True)
         (root / "b/A.lean").write_text("changed source\n")
         assert source_identity(root / "a") != source_identity(root / "b")
         (root / "b/A.lean").write_text("same source\n")
