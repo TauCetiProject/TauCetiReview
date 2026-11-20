@@ -49,7 +49,7 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     cases = [
-        ("", [], None),
+        ("", ["--require-claude-config-file"], None),
         # Whitespace-only is truthy and easy to produce from a CI variable; it must not reach
         # the engine and fail there as an unpriced model.
         ("   ", [], None),
@@ -87,6 +87,7 @@ def test_claude_model_reaches_engine_and_flag_overrides_worker_environment():
             else:
                 raise AssertionError("CLI did not invoke the review engine")
             assert "--max-rounds-per-day" not in cmd, cmd
+            assert ("--require-claude-config-file" in cmd) == ("--require-claude-config-file" in flags), cmd
             actual = cmd[cmd.index("--claude-model") + 1] if "--claude-model" in cmd else None
             assert actual == expected, (env_model, flags, cmd)
 

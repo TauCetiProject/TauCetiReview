@@ -44,9 +44,11 @@ from tauceti_tools.review_source import source_for
 try:
     from . import pr_diff as repository_diff
     from . import source_cache, source_tree, publication
+    from .admission_policy import comment_id
 except ImportError:
     import pr_diff as repository_diff
     import source_cache, source_tree, publication
+    from admission_policy import comment_id
 
 # review.py's abort status when the provider itself is unusable. Duplicated rather than imported:
 # this CLI drives the engine as a subprocess and never imports it (the engine's modules use flat
@@ -57,6 +59,9 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
     bootstrap()
 
 PROVIDER_DOWN_EXIT = 3
+# review.py's status for a round it withheld because the reviewer crashed on rubrics whose verdicts
+# would have decided the scoreboard. Same duplication, pinned by tests/test_crash_withhold.py.
+REVIEWER_CRASHED_EXIT = 4
 COORDINATED_ELSEWHERE_EXIT = 81
 HEAD_CHANGED_EXIT = 82
 PREPARATION_WAIT_EXIT = repository_diff.PREPARATION_WAIT_EXIT
@@ -265,17 +270,20 @@ def merge_base_sha(repo, base, head, number=None):
 
 
 def prepare_review_source(repo, head, merge_base, work):
-    """One endpoint fetch supplies the canonical patch and exact source, without history."""
+    """One endpoint fetch supplies the canonical patch and exact source, without history.
+
+    Returns the PR-level diff guards this exact diff fails (see `diff_guard_violations`)."""
     if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, merge_base)):
         raise RuntimeError("invalid review comparison identity")
     source = review_source(repo)
     partial = work / "diff.txt.partial"
+    cache = CACHE_DIR / 'git' / source.cache_key
     try:
         with partial.open('wb') as out:
             paths = repository_diff.git_diff(source.repository.clone_url, merge_base, head,
                                             diff_out=out, limit=None, fetch_limit=None,
                                             source_dir=work / 'code',
-                                            cache_dir=CACHE_DIR / 'git' / source.cache_key,
+                                            cache_dir=cache,
                                             environment=source.git_environment())
         os.replace(partial, work / 'diff.txt')
         repository_diff.write_paths(work / 'paths.z', paths)
@@ -286,6 +294,34 @@ def prepare_review_source(repo, head, merge_base, work):
         raise
     finally:
         partial.unlink(missing_ok=True)
+    return diff_guard_violations(cache, merge_base, head)
+
+
+# The queue's sentence for a diff it cannot measure (TauCetiWorker tauceti_queue/diff_guard.py).
+DIFF_GUARD_UNMEASURABLE = "could not measure the PR's diff from local Git objects"
+
+
+def diff_guard_violations(cache, merge_base, head):
+    """The PR-level diff guards PR CI, queue admission and staging apply, on the fetched objects.
+
+    This is TauCetiTools' `ci_git.pr_guards` without path scope, the measure admission uses for a
+    PR that skipped PR CI, so a head it refuses is never reviewed. Unreadable line statistics
+    fail closed as a violation, as they do there; a host or Git failure is a preparation retry.
+    """
+    try:
+        from tauceti_tools.assets.scripts import ci_git
+    except ImportError:
+        ci_git = None
+    if not (hasattr(ci_git, "pr_guards") and hasattr(ci_git, "repository_reader")):
+        return ()  # A Tools release without the shared measure; admission still applies it.
+    try:
+        with ci_git.repository_reader(cache) as git:
+            return tuple(ci_git.pr_guards(git, merge_base, head, scope=False)["violations"])
+    except ValueError:
+        return (DIFF_GUARD_UNMEASURABLE,)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise repository_diff.PreparationUnavailable(
+            f"could not measure the PR-level diff guards ({type(error).__name__})") from error
 
 
 def rubrics_repo_sha(repo_dir):
@@ -483,7 +519,10 @@ def latest_scoreboard(comments):
     """The newest completed scoreboard on the PR, at any head and by any poster, as
     {comment_id, by, head_sha, states}; None if there is none. In-progress (init) boards carry no
     verdicts and are skipped. Duplicates merge_from_scoreboard's parsing: this CLI never imports the
-    engine's modules (see PROVIDER_DOWN_EXIT above)."""
+    engine's modules (see PROVIDER_DOWN_EXIT above), only admission_policy's dependency-free
+    comment_id. Ordered as admission_policy's latest_current_scoreboard orders them: newest update
+    timestamp, then the larger comment id, so a same-second tie resolves the same way whatever order
+    the comments arrive in; input position is the last tie-break, for comments without an id."""
     best = None
     for index, c in enumerate(comments):
         body = c.get("body") or ""
@@ -499,7 +538,7 @@ def latest_scoreboard(comments):
         if (not isinstance(meta.get("states"), dict) or not isinstance(meta.get("head_sha"), str)
                 or not re.fullmatch(r"[0-9a-f]{40}", meta["head_sha"])):
             continue
-        key = (c.get("updated_at") or c.get("created_at") or meta.get("ts") or "", index)
+        key = (c.get("updated_at") or c.get("created_at") or meta.get("ts") or "", comment_id(c), index)
         if best is None or key > best[0]:
             best = (key, {"comment_id": c.get("id"), "by": (c.get("user") or {}).get("login"),
                           "head_sha": meta["head_sha"], "states": meta["states"],
@@ -707,6 +746,9 @@ def _main(cleanup, leases, phase):
                     help="subscription: use your logged-in claude/codex; api: use "
                          "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment "
                          "(billed). Default: $TAUCETI_REVIEW_AUTH, else subscription")
+    ap.add_argument("--require-claude-config-file", action="store_true",
+                    help="require the configured or default Claude agent file in subscription "
+                         "mode; refuse native login fallback (requires a supporting engine)")
     ap.add_argument("--post", action="store_true",
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")
@@ -783,7 +825,13 @@ def _main(cleanup, leases, phase):
     # Older workers pass this flag. Accept it during rolling upgrades without limiting reviews.
     ap.add_argument("--max-rounds-per-day", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--conf")
+    ap.add_argument("--publication-protocol", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.publication_protocol:
+        print(json.dumps({"native_publisher": 2}))
+        return
+    if a.require_claude_config_file and a.auth != "subscription":
+        ap.error("--require-claude-config-file requires --auth subscription")
     # The source adapter validates both legacy GitHub names and qualified native
     # selectors, including their repository/server identity binding.
     if not a.sync_only:
@@ -972,7 +1020,9 @@ def _main(cleanup, leases, phase):
     # store has no verdict. Not for --fresh (start clean), --shadow (scratch) or manual (re-runs all).
     prior_board = None
     if a.mode == "commit" and not (a.fresh or a.shadow):
-        prior_board = latest_scoreboard(issue_comments(a.repo, a.pr) or [])
+        board_transport = publication.post.transport_for(a.repo, int(a.pr), head, {}, publication.post)
+        trusted = getattr(board_transport, 'prior_board_comments', lambda: None)()
+        prior_board = latest_scoreboard((issue_comments(a.repo, a.pr) or []) if trusted is None else trusted)
     prior_board_path = work / "prior_scoreboard.json"
     prior_board_path.write_text(json.dumps(prior_board or {}))
     if replies:
@@ -1000,7 +1050,7 @@ def _main(cleanup, leases, phase):
         if not merge_base:
             die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
         with preparation_step("exact Git source and diff"):
-            prepare_review_source(a.repo, head, merge_base, work)
+            guards = tuple(prepare_review_source(a.repo, head, merge_base, work) or ())
     except RuntimeError as error:
         if re.search(r"HTTP (?:404|422)|not our ref|unadvertised object", str(error), re.I):
             current, current_base = pr_ref_oids(a.repo, a.pr)
@@ -1024,6 +1074,16 @@ def _main(cleanup, leases, phase):
         ci_build = ci_build_status(build_meta, head)
     except Exception:
         ci_build = ""
+    if guards and ci_build.lower() != "success" and not a.shadow:
+        # A head without a green PR build (a self-tested PR skips PR CI) never met the PR-level
+        # diff guards there, and queue admission refuses it on exactly these. Spend no review on
+        # it; admission tells the author why, and a push to a new head is reviewed as usual.
+        print(f"PR #{a.pr} @ {head[:12]}: not reviewed, fails the PR-level diff guards: "
+              + "; ".join(guards), file=sys.stderr)
+        write_review_result(head, False, outcome="diff-guard", violations=list(guards))
+        if not a.keep and not a.workdir:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
     meta = gh_json(a.repo, a.pr, "title,body")
     (work / "pr_desc.txt").write_text(
         f"# {meta.get('title','')}\n\n{meta.get('body','') or ''}\n")
@@ -1096,6 +1156,7 @@ def _main(cleanup, leases, phase):
            *(["--archive-dir", outbox] if outbox else []),
            *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
            "--ci-build", ci_build or "", "--auth", a.auth,
+           *(["--require-claude-config-file"] if a.require_claude_config_file else []),
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
            "--kiro-model", a.kiro_model,
            "--scoreboard-file", str(work / "scoreboard.md"),
@@ -1116,8 +1177,11 @@ def _main(cleanup, leases, phase):
     if current != head:
         write_review_result(current, False, outcome='head-changed', expected_head=head)
         return HEAD_CHANGED_EXIT
-    publisher = publication.post.transport_for(a.repo, int(a.pr), head, {},
-                                               publication.post).identity() if a.post else None
+    posting_transport = publication.post.transport_for(a.repo, int(a.pr), head, {},
+                                                       publication.post) if a.post else None
+    publisher = posting_transport.identity() if posting_transport else None
+    if posting_transport:
+        publication.prepare_review(posting_transport, plan)
     context_path = work / 'review-context.json'
     write_context(context_path, dict(json.loads(context_path.read_text()), publisher=publisher, archive_dir=outbox))
     cleanup.pop_all()
@@ -1130,6 +1194,12 @@ def _main(cleanup, leases, phase):
     # keep the status distinct so a driving worker can tell "wait and retry" from "this round failed".
     if r.returncode == PROVIDER_DOWN_EXIT:
         sys.exit(PROVIDER_DOWN_EXIT)
+    # Likewise a round withheld because the reviewer crashed: the engine's last line names the crash
+    # kinds and nothing was rendered to post. Exit on that line rather than a generic "command
+    # failed". A driving worker charges it as a failed review, as it did the errored scoreboard.
+    if r.returncode == REVIEWER_CRASHED_EXIT:
+        publication.cleanup_inputs(work)
+        sys.exit(REVIEWER_CRASHED_EXIT)
     if r.returncode != 0:
         if a.post and plan.is_file() and json.loads(plan.read_text()).get('head_sha') == head:
             publication.retain(a.repo, a.pr, plan, store / 'ledger.json', actor=publisher, archive_dir=outbox)

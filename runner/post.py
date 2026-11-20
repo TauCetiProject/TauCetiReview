@@ -19,18 +19,18 @@ sidecar (records/posts/). A required thread failure withholds the scoreboard and
 scoreboard failure leaves the write-ahead markers pending and also exits nonzero. Thus a visible
 current-head scoreboard never names a blocker that lacks its contestable inline thread.
 """
-import argparse, datetime, hashlib, json, os, pathlib, random, re, shutil, subprocess, sys, time
+import argparse, contextlib, datetime, hashlib, json, os, pathlib, random, re, shutil, subprocess, sys, time
 
 from tauceti_tools.forge import ForgeError, Incomplete
 
 try:
     from . import archive
     from .ledger import atomic_write_json
-    from .publication_transport import GitHubPublication, transport_for
+    from .publication_transport import GitHubPublication, PublicationSuperseded, transport_for
 except ImportError:
     import archive
     from ledger import atomic_write_json
-    from publication_transport import GitHubPublication, transport_for
+    from publication_transport import GitHubPublication, PublicationSuperseded, transport_for
 
 REPLY_MARKER_RE = re.compile(r"<!--tauceti-reply:([a-z][a-z-]*):through:(\d+)-->")
 RUBRIC_MARKER_RE = re.compile(r"<!--tauceti-rubric:([a-z][a-z-]*)-->")
@@ -262,6 +262,9 @@ def gh_api(method, endpoint, fields=None, body_file=None, failures=None, action=
 
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
+# Forgejo scoreboards from the retired receipt publisher. They still count as ordinary posted
+# scoreboards, but the native transport refuses to edit or delete them, so a new board is posted.
+RECEIPT_SCOREBOARD_MARKER = "<!--tauceti-source:v2 "
 REVIEW_BOT = "tauceti-review-bot[bot]"
 
 
@@ -323,13 +326,25 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
 
     Prefer the store/plan id when discovery proves it is ours; otherwise reuse our newest discovered
     scoreboard. A foreign or missing known id is never PATCHed, and a new scoreboard is posted only
-    when this identity has none to reuse. Discovery is required: on failure, mutate nothing and let
-    the publication retry. A failed edit of our own comment is likewise a real error, never silently
-    re-posted. Identical text needs no PATCH only when this comment is strictly
-    newest: updated_at determines which scoreboard supersedes others. Our
+    when this identity has none to reuse. A legacy receipt-backed board is never reused: the board
+    posted beside it supersedes it once completed, as any newer scoreboard does. Discovery is
+    required: on failure, mutate nothing and let the publication retry. A failed edit of our own
+    comment is likewise a real error, never silently re-posted. Identical text needs no PATCH only when this
+    comment is strictly newest: updated_at determines which scoreboard supersedes others. Our
     obsolete duplicates are still removed. Returns (sb_id, ok). `mine` overrides
     the actor login."""
     transport = transport or GitHubPublication(repo, pr, "", {}, sys.modules[__name__])
+    publisher = getattr(transport, 'scoreboard_publisher', lambda: None)()
+    if publisher is not None:
+        # Immutable receipts own their comment history. The backend confirms
+        # publication and returns its actual ID; do not edit/collapse that history.
+        result = publisher.publish(transport.body(body_file))
+        if result == {'superseded': True}:
+            raise PublicationSuperseded
+        if not isinstance(result, dict) or type(result.get('id')) is not int or result['id'] <= 0:
+            raise Incomplete('scoreboard backend did not confirm publication')
+        pr_state['scoreboard_comment_id'] = result['id']
+        return result['id'], True
     me = mine if mine is not None else current_login()
     existing = transport.board_comments()
     if existing is None:
@@ -340,8 +355,9 @@ def upsert_scoreboard(repo, pr, body_file, plan_sb_id, pr_state, failures, mine=
 
     known_id = pr_state.get("scoreboard_comment_id") or plan_sb_id
     known = next((c for c in existing if c.get("id") == known_id), None) if known_id else None
-    ours = [c for c in existing if c.get("login") == me]
-    if known and known.get("login") == me:
+    ours = [c for c in existing if c.get("login") == me
+            and RECEIPT_SCOREBOARD_MARKER not in (c.get("body") or "")]
+    if known and any(c is known for c in ours):
         sb_id = known_id
     else:
         # The stored comment is foreign or gone. Reuse our newest scoreboard if one exists; unlike
@@ -423,6 +439,14 @@ def archive_outcome(archive_dir, repo, pr, plan, sb_id, scoreboard_ok, posted_th
 
 
 def execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, expected_publisher=None):
+    if plan.get("review_changed") is False:
+        return 0
+    transport = transport or transport_for(repo, int(pr), plan.get("head_sha", ""), plan, sys.modules[__name__])
+    with getattr(transport, 'publication_scope', contextlib.nullcontext)():
+        return _execute_post(repo, pr, plan, ledger_path, archive_dir, transport, expected_publisher)
+
+
+def _execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, expected_publisher=None):
     """Execute one trusted plan. Return a process-style status code (0 success, 1 incomplete)."""
     if plan.get("review_changed") is False:
         return 0
@@ -445,6 +469,8 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, ex
     if expected_publisher is not None and me != expected_publisher:
         print('post.py: retained review requires its original publisher', file=sys.stderr)
         return 86
+    if getattr(transport, 'publication_superseded', lambda body: False)(plan["scoreboard_body"]):
+        return 87  # Before discovery or edits of another run's required roots.
 
     # Phase 1: every genuine blocker root is required. Remote discovery is itself required because
     # it proves ownership before PATCH and makes a POST-crash retry idempotent.
@@ -475,9 +501,12 @@ def execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, ex
     if not transport.current():
         print("post.py: source head changed before scoreboard; retained plan is superseded", file=sys.stderr)
         return 82
-    sb_id, scoreboard_ok = upsert_scoreboard(
-        repo, pr, plan["scoreboard_body"], plan.get("scoreboard_comment_id"), pr_state, failures,
-        mine=me, transport=transport)
+    try:
+        sb_id, scoreboard_ok = upsert_scoreboard(
+            repo, pr, plan["scoreboard_body"], plan.get("scoreboard_comment_id"), pr_state, failures,
+            mine=me, transport=transport)
+    except PublicationSuperseded:
+        return 87
     atomic_write_json(ledger_path, ledger)
     if not scoreboard_ok:
         archive_outcome(archive_dir, repo, pr, plan, sb_id, False, posted_threads, failures)

@@ -2,7 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 
-import fcntl, functools, json, os, pathlib, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, time
+import fcntl, functools, json, math, os, pathlib, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, time
 from contextlib import closing
 from urllib.parse import quote
 
@@ -145,6 +145,30 @@ def _stable_claude_home(provider):
     return home
 
 
+def configured_claude_access():
+    """Read the explicit agent source without creating a reviewer home or touching its owner."""
+    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if not configured:
+        return None
+    try:
+        source = pathlib.Path(configured)
+        if not source.is_absolute():
+            raise ValueError("relative Claude source")
+        value = json.loads((source / ".credentials.json").read_text(encoding="utf-8"))
+        oauth = value.get("claudeAiOauth") if isinstance(value, dict) else None
+        if not isinstance(oauth, dict) or not isinstance(oauth.get("accessToken"), str) or not oauth["accessToken"].strip():
+            raise ValueError("invalid Claude credential")
+        expires = oauth.get("expiresAt")
+        # Setup-token files may omit expiry metadata. Validate a supplied expiry without
+        # inventing a lifetime guarantee for an arbitrarily long access-only attempt.
+        if "expiresAt" in oauth and (type(expires) not in (int, float) or not math.isfinite(expires) or expires <= time.time() * 1000):
+            raise ValueError("invalid or expired Claude access credential")
+        return {key: value for key, value in oauth.items() if key != "refreshToken"}
+    except (OSError, ValueError, OverflowError):
+        raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
+                         "provide a current agent file, refresh its source, unset it for the normal login route, or select --auth api") from None
+
+
 def reviewer_env(provider, keys, subscription=False, *, round_home=False):
     """A minimal, isolated environment for a reviewer subprocess. Returns `(env, home)`; the caller
     must `cleanup_rev_home(home)` once the reviewer returns.
@@ -162,7 +186,8 @@ def reviewer_env(provider, keys, subscription=False, *, round_home=False):
     on the subscription but sees none of the runner's personal `CLAUDE.md` / `AGENTS.md`, skills,
     plugins, or settings, so the review does not depend on who runs it. If the credential is not
     where we expect (e.g. a macOS keychain login), we fall back to the real HOME so auth still
-    works, trading reproducibility for a working review.
+    works, trading reproducibility for a working review. An explicit CLAUDE_CONFIG_DIR instead
+    selects its credential file and never falls back to the operator home or Keychain.
     """
     # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp. The caller
     # removes `home` once the reviewer returns (cleanup_rev_home), so these don't accumulate.
@@ -181,14 +206,30 @@ def reviewer_env(provider, keys, subscription=False, *, round_home=False):
         env.update(USER=user, LOGNAME=os.environ.get("LOGNAME") or user)
     if provider in ("claude", "sonnet"):
         if subscription:
-            # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
-            src = os.path.expanduser("~/.claude/.credentials.json")
-            if os.path.exists(src):
-                cdir = os.path.join(home, ".claude")
-                os.makedirs(cdir, exist_ok=True)
-                shutil.copyfile(src, os.path.join(cdir, ".credentials.json"))
+            # Honor the same configured agent source as Worker. A separate usage login is not an
+            # agent credential and is deliberately absent from this environment and file selection.
+            configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+            source_dir = pathlib.Path(configured) if configured else pathlib.Path.home() / ".claude"
+            src = source_dir / ".credentials.json"
+            if configured or src.is_file():
+                cdir = pathlib.Path(home) / ".claude"
+                try:
+                    cdir.mkdir(mode=0o700, exist_ok=True)
+                    if configured:
+                        # The owner keeps the refresh chain; file-route admission checks its life.
+                        access = configured_claude_access()
+                        (cdir / ".credentials.json").write_text(json.dumps({"claudeAiOauth": access}), encoding="utf-8")
+                    else:
+                        shutil.copyfile(src, cdir / ".credentials.json")
+                    (cdir / ".credentials.json").chmod(0o600)
+                except (OSError, ValueError):
+                    cleanup_rev_home(home)
+                    raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
+                                     "provide a current agent file, refresh its source, unset it for the normal login route, or select --auth api") from None
+                # Use this fresh private directory even when the parent names a different one.
+                env["CLAUDE_CONFIG_DIR"] = str(cdir)
             else:
-                env["HOME"] = os.path.expanduser("~")  # fallback: keychain/other; less reproducible
+                env["HOME"] = os.path.expanduser("~")  # legacy native Keychain fallback only
         else:
             env["ANTHROPIC_API_KEY"] = keys["anthropic"]
     elif provider == "kiro":
@@ -406,7 +447,7 @@ def _tool_trace(stream_lines, root):
     Returns `(trace, meta, result_event)`. Events are consumed as they are parsed and only the
     terminal result is retained, so a long review does not sit in memory twice."""
     trace, pending, result = [], {}, None
-    total = malformed = successful = 0
+    total = malformed = successful = denied = 0
     for line in stream_lines:
         line = line.strip()
         if not line.startswith("{"):
@@ -419,6 +460,11 @@ def _tool_trace(stream_lines, root):
         kind = ev.get("type")
         if kind == "result":
             result = ev  # last one wins; multi-result streams are not expected
+            continue
+        # The CLI's own announcement that it refused a tool call. Counted, never read further: its
+        # `message` names the command that was refused, which is the reviewer's input, not ours.
+        if kind == "system" and ev.get("subtype") == "permission_denied":
+            denied += 1
             continue
         msg = ev.get("message")
         # Only assistant/user events carry the message objects this trace reads. Other stream
@@ -454,6 +500,12 @@ def _tool_trace(stream_lines, root):
             "trace_truncated": total > len(trace)}
     if malformed:
         meta["malformed_events"] = malformed
+    # The terminal event lists the calls the CLI refused as well; take whichever count is larger, so
+    # a CLI that reports denials in only one of the two places is still seen.
+    refusals = (result or {}).get("permission_denials")
+    denied = max(denied, len(refusals) if isinstance(refusals, list) else 0)
+    if denied:
+        meta["denied_calls"] = denied
     return trace, meta, result
 
 

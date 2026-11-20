@@ -10,15 +10,15 @@ permissions:
 
 jobs:
   tests:
-    runs-on: ${{ github.repository == 'TauCetiProject/TauCetiReview' && fromJSON(format('["nscloud-ubuntu-24.04-amd64-2x4-with-features","namespace-features:github.run-id={0}"]', github.run_id)) || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # Install the pinned shared configuration, byte-compile, then run price-coverage
+      # Install the shared configuration from TauCetiTools main, byte-compile, then run price-coverage
       # checks (every dispatchable model must be priced; prices.json must be well-formed).
-      - run: python -m pip install "tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@cccfd6b73106bb49e5e59383e5c718279daefece"
+      - run: python -m pip install "tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@main"
       - run: python -m py_compile runner/*.py
       - run: python tests/test_ledger.py
       - run: python tests/test_cli.py
@@ -41,6 +41,7 @@ jobs:
       - run: python tests/test_source_cache.py
       - run: python tests/test_diff_context.py
       - run: python tests/test_admission_policy.py
+      - run: python tests/test_phased_rubrics.py
       - run: python tests/test_sweep.py
       - run: python tests/test_sweep_budget.py
       - run: python tests/test_direct_merge.py
@@ -51,9 +52,11 @@ jobs:
       - run: python tests/test_kiro.py
       - run: python tests/test_attempt_diagnostics.py
       - run: python tests/test_provider_down.py
+      - run: python tests/test_crash_withhold.py
       - run: python tests/test_tool_trace.py
       - run: python tests/test_sandbox_check.py
       - run: python tests/test_reviewer_no_shell.py
       - run: python tests/test_prompt_refs.py
       - run: python tests/test_prompt_cache.py
       - run: python tests/test_reviewer_sessions.py
+      - run: python tests/test_diff_guard_review.py

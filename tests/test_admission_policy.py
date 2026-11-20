@@ -1,6 +1,8 @@
 """The importable policy preserves the pinned production gate without running the reviewer."""
+import itertools
 import json
 import os
+import random
 from pathlib import Path
 import subprocess
 import sys
@@ -21,7 +23,8 @@ class AdmissionPolicyTests(unittest.TestCase):
         result = policy.decide_from_comments(**args)
         self.assertTrue(result["merge"], result)
         self.assertTrue(result["self_tested"])
-        for change in ({"scope": ""}, {"paths": ["lake-manifest.json"]},
+        self.assertTrue(policy.decide_from_comments(**(args | {"scope": ""}))["merge"])
+        for change in ({"paths": ["lake-manifest.json"]},
                        {"paths": ["scripts/tool.py"]}, {"comments": []}, {"self_tested": False}):
             self.assertFalse(policy.decide_from_comments(**(args | change))["merge"])
 
@@ -39,7 +42,7 @@ class AdmissionPolicyTests(unittest.TestCase):
         for change in ({"bump_guard": ""}, {"bump_guard": "FAILURE"}, {"bump_guard": "pending"},
                        {"paths": ["lake-manifest.json", "lakefile.toml"]}, {"paths": ["lakefile.lean"]},
                        {"paths": ["lean-toolchain", "TauCeti.lean"]},
-                       {"paths": ["lean-toolchain", "scripts/tool.py"]}, {"scope": ""},
+                       {"paths": ["lean-toolchain", "scripts/tool.py"]},
                        {"self_tested": False}):
             with self.subTest(change=change):
                 self.assertFalse(policy.decide_from_comments(**(args | change))["merge"])
@@ -129,6 +132,50 @@ assert not admission_policy.decide_from_comments([], 'a' * 40, {'correctness'},
                         result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual(json.loads(result.stdout)["merge"], expected, result.stdout)
+
+    def test_same_second_scoreboards_resolve_by_comment_id_in_any_order(self):
+        head = "a" * 40
+
+        def board(cid, state):
+            meta = {"head_sha": head, "merge_base_sha": "b" * 40, "states": {"reuse": state}}
+            return {"id": cid, "updated_at": "2026-11-16T18:00:00Z",
+                    "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 " + json.dumps(meta) + "-->"}
+
+        boards = [board(7, "green"), board(12, "blocking_request"), board(9, "green")]
+        for comments in itertools.permutations(boards):
+            with self.subTest(order=[c["id"] for c in comments]):
+                self.assertEqual(policy.latest_current_scoreboard(list(comments), head)[0]["id"], 12)
+        self.assertEqual(policy.comment_id({"id": True}), -1)
+        self.assertEqual(policy.comment_id({"id": " 5"}), -1)
+
+    def test_queue_and_worker_readers_choose_the_same_current_scoreboard(self):
+        """When the newest completed scoreboard is for the current head, admission must count the
+        same one the worker's shared reader (TauCetiTools survey_facts) reports."""
+        try:
+            from tauceti_tools.survey_facts import scoreboard as worker_scoreboard
+        except ImportError:
+            self.skipTest("tauceti-tools is not installed")
+        rng = random.Random(48)
+        head, other = "a" * 40, "c" * 40
+        compared = 0
+        for _ in range(400):
+            comments = []
+            for cid in rng.sample(range(1, 40), rng.randrange(1, 7)):
+                meta = {"head_sha": rng.choice([head, head, other]), "merge_base_sha": "b" * 40,
+                        "states": {"reuse": rng.choice(["green", "blocking_request"])}, "n": cid}
+                if rng.random() < 0.2:
+                    meta["mode"] = "init"
+                comments.append({"id": cid, "created_at": "2026-11-16T00:00:00Z",
+                                 "updated_at": "2026-11-16T0%d:00:00Z" % rng.randrange(3),
+                                 "body": "<!--tauceti-scoreboard-->\n<!--tauceti-meta:v1 "
+                                         + json.dumps(meta) + "-->"})
+            rng.shuffle(comments)
+            seen = worker_scoreboard(comments)
+            if not seen or seen["head_sha"] != head:
+                continue
+            compared += 1
+            self.assertEqual(policy.latest_current_scoreboard(comments, head)[1]["n"], seen["n"])
+        self.assertGreater(compared, 100)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from tauceti_tools.review_source import source_for
 
 PUBLICATION_WAIT_EXIT = 85
 PUBLICATION_BLOCKED_EXIT = 86
+PUBLICATION_SUPERSEDED_EXIT = 87
 
 
 class PublicationPending(RuntimeError):
@@ -49,6 +50,17 @@ def cleanup_inputs(work):
         shutil.rmtree(pathlib.Path(work) / name, ignore_errors=True)
 
 
+def prepare_review(transport, plan_path):
+    """Validate and reserve publication order before any paid reviewer runs."""
+    backend = getattr(transport, 'scoreboard_publisher', lambda: None)()
+    if backend is None:
+        return
+    getattr(backend, 'preflight', lambda: None)()
+    reservation = getattr(backend, 'reserve', lambda: None)()
+    if reservation is not None:
+        atomic_write_json(pathlib.Path(plan_path).with_name('publication-run.json'), reservation)
+
+
 def retain(repo, number, plan_path, ledger_path, *, actor=None, archive_dir=None):
     plan_path, ledger_path = pathlib.Path(plan_path), pathlib.Path(ledger_path)
     plan = json.loads(plan_path.read_text())
@@ -62,6 +74,9 @@ def retain(repo, number, plan_path, ledger_path, *, actor=None, archive_dir=None
                  round=plan.get('round'), in_progress=bool(plan.get('in_progress')),
                  archive_dir=str(ledger_path.parent / 'outbox') if archive_dir is None else str(archive_dir),
                  review_error=bool(plan.get('review_error')))
+    reservation = plan_path.with_name('publication-run.json')
+    if reservation.is_file():
+        value['backend_run'] = json.loads(reservation.read_text())
     path = plan_path.with_name('publication.json')
     atomic_write_json(path, value)
     cleanup_inputs(path.parent)
@@ -81,7 +96,7 @@ def publish(repo, path, ledger_path):
     if value['state'] == 'published':
         return 0
     if value['state'] == 'superseded':
-        return 82
+        return value.get('superseded_code', 82)
     # The version-one native receipt already contains rendered paid output. Keep
     # its source binding, original native actor, round and thread IDs intact.
     actor = value.get('actor')
@@ -102,15 +117,17 @@ def publish(repo, path, ledger_path):
             if diff.is_file():
                 shutil.copyfile(diff, rendered / 'diff.txt')
             plan = dict(head_sha=value['head'], scoreboard_body=str(scoreboard), threads=threads,
-                        round=value.get('round'), in_progress=value.get('in_progress', False))
+                        round=value.get('round'), in_progress=value.get('in_progress', False),
+                        backend_run=value.get('backend_run'))
             transport = post.transport_for(source.key, value['pr'], value['head'], plan, post)
             status = post.execute_post(source.key, value['pr'], plan, ledger_path,
                                        value.get('archive_dir', str(ledger_path.parent / 'outbox')),
                                        transport=transport, expected_publisher=actor)
         if status == 0:
             value['state'] = 'published'
-        elif status == 82:
+        elif status in (82, 87):
             value['state'] = 'superseded'
+            value['superseded_code'] = status
         elif status == PUBLICATION_BLOCKED_EXIT:
             raise PublicationBlocked('retained review requires its original publisher')
         else:

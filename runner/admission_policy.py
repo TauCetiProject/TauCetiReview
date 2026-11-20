@@ -16,6 +16,47 @@ WORD_STATE = {"approved": "green", "changes requested": "blocking_request",
               "blocked": "blocking_block", "stale (re-run pending)": "stale",
               "not yet run": "absent", "error": "error"}
 
+# Rubrics being phased in: for each repository, the number of the last PR opened before the rubric
+# went live there, or None while it is not live. The rubric is run on, and required of, only PRs
+# numbered above that, after the others. A PR opened earlier keeps the scoreboard it has. Were the
+# rubric required of it, the missing row would hold the merge and nothing would add it: the worker
+# counts a head as reviewed once every row its scoreboard has is complete. The table lives in this
+# module so that the engine, the merge gate and the queue service read the same one.
+#
+# A repository is named as its review source names it: `owner/name` on GitHub, and the qualified
+# key `forgejo:<origin>/<owner>/<name>` on Forgejo. Each forge numbers its own PRs, so a repository
+# that lives on both has a cutoff on each.
+#
+# quality-pass checks the author's report of the checklist in the PR template, which only PRs
+# opened after TauCetiProject/TauCeti#33936 carry. Set its cutoff ahead of the newest PR, so that
+# the commit setting it reaches every reviewer and the queue service before a PR above it is
+# reviewed.
+PHASED_RUBRICS = {"quality-pass": {
+    "TauCetiProject/TauCeti": 45000,
+    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": 300,
+}}
+
+
+def repository_key(repo):
+    """One spelling for each repository: a bare `owner/name` is on GitHub, and case is ignored."""
+    name = str(repo).strip().lower()
+    return name if "://" in name else "github:https://github.com/" + name
+
+
+def with_phased_rubrics(rubrics, repo, pr):
+    """`rubrics`, then each rubric being phased in that PR number `pr` of `repo` is judged against."""
+    rubrics = list(rubrics)
+    try:
+        number = int(pr)
+    except (TypeError, ValueError):
+        return rubrics
+    repo = repository_key(repo)
+    for rubric, cutoffs in PHASED_RUBRICS.items():
+        cutoff = {repository_key(name): after for name, after in cutoffs.items()}.get(repo)
+        if cutoff is not None and number > cutoff and rubric not in rubrics:
+            rubrics.append(rubric)
+    return rubrics
+
 
 def rebase_request_heads(comments, *, stalled=False):
     """Existing trusted, head-bound recovery holds, shared by sweep and service intake.
@@ -46,7 +87,7 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
     green bump-guard; lakefiles and other root files always need the build. The merge path is
     self-sufficient on comment events. Every
     blocking rubric is green on it (fresh, not stale), and every changed path is under `prefix` or an
-    allowed root file (`allow`), and CI's trusted scope status is green. A PR touching either Lake
+    allowed root file (`allow`), and ordinary CI's trusted scope status is green unless inline local-test eligibility established the scope. A PR touching either Lake
     pin additionally requires the bump-guard check to be green (a CI-validated forward-only bump).
     Returns (merge_ok, reason)."""
     allow = set(allow or [])
@@ -65,7 +106,7 @@ def decide_merge(states, candidates, all_green, paths, head, prefix, allow, bump
         return False, f"build is not green on HEAD (={ci_build or 'missing'}); refusing to merge"
     if not all_green:
         return False, f"not all rubrics green on HEAD: {[r for r in candidates if states[r] != 'green']}"
-    if (scope or "").upper() != "SUCCESS":
+    if not trusted_local and (scope or "").upper() != "SUCCESS":
         return False, (f"trusted CI scope status is not green on HEAD (={scope or 'missing'}); "
                        f"refusing to merge")
     if not code_only:
@@ -108,14 +149,22 @@ def current_scoreboards(comments, head_sha):
             out.append((comment, meta))
     return out
 
+def comment_id(comment):
+    """A comment's numeric id, or -1 when it has none; booleans and padded strings are not ids."""
+    value = comment.get("id")
+    text = str(value) if isinstance(value, (int, str)) and not isinstance(value, bool) else ""
+    return int(text) if re.fullmatch(r"[0-9]+", text) else -1
+
 def latest_current_scoreboard(comments, head_sha):
     """The newest completed scoreboard for this exact head.
 
     Review init posts an in-progress scoreboard before running models. Ignore those while any
     completed scoreboard exists: starting a second review must not temporarily replace a green
     completed verdict with an empty in-progress one. If init is the only current-head scoreboard,
-    retain it and fail closed from its states. Comments normally arrive in creation order; use their
-    update timestamp first and their input position as a deterministic fallback/tie-break.
+    retain it and fail closed from its states. Order by update timestamp, then by the larger comment
+    id, as the worker's reader (TauCetiTools `survey_facts.scoreboard_order`) does, so that two
+    scoreboards edited in the same second resolve the same way whatever order a source returns
+    them in. Input position is the last tie-break, for comments without a numeric id.
     """
     boards = current_scoreboards(comments, head_sha)
     if not boards:
@@ -127,7 +176,7 @@ def latest_current_scoreboard(comments, head_sha):
         index, (comment, meta) = item
         timestamp = (comment.get("updated_at") or comment.get("created_at")
                      or meta.get("ts") or "")
-        return timestamp, index
+        return timestamp, comment_id(comment), index
 
     return max(enumerate(candidates), key=order)[1]
 

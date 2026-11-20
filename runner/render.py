@@ -101,7 +101,8 @@ def run_meta(res):
     return {k: val for k, val in
             (("id", res.get("run_id")), ("rubric", res.get("rubric")),
              ("provider", res.get("provider")), ("model", res.get("model")),
-             ("verdict", v.get("verdict") or "error"), ("secs", res.get("duration_s")),
+             ("verdict", v.get("verdict") or "error"), ("error_kind", res.get("error_kind")),
+             ("secs", res.get("duration_s")),
              ("tok", tok or None), ("usd", res.get("cost_usd")),
              ("est", res.get("cost_estimated") or None)) if val is not None}
 
@@ -237,5 +238,10 @@ def render_scoreboard(candidates, state_map, head_sha, overall, budget_note, cos
         # replies_through` — second-resolution timestamps would conflate two replies in one second.
         replies_through=max((state_map.get(r, {}).get("last_reply_seen") or 0
                              for r in candidates), default=0),
+        # Why each `error` rubric crashed, as review.error_kind's closed vocabulary (never provider
+        # output), so anyone can tell a broken reviewer setup from an outage without its logs.
+        errors={r: (state_map.get(r) or {}).get("error_kind") or "unknown_error"
+                for r in candidates if states[r] == "error"
+                and (state_map.get(r) or {}).get("verdict")} or None,
         runs=[run_meta(r) for r in (runs or [])])]
     return "\n".join(lines)

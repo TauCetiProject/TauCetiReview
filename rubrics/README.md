@@ -25,5 +25,21 @@ block-capable integrity angles run first (cheapest, most-likely-to-block earlies
 | [`naming`](naming.md) | Conclusion-describing names; conventional notation? | no |
 | [`documentation`](documentation.md) | Accurate module and declaration docstrings? | no |
 | [`proof-quality`](proof-quality.md) | Automation-first, robust proofs? | no |
+| [`quality-pass`](quality-pass.md) | Did the author complete the PR template's quality pass? | no |
 
 Blocking angles are integrity checks. The rest use `request_changes` for fixable issues.
+
+`quality-pass` judges the PR description rather than the code. The checklist itself lives in Tau
+Ceti's PR template (`.github/pull_request_template.md`), its source of truth: authors run it over
+their own diff before review and report each check in the description. The angle checks that the
+report is complete, kept current as the PR changes, and not contradicted by the diff, so a PR that
+arrives with it done passes without a round trip. It adds to the other angles rather than replacing
+them: in a pre-launch test on 16 merged PRs, the checklist and a plain review each caught defects
+the other missed. It is run on, and required of, only PRs opened after the checklist reached the
+template (TauCetiProject/TauCeti#33936), so PRs already open keep the scoreboards they have:
+`PHASED_RUBRICS` in `runner/admission_policy.py` holds the cutoff PR number, and until that is set
+the angle does not run. Tau Ceti has a cutoff on GitHub and another on Forgejo, because each forge
+numbers its own PRs. The angle is added after the project's own list of rubrics, whether that list
+is the default or comes from its configuration.
+The review bot's own Mathlib bumps and lint repairs need no report, because no author runs the
+checklist on them.
