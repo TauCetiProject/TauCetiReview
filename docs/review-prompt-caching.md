@@ -2,17 +2,19 @@
 
 Claude and Codex keep the shared protocol and PR context in user messages. A
 primer contains no rubric, reactivation text, or verdict marker and must reply
-`READY` without tools or substantive reasoning. Acceptance checks the entire saved
-assistant history, including commentary, rather than just the terminal reply.
+`READY` without tools or substantive reasoning. Acceptance checks all assistant content exposed by the saved
+history, including commentary, rather than just the terminal reply.
 Codex history requests explicitly select `itemsView: full`; summary-only history
 is refused. Every rubric attempt then receives its own rubric tail and
 a fresh verdict marker. No PR content is promoted into a system/developer prompt,
 and the runner adds no cache-control breakpoint to Claude Code's requests.
 
-Claude launches every attempt with `--resume <primer> --fork-session`. The original
+For an accepted primer, Claude launches each attempt with `--resume <primer> --fork-session`. The original
 transcript and minimal CLI metadata are restored at the same private HOME path
 between forks; completed forks, debug files, indexes, and memory are removed.
-Refreshed authentication is preserved separately. The five-minute cache TTL,
+Refreshed authentication is preserved separately; an explicitly configured
+agent source is reread between attempts as an access-only copy. Private CLI
+metadata is restored without copying operator settings. The five-minute cache TTL,
 model, cwd, and tool definitions stay stable.
 
 Codex runs one local `codex app-server --listen stdio://` process per round/model.
@@ -25,13 +27,27 @@ Connected apps, delegation, automatic memory, and web search are disabled for th
 review path; shell tools retain the existing read-only sandbox and credential-free
 environment.
 
+A thinking block, any Codex reasoning item, substantive commentary, or an
+uninspectable saved primer prevents reuse. Full Codex history does not decrypt
+opaque reasoning; an empty summary is not proof that no reasoning was retained.
+The rejected primer's usage is settled, then the normal retry and later rubrics
+for that provider use complete prompts in fresh independent CLIs. The provider is
+not primed again during the round. Recovering a rejected-primer receipt restores
+this fallback choice before reserving a new call. This preserves working reviews
+without carrying the rejected primer into another rubric, but forfeits
+cross-rubric cache savings and adds the one rejected primer's cost.
+
 Switching providers closes the previous provider's server, removes its HOME, and
 clears private evidence before the next reviewer starts, including transitions to
 uncached providers and transitions after a failed or discarded primer. Evidence
 ownership survives session removal; a failed journal deletion blocks the next
-provider. Returning to that provider requires another primer. This
+provider. Failed fork-tree removal discards that session; a discarded HOME stays
+owned until its removal is verified, including before same-provider retries.
+Returning to a cache-eligible provider requires another primer. This
 preserves the existing single-provider credential exposure; same-uid processes
-remain outside a strong OS isolation boundary.
+remain outside a strong OS isolation boundary. A read-only shell under the same
+uid can still discover on-disk rollouts, journal entries or public receipt/store
+artifacts. Request-history independence is not filesystem isolation.
 
 Session state lives only for the current review round. Changing shared context,
 provider, exact model, or cwd creates another primer. A CLI lacking the required
@@ -52,8 +68,12 @@ when the CLI creates a new temporary workspace or the next invocation uses a
 different round directory. Recovery identity includes the PR head, rubric and
 reactivation text, model/auth configuration, input artifacts, and readable source
 content. Git sources use immutable tree IDs plus dirty, untracked, ignored,
-symlink-target, flagged-file and submodule content; exported trees are hashed
-once per invocation. Temporary workspace names and round numbers are excluded.
+in-root symlink-target, flagged-file and submodule content; exported trees are
+hashed once per invocation. Identity computation never traverses links outside a
+declared source root. Dangling/cyclic/external links or unreadable source entries
+disable recovery with a fresh per-invocation identity instead of aborting review
+or certifying unobserved content. Receipts from such an invocation cannot be
+reused after a reset. Temporary workspace names and round numbers are excluded.
 Completed round receipts are retired and cannot replace a requested new review.
 Settlement is idempotent;
 a failed ledger update after a receipt write is repaired when the store is next
@@ -64,7 +84,9 @@ Receipt recovery runs before the daily-budget check. Every actual new call,
 including retries and provider/model fallbacks, reserves its allowance only after
 a recovery miss. The reservation includes an additional call allowance when a
 primer is needed. As before, call allowances are estimates rather than hard
-provider limits. Recovered costs remain counted exactly once.
+provider limits. Recovered costs remain counted exactly once. If an uncached
+paid attempt fails and its retry is unfunded, the paid cost and usage remain in
+the normal error/withheld-round accounting.
 
 If the budget prevents any new result, the engine records a head-specific
 `review-deferred.json` marker without creating an empty round or publication. The
@@ -110,8 +132,13 @@ are opt-in because they require native CLIs or paid model requests:
 
 ```bash
 # Actual CLI requests captured by a local fake provider; no paid model calls.
-python tests/native_session_input.py --provider claude
-python tests/native_session_input.py --provider codex
+python tests/native_session_input.py --provider claude --model claude-opus-5-5 --cli /path/to/claude
+python tests/native_session_input.py --provider codex --model gpt-6.1-sol --cli /path/to/codex
+
+# Real native thinking/reasoning handling and independent fallback, still local-only.
+python tests/native_session_input.py --provider claude --model claude-opus-5-5 --reasoning-output
+python tests/native_session_input.py --provider codex --reasoning-output
+python tests/native_session_input.py --provider codex --reasoning-output --empty-reasoning-summary
 
 # Real rubrics, verdict markers, reference material, reactivation context, and tools.
 python tests/live_prompt_cache.py --provider claude --auth subscription
@@ -134,13 +161,24 @@ a valid rubric verdict and successful inspection of the source fixture.
 
 ## Validation observations, 2026-11-20
 
-Native request capture passed with the actual Claude Code 2.1.280 binary and with
-Codex 0.163.0 and 0.170.0. The Codex captures include the full retained primer
-history. These runs used local fake providers and synthetic credentials, with no
+Native acknowledgement-only capture passed with actual Claude Code 2.1.280 and
+2.1.304 binaries using `claude-opus-5-5`, and Codex 0.163.0 using `gpt-6.1-sol`.
+The incident's Bubble CLI was 2.1.280; the review workflow remains pinned to
+2.1.304, which is now covered at this revision too. The Codex capture includes the
+full retained primer history.
+
+Extended native captures emit a Claude thinking block or a Codex encrypted
+reasoning item, including an empty-summary variant. The primer is rejected once;
+the next two calls use independent full prompts without the opaque state,
+primer judgment, earlier rubric or earlier assessment. The Opus requests enable
+adaptive thinking; Codex requests reasoning with `context: all_turns`. Eligibility
+therefore depends on actual retained output, not a promise that these models
+never reason. Normal acknowledgement-only output exercises saved-session reuse.
+
+All these runs used loopback fake providers and synthetic credentials, with zero
 paid model calls. They establish request format, retained-history compatibility,
-and rubric separation; they do not refresh the live billing observations below.
-The primer validator rejects substantive retained reasoning, so a real model that
-adds such reasoning fails closed instead of sharing it across rubrics.
+and rubric separation. They do not establish current live cache hit rates or
+savings, and do not refresh the historical billing observations below.
 
 ## Historical live validation, 2026-11-12
 
