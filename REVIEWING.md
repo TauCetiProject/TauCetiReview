@@ -308,3 +308,15 @@ receipt-bound scoreboard comments when the trusted backend is unavailable.
 A backend with `historical = True` publishes retained commit-bound verdicts after a
 PR closes or its head moves. Native findings then use the existing head-bound
 conversation fallback, preserving required-finding ordering and contestability.
+
+### Claude cache-breakpoint compatibility
+
+Review leaves cache-breakpoint allocation to Claude Code. It sends the complete
+rubric prompt as user content, so the CLI can add its own tool-turn markers
+without an extra Review marker exceeding the API limit. Each rubric still runs
+independently. This compatibility path does not promise shared PR-context cache
+hits between rubrics; a future session-caching change must preserve isolation.
+
+The opt-in `tests/native_cache_breakpoints.py --claude /path/to/claude --report /tmp/cache-result.json`
+checks real CLI tool turns against a local fake API. It uses synthetic credentials
+and makes no paid provider calls.

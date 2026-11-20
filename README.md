@@ -21,8 +21,8 @@ manual `/review` is exempt — it always re-reviews every rubric.)
 ## Rubrics
 
 Each agent's prompt is [`rubrics/_common.md`](rubrics/_common.md), then the pull request, then its
-angle file. Every rubric of a round starts with the same text, so Claude reviewers after the first
-read it from the prompt cache;
+angle file. Every rubric of a round starts with the same context and runs independently.
+Claude Code allocates cache breakpoints; shared PR-context cache reuse across rubrics is not guaranteed;
 see [`rubrics/README.md`](rubrics/README.md) for the list and which angles can block.
 
 ## Reviewing it yourself
