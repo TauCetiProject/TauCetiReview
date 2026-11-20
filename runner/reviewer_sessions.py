@@ -620,7 +620,7 @@ class RoundReviewers:
                 if not session.ready:
                     if "Update Codex:" in initialization.get("error_message", ""):
                         self.incompatible[provider] = initialization["error_message"]
-                    self.discard(key)
+                    self._discard_failed(key)
                     result = initialization
                     initialization = None
                 else:
@@ -633,7 +633,7 @@ class RoundReviewers:
                 self.incompatible[provider] = "Update Codex: persistent paginated thread history and revert are required"
                 e = self.incompatible[provider]
             result = failed(e, **({} if unsupported else {"usage_incomplete": True}))
-            self.discard(key)
+            self._discard_failed(key)
         if initialization is not None:
             result["initialization"] = {k: initialization.get(k) for k in ("usage", "cost_usd", "cost_estimated")}
             result["cost_usd"] = (result.get("cost_usd") or 0) + (initialization.get("cost_usd") or 0)
@@ -673,6 +673,14 @@ class RoundReviewers:
                 self.discard(key)  # next attempt rebuilds; the archived result remains valid
                 return False
         return True
+
+    def _discard_failed(self, key):
+        # An already-failed paid call must still reach its receipt, including unknown usage.
+        # Retired ownership blocks the next reviewer and close() retries/reports cleanup.
+        try:
+            self.discard(key)
+        except (OSError, ValueError, SessionError, subprocess.SubprocessError):
+            pass
 
     def discard(self, key):
         session = self.sessions.pop(key, None)

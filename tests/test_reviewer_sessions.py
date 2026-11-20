@@ -899,6 +899,39 @@ def test_discarded_home_cleanup_failure_blocks_provider_switch_and_same_provider
                 rounds.release_other_providers(provider)
                 assert not rounds.retired and not pathlib.Path(old.owned_home).exists()
 
+
+def test_failed_call_or_primer_still_returns_billing_evidence_when_home_cleanup_fails():
+    for failure in ("call", "primer"):
+        class FakeSession:
+            def __init__(self, env, home, *args): self.ready = failure != "primer"
+            def prime(self):
+                return {"returncode": 1 if failure == "primer" else 0,
+                        "is_error": failure == "primer", "text": "", "cost_usd": .01,
+                        "usage": {"input_tokens": 100}}
+            def run(self, tail): raise sessions.SessionError("injected paid turn timeout")
+            def close(self): pass
+        with tempfile.TemporaryDirectory() as base, patch.object(reviewers, "REV_HOME_BASE", base), patch.object(sessions, "ClaudeSession", FakeSession):
+            with sessions.RoundReviewers({"anthropic": "synthetic"}, False) as rounds:
+                primer_receipts = []
+                with patch.object(reviewers, "cleanup_rev_home"):
+                    result = rounds.run("claude", reviewers.ReviewPrompt("PR", "rubric"), ".", "model", on_primer=primer_receipts.append)
+                    assert result["returncode"] and result["is_error"]
+                    assert result["cost_usd"] == .01 and primer_receipts[0]["cost_usd"] == .01
+                    if failure == "call":
+                        assert result["usage_incomplete"]
+                    records = [json.loads(p.read_text()) for p in rounds.journal.glob("*.json")]
+                    assert any(r["phase"] == "rubric" and r["result"] == result for r in records)
+                    assert not rounds.sessions and rounds.retired
+                    rounds.finish()
+                    try:
+                        rounds.release_other_providers("codex")
+                    except sessions.SessionError:
+                        pass
+                    else:
+                        raise AssertionError("returning failed billing evidence permitted another reviewer")
+                rounds.release_other_providers("codex")
+                assert not rounds.retired
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:
