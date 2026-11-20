@@ -41,25 +41,24 @@ def test_claude_input_accepts_a_plain_prompt():
     assert msg["message"]["content"] == [{"type": "text", "text": "just text"}]
 
 
-def _run_claude_input(honours_ttl):
+def _run_claude_input():
     seen = {}
 
     class R:
         returncode, stdout, stderr = 0, "", ""
 
-    orig_sh, orig_check = reviewers.sh, reviewers._claude_honours_cache_ttl
+    orig_sh = reviewers.sh
     reviewers.sh = lambda argv, **kw: (seen.update(argv=list(argv), **kw), R)[1]
-    reviewers._claude_honours_cache_ttl = lambda: honours_ttl
     try:
         p = reviewers.build_prompt(RUBRICS, "naming", CTX, "MARKER")
         reviewers.run_claude(p, ".", "claude-opus-5-5", {"HOME": "/h"})
     finally:
-        reviewers.sh, reviewers._claude_honours_cache_ttl = orig_sh, orig_check
+        reviewers.sh = orig_sh
     return p, seen
 
 
 def test_run_claude_streams_one_unmarked_block_with_existing_cli_ttl():
-    p, seen = _run_claude_input(True)
+    p, seen = _run_claude_input()
     argv = seen["argv"]
     assert argv[argv.index("--input-format") + 1] == "stream-json"
     assert json.loads(seen["stdin_text"])["message"]["content"][0]["text"] == str(p)
@@ -68,9 +67,10 @@ def test_run_claude_streams_one_unmarked_block_with_existing_cli_ttl():
     assert seen["env"] == {"HOME": "/h", "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
 
 
-def test_an_older_claude_gets_one_uncached_block():
-    # A CLI that ignores the TTL pin keeps 1h breakpoints, and the API rejects ours before them.
-    p, seen = _run_claude_input(False)
+def test_transport_does_not_probe_cli_version_or_add_version_dependent_markers():
+    from unittest.mock import patch
+    with patch.object(reviewers, "_claude_honours_cache_ttl", side_effect=AssertionError("transport must not probe CLI version")):
+        p, seen = _run_claude_input()
     assert json.loads(seen["stdin_text"])["message"]["content"] == [{"type": "text", "text": str(p)}]
 
 

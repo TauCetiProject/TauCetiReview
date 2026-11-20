@@ -126,10 +126,9 @@ def reject_retired_opus(model):
 
 
 # One unguessable token per review process. Claude Code writes paths under HOME into its system
-# prompt, which comes before the shared rubric prefix (see ReviewPrompt), so a different HOME for
-# every attempt made each rubric's prompt differ before the pull request and no rubric of a round
-# could read another's cache. Each attempt still gets an empty HOME: the same path, wiped before
-# and after use.
+# prompt. Reusing the path keeps the CLI's system/tool prefix stable between independent rubrics;
+# it does not guarantee shared PR-context cache hits. Each attempt still gets an empty HOME:
+# the same path, wiped before and after use.
 _CLAUDE_HOME_TOKEN = secrets.token_hex(8)
 
 
@@ -333,11 +332,9 @@ class ReviewPrompt(str):
 
     The text is the whole prompt, so every runner can keep treating it as a string. `shared` is the
     part every rubric of a review round has in common (the shared protocol and the pull request), and
-    `rubric` is the rest. run_claude sends them as two content blocks with a cache breakpoint after
-    the first, so the rubrics after the first one in a round read the pull request from the prompt
-    cache instead of paying to write it again. Anthropic only caches a prefix that ends where a
-    breakpoint is, so putting the shared part first in one text block would not be enough.
-    Codex, Kiro and pi get the same text in the same order as one string."""
+    `rubric` is the rest. Every runner receives the complete text in the same order. Claude sends
+    one unmarked user-content block, leaving cache-breakpoint allocation to the CLI; sharing a
+    prefix alone does not guarantee that independent rubrics reuse the PR context from cache."""
 
     def __new__(cls, shared, rubric):
         self = super().__new__(cls, shared + rubric)
@@ -353,8 +350,8 @@ def build_prompt(rubrics_dir, rubric, context, marker, rubric_context=""):
 
     `context` must be identical for every rubric in a round (it describes the pull request);
     anything rubric-specific, such as a reactivation block, goes in `rubric_context`, which follows
-    the rubric text. Anything rubric-specific in `context` would make each rubric's shared prefix
-    different and lose the cache reuse."""
+    the rubric text. This keeps shared context identical without promising cache reuse across
+    independent rubric calls."""
     common = (rubrics_dir / "_common.md").read_text()
     angle = (rubrics_dir / f"{rubric}.md").read_text()
     refs = "".join(_reference_block(rubrics_dir, p) for p in RUBRIC_REFERENCES.get(rubric, []))
@@ -512,8 +509,8 @@ _CLAUDE_CACHE_TTL = "5m"
 
 
 # The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL.
-# Saved-session caching can use this capability check; ordinary rubric transport
-# adds no user breakpoint on any CLI version.
+# Retained for the separately reviewed saved-session implementation; no production
+# caller currently uses this check. Ordinary rubric transport adds no user breakpoint.
 _CLAUDE_TTL_MIN_VERSION = (2, 1, 242)
 
 

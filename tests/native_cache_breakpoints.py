@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Opt-in real Claude CLI tool-turn capture against a local fake API; no paid calls."""
+"""Opt-in real CLI capture against a local fake API; no paid calls.
+
+Run this script against the fixed checkout normally. To reproduce the old failure,
+add --expect-limit-error --fork-cache-pin --review-root /path/to/unchanged-main.
+Only newly created synthetic private configuration is used for the feature gate.
+"""
 
 import argparse
 import http.server
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
+from urllib.parse import urlsplit
 
 
 def breakpoints(value):
@@ -19,23 +27,44 @@ def breakpoints(value):
     return 0
 
 
+def require(condition, report):
+    if not condition:
+        raise RuntimeError(f"native fixture acceptance failed: {report}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--claude", type=pathlib.Path, required=True)
     parser.add_argument("--review-root", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[1])
     parser.add_argument("--report", type=pathlib.Path, required=True)
-    parser.add_argument("--expect-limit-error", action="store_true")
+    parser.add_argument("--expect-limit-error", action="store_true",
+                        help="expect old transport failure; --review-root must select an unchanged checkout")
     parser.add_argument("--auth-mode", choices=("api", "subscription"), default="api")
     parser.add_argument("--tool-turns", type=int, default=3)
     parser.add_argument("--fork-cache-pin", action="store_true", help="exercise cached CLI feature gate in a fresh synthetic HOME")
+    parser.add_argument("--timeout", type=float, default=120, help="seconds allowed for each native CLI process")
     args = parser.parse_args()
-    os.environ["PATH"] = str(args.claude.absolute().parent) + os.pathsep + os.environ.get("PATH", "")
+    if args.timeout <= 0 or args.tool_turns < 1:
+        parser.error("--timeout must be positive and --tool-turns at least 1")
+    binary = args.claude.resolve(strict=True)
     sys.path.insert(0, str(args.review_root / "runner"))
     import reviewers
 
-    counts, roles, errors = [], [], []
+    counts, roles, user_roles, errors = [], [], [], []
     with tempfile.TemporaryDirectory(prefix="review-native-cache-") as temporary:
         root = pathlib.Path(temporary)
+        bindir = root / "bin"
+        bindir.mkdir()
+        (bindir / "claude").symlink_to(binary)
+        # run_claude and legacy version probes both find this exact binary, even when
+        # the supplied versioned executable is not itself named "claude".
+        os.environ["PATH"] = str(bindir) + os.pathsep + os.environ.get("PATH", "")
+        require(pathlib.Path(shutil.which("claude")).resolve() == binary, "wrong CLI binary on PATH")
+        def bounded_sh(cmd, cwd=None, env=None, stdin_text=None):
+            return subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True,
+                                  input=stdin_text, stdin=None if stdin_text is not None else subprocess.DEVNULL,
+                                  timeout=args.timeout)
+        reviewers.sh = bounded_sh
         (root / "fixture.txt").write_text("LOCAL_TOOL_RESULT_SENTINEL\n")
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -44,15 +73,21 @@ def main():
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if self.path.endswith("count_tokens"):
+                path = urlsplit(self.path).path.rstrip("/")
+                if path.endswith("/messages/count_tokens"):
                     payload = b'{"input_tokens":2000}'
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(payload)
                     return
+                if not path.endswith("/messages"):
+                    self.send_error(404, "fixture only serves Messages API requests")
+                    return
                 count = breakpoints(body)
                 counts.append(count)
                 roles.append("USER_PR_SENTINEL" not in json.dumps(body.get("system", "")))
+                user_roles.append(any(message.get("role") == "user" and "USER_PR_SENTINEL" in json.dumps(message.get("content", ""))
+                                      for message in body.get("messages", []) if isinstance(message, dict)))
                 if count > 4:
                     errors.append(count)
                     payload = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message":
@@ -107,19 +142,20 @@ def main():
                 env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat01-local-test-only"
             prompt = reviewers.ReviewPrompt("USER_PR_SENTINEL: untrusted PR context\n", "Read fixture.txt and review this angle.")
             result = reviewers.run_claude(prompt, str(root), "claude-opus-5-5", env)
-            version = reviewers.subprocess.run([str(args.claude), "--version"], capture_output=True, text=True, check=True).stdout.strip()
-            report = {"cli": version, "auth_mode": args.auth_mode, "fork_cache_pin": args.fork_cache_pin, "breakpoints_per_request": counts, "rejected_counts": errors,
-                      "pr_absent_from_system": all(roles), "tool_trace": result.get("tool_trace", []),
+            version = reviewers.subprocess.run([str(args.claude), "--version"], capture_output=True, text=True, check=True, timeout=args.timeout).stdout.strip()
+            report = {"cli": version, "resolved_cli": str(binary), "auth_mode": args.auth_mode, "fork_cache_pin": args.fork_cache_pin, "breakpoints_per_request": counts, "rejected_counts": errors,
+                      "pr_absent_from_system": bool(roles) and all(roles),
+                      "pr_present_in_user": bool(user_roles) and all(user_roles), "tool_trace": result.get("tool_trace", []),
                       "returncode": result.get("returncode"), "is_error": result.get("is_error"),
                       "local_review_reply": result.get("text") == "LOCAL_REVIEW_OK", "paid_calls": 0}
             args.report.write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))
-            assert len(counts) >= 2 and all(roles), report
-            assert result.get("tool_trace_meta", {}).get("successful_calls", 0) >= 1, report
+            require(len(counts) >= 2 and all(roles) and all(user_roles), report)
+            require(result.get("tool_trace_meta", {}).get("successful_calls", 0) >= 1, report)
             if args.expect_limit_error:
-                assert errors and not report["local_review_reply"], report
+                require(bool(errors) and not report["local_review_reply"], report)
             else:
-                assert not errors and max(counts) <= 4 and report["local_review_reply"] and result["returncode"] == 0, report
+                require(not errors and max(counts) <= 4 and report["local_review_reply"] and result["returncode"] == 0, report)
         finally:
             reviewers.cleanup_rev_home(home)
             server.shutdown()
