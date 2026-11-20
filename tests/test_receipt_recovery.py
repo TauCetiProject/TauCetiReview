@@ -248,6 +248,131 @@ def test_source_identity_git_clean_dirty_untracked_and_exported_equivalence():
         assert source_identity(root / "a") == source_identity(root / "b")
 
 
+def test_git_dangling_cyclic_and_external_links_disable_reuse_without_scanning_host():
+    from types import SimpleNamespace
+    from review_attempts import context_identity
+    billing._install_stubs(); billing._VERDICTS.clear()
+    for kind in ("dangling", "cycle", "external"):
+        d, rd, store = billing._workspace(["correctness"])
+        try:
+            work = workspace(d, "work")
+            code = work / "code"
+            subprocess.run(["git", "init", "-q", str(code)], check=True)
+            link = code / "link"
+            if kind == "dangling":
+                link.symlink_to("missing")
+            elif kind == "cycle":
+                link.symlink_to("other"); (code / "other").symlink_to("link")
+            else:
+                link.symlink_to("/")
+            subprocess.run(["git", "-C", str(code), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(code), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "source"], check=True)
+            args = SimpleNamespace(tool_cwd=str(work), code_path="code")
+            original_iterdir = pathlib.Path.iterdir
+            def inside_only(path):
+                assert path.resolve().is_relative_to(work), "identity scanned outside source workspace"
+                return original_iterdir(path)
+            with patch.object(pathlib.Path, "iterdir", inside_only):
+                first, second = context_identity(args), context_identity(args)
+                assert first.startswith("nonreusable:") and first != second
+                reviewed = billing._run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness"],
+                                        extra=["--tool-cwd", str(work)])
+            assert reviewed["prs"]["1"]["state"]["correctness"]["verdict"] == "approve"
+        finally:
+            shutil.rmtree(d)
+
+
+def test_unreadable_source_disables_receipt_reuse_without_aborting_review():
+    from types import SimpleNamespace
+    from review_attempts import context_identity
+    billing._install_stubs(); billing._VERDICTS.clear()
+    d, rd, store = billing._workspace(["correctness"])
+    try:
+        work = workspace(d, "work")
+        blocked = work / "code/A.lean"
+        original_open = pathlib.Path.open
+        def unreadable(path, *args, **kwargs):
+            if path == blocked:
+                raise PermissionError("fixture unreadable input")
+            return original_open(path, *args, **kwargs)
+        args = SimpleNamespace(tool_cwd=str(work), code_path="code")
+        with patch.object(pathlib.Path, "open", unreadable):
+            first, second = context_identity(args), context_identity(args)
+            assert first.startswith("nonreusable:") and first != second
+            reviewed = billing._run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness"],
+                                    extra=["--tool-cwd", str(work)])
+        assert reviewed["prs"]["1"]["state"]["correctness"]["verdict"] == "approve"
+    finally:
+        shutil.rmtree(d)
+
+
+def test_replayed_rejected_primer_uses_one_funded_direct_retry_without_repriming():
+    billing._install_stubs(); billing._VERDICTS.clear()
+    d, rd, store = billing._workspace(["correctness"])
+    calls = []
+    class RejectedCrash(billing.DirectSessions):
+        def run(self, *args, **kwargs):
+            return {"returncode": 1, "text": "", "cost_usd": .01, "primer_rejected": True}
+        def finish(self):
+            raise RuntimeError("crash after rejected primer receipt")
+    class DirectAfterReplay(billing.DirectSessions):
+        rejected = False
+        def reject(self, provider):
+            self.rejected = True
+        def needs_primer(self, *args):
+            return not self.rejected
+        def run(self, provider, prompt, cwd, model, **kwargs):
+            assert self.rejected, "replay did not restore uncached-provider decision"
+            calls.append(provider)
+            return billing._fake_runner(prompt, cwd, model, {})
+    try:
+        with patch.object(review, "RoundReviewers", RejectedCrash):
+            try:
+                billing._run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness"])
+            except RuntimeError as error:
+                assert "rejected primer receipt" in str(error)
+        with patch.object(review, "RoundReviewers", DirectAfterReplay):
+            recovered = billing._run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness"],
+                                     daily_budget=.02, max_call_cost=.01)
+        assert calls == ["claude"]
+        assert recovered["prs"]["1"]["state"]["correctness"]["verdict"] == "approve"
+        assert sum(recovered["days"].values()) == .02
+    finally:
+        shutil.rmtree(d)
+
+
+def test_paid_uncached_failure_is_retained_when_retry_cannot_be_funded():
+    for provider in ("kiro", "deepseek"):
+        billing._install_stubs(); billing._VERDICTS.clear()
+        calls = []
+        def failed_once(prompt, cwd, model, env):
+            calls.append(model)
+            assert len(calls) == 1, "unfunded retry reached the provider"
+            return {"returncode": 0, "text": "no verdict", "cost_usd": .01,
+                    "usage": {"input_tokens": 123, "output_tokens": 45}}
+        d, rd, store = billing._workspace(["correctness"])
+        try:
+            function = "run_kiro" if provider == "kiro" else "run_pi"
+            with patch.object(review, function, failed_once):
+                try:
+                    billing._run(store, rd, d / "diff.txt", mode="manual", rubrics=["correctness"],
+                                 daily_budget=.01, max_call_cost=.01, extra=["--providers", provider])
+                except SystemExit as error:
+                    assert error.code == review.REVIEWER_CRASHED_EXIT
+                else:
+                    raise AssertionError("a paid failed review must retain its withheld outcome")
+            ledger = json.loads((store / "ledger.json").read_text())
+            recorded = ledger["prs"]["1"]["rounds"][0]
+            assert len(calls) == 1 and sum(ledger["days"].values()) == .01
+            assert recorded["cost"] == .01 and recorded["mode"] == "withheld"
+            result = json.loads((store / "reviews/1/1/correctness.json").read_text())
+            assert result["retry_deferred_for_budget"] and result["cost_usd"] == .01
+            assert result["usage"] == {"input_tokens": 123, "output_tokens": 45}
+            assert recorded["tokens"] == review.sum_usage([result])
+        finally:
+            shutil.rmtree(d)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

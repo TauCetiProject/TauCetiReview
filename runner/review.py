@@ -504,9 +504,10 @@ def run_rubric(ctx, rubric):
 
     started_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     attempts, t0 = [], time.monotonic()
+    last_result = None
 
     def attempt():
-        nonlocal marker, prompt
+        nonlocal marker, prompt, last_result
         t = time.monotonic()
         marker = "TAUCETI-VERDICT-" + secrets.token_hex(12)
         prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context, marker, reblock)
@@ -517,6 +518,8 @@ def run_rubric(ctx, rubric):
             receipt = receipts.replay(provider, model)
             if receipt is not None:
                 r = dict(receipt["result"])
+                if r.get("primer_rejected") and hasattr(ctx.sessions, "reject"):
+                    ctx.sessions.reject(provider)
                 r.update(_receipt_verdict=receipt["verdict"],
                          _receipt_prompt_sha256=receipt["prompt_sha256"],
                          _receipt_error_kind=receipt["error_kind"],
@@ -564,6 +567,7 @@ def run_rubric(ctx, rubric):
                          if r.get(k) is not None}
                         | {"model": model, "secs": round(time.monotonic() - t, 1)}
                         | ({} if has_verdict(r) else {"error_kind": error_kind(r)}))
+        last_result = r
         return r
 
     def has_verdict(r):
@@ -600,7 +604,15 @@ def run_rubric(ctx, rubric):
     except NewCallBudgetUnavailable:
         if receipts:
             ctx.attempt_receipts.update(receipts.used)
-        return False
+        if not attempts or (ctx.sessions is not None and provider in ("claude", "sonnet", "codex")):
+            return False  # Cached paid attempts stay durable and replayable.
+        # The uncached call really happened and was already settled. An unfunded
+        # retry must not erase its cost/usage or pretend no reviewer ran. Preserve
+        # the actual failure through the usual case-file/withheld-round path.
+        res = dict(last_result)
+        cost = sum(item.get("cost_usd") or 0 for item in attempts)
+        model = attempts[-1]["model"]
+        res["retry_deferred_for_budget"] = True
     res["cost_usd"] = round(cost, 6)
     res["usage"] = add_usage(*(attempt.get("usage") for attempt in attempts))
     if any(attempt.get("usage_incomplete") for attempt in attempts):

@@ -156,17 +156,45 @@ def source_identity(path):
     Git trees use immutable object IDs plus actual dirty/untracked bytes. Exported
     trees have no object database, so hash them once per invocation, not per rubric.
     """
-    root = pathlib.Path(path)
-    if not root.exists() and not root.is_symlink():
+    root = pathlib.Path(path).absolute()
+    if root.is_symlink():
+        raise ValueError("reviewer source root is a symlink")
+    try:
+        root.lstat()
+    except FileNotFoundError:
         return ["missing"]
+    root = root.resolve()
+
+    def inside(item):
+        # Resolve one component at a time. Path.resolve() would already follow
+        # an intermediate link outside the boundary before we could reject it.
+        pending = list(item.relative_to(root).parts)
+        current, links = root, 0
+        while pending:
+            candidate = current / pending.pop(0)
+            info = candidate.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                target = pathlib.Path(os.path.abspath(candidate.parent / os.readlink(candidate)))
+                if not target.is_relative_to(root):
+                    raise ValueError("reviewer source link leaves its root")
+                links += 1
+                if links > 40:
+                    raise ValueError("cyclic reviewer source link")
+                pending = list(target.relative_to(root).parts) + pending
+                current = root
+            else:
+                current = candidate
+        return current
 
     def content(item, ancestors=frozenset()):
+        if item != root:
+            item = inside(item.parent) / item.name
         info = item.lstat()
-        if item.is_symlink():
-            resolved = item.resolve(strict=True)
+        if stat.S_ISLNK(info.st_mode):
+            resolved = inside(item)
             if resolved in ancestors:
                 raise ValueError("cyclic reviewer source link")
-            return ["link", content(resolved, ancestors | {resolved})]
+            return ["link", str(resolved.relative_to(root)), content(resolved, ancestors | {resolved})]
         if item.is_dir():
             return ["tree", [(p.name, content(p, ancestors)) for p in sorted(item.iterdir()) if p.name != ".git"]]
         if not stat.S_ISREG(info.st_mode):
@@ -194,21 +222,27 @@ def source_identity(path):
         for entry in git("ls-files", "--stage", "-z").split(b"\0"):
             if entry.startswith((b"120000 ", b"160000 ")):
                 name = os.fsdecode(entry.split(b"\t", 1)[1])
+                path = root / name
+                safe = inside(path.parent) / path.name
                 if entry.startswith(b"160000 "):
-                    submodules.append((name, source_identity(root / name)))
-                elif (root / name).is_symlink():
-                    links.append((name, content(root / name)))
+                    submodules.append((name, source_identity(safe)))
+                elif safe.is_symlink():
+                    links.append((name, content(safe)))
         # Git's stat cache deliberately ignores assume-unchanged / skip-worktree
         # paths. Their actual readable bytes must still invalidate recovery.
         for entry in git("ls-files", "-v", "-z").split(b"\0"):
             if entry and (entry[:1].islower() or entry[:1].upper() == b"S"):
                 name = os.fsdecode(entry[2:])
-                flagged.append((name, content(root / name) if (root / name).exists() else ["missing"]))
+                try:
+                    value = content(root / name)
+                except FileNotFoundError:
+                    value = ["missing"]
+                flagged.append((name, value))
         return ["git", head, dirty, extra, links, submodules, flagged]
     return content(root)
 
 
-def context_identity(a):
+def _context_identity(a):
     workspace = pathlib.Path(a.tool_cwd).resolve()
     sources = []
     for name in ("code_path", "roadmap_path", "mathlib_path", "lean_src"):
@@ -225,3 +259,16 @@ def context_identity(a):
         artifacts.append((name, source_identity(value) if value else ["missing"]))
     return fingerprint("review-context-v2", sources, artifacts,
                        getattr(a, "base_sha", ""), getattr(a, "merge_base_sha", ""))
+
+
+def context_identity(a):
+    """Unavailable source identity disables receipt reuse, never ordinary review.
+
+    A fresh nonce is essential: reusing a constant failure key would certify
+    changed content we could not inspect. PR-controlled links are never scanned
+    beyond their declared source root.
+    """
+    try:
+        return _context_identity(a)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, UnicodeError):
+        return "nonreusable:" + uuid.uuid4().hex
