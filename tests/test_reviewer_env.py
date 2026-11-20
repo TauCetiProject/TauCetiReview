@@ -2,6 +2,7 @@
 """The isolated reviewer environment keeps login identity without inheriting personal config."""
 
 import os
+import json
 import pathlib
 import sys
 import tempfile
@@ -160,6 +161,190 @@ def test_claude_attempts_reuse_one_empty_home():
         reviewers.cleanup_rev_home(home2)
         reviewers.cleanup_rev_home(home3)
     assert not os.path.exists(home1)
+
+def test_claude_subscription_honors_configured_file_and_keeps_usage_login_out():
+    old_env, old_base = os.environ.copy(), reviewers.REV_HOME_BASE
+    try:
+        with tempfile.TemporaryDirectory() as root:
+            root = pathlib.Path(root)
+            operator, source, usage = root / "operator", root / "agent", root / "usage.json"
+            (operator / ".claude").mkdir(parents=True)
+            source.mkdir()
+            (operator / ".claude" / ".credentials.json").write_text("OPERATOR-CREDENTIAL")
+            (operator / ".claude" / "settings.json").write_text("OPERATOR-SETTINGS")
+            (source / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "AGENT-ONE", "refreshToken": "OWNER-REFRESH", "expiresAt": 9999999999999}, "ownerOnly": "must-not-copy"}))
+            (source / "CLAUDE.md").write_text("AGENT-PERSONAL-CONFIG")
+            usage.write_text("USAGE-ONLY-CREDENTIAL")
+            reviewers.REV_HOME_BASE = str(root / "reviews")
+            os.environ.clear()
+            os.environ.update(HOME=str(operator), PATH="/usr/bin", USER="test-user", LOGNAME="test-user",
+                              CLAUDE_CONFIG_DIR=str(source), TAUCETI_CLAUDE_USAGE_CREDENTIALS=str(usage),
+                              GH_TOKEN="GITHUB-SECRET", CLAUDE_CODE_OAUTH_TOKEN="ENVIRONMENT-AGENT")
+            for provider in ("claude", "sonnet"):
+                env, home = reviewers.reviewer_env(provider, {}, subscription=True)
+                try:
+                    private = pathlib.Path(env["CLAUDE_CONFIG_DIR"])
+                    assert env["HOME"] == home != str(operator)
+                    assert private == pathlib.Path(home) / ".claude"
+                    assert json.loads((private / ".credentials.json").read_text()) == {"claudeAiOauth": {"accessToken": "AGENT-ONE", "expiresAt": 9999999999999}}
+                    assert json.loads((source / ".credentials.json").read_text())["claudeAiOauth"]["refreshToken"] == "OWNER-REFRESH"
+                    assert (private / ".credentials.json").stat().st_mode & 0o777 == 0o600
+                    assert set(p.name for p in private.iterdir()) == {".credentials.json"}
+                    assert not any(key in env for key in ("GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "TAUCETI_CLAUDE_USAGE_CREDENTIALS"))
+                    # The final subprocess sees the private config, not the parent config or usage login.
+                    child = reviewers.subprocess.run(
+                        [sys.executable, "-c", "import os,pathlib,json; print(json.loads((pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])/'.credentials.json').read_text())['claudeAiOauth']['accessToken']); print('TAUCETI_CLAUDE_USAGE_CREDENTIALS' in os.environ)"],
+                        env=env, capture_output=True, text=True, check=True)
+                    assert child.stdout.splitlines() == ["AGENT-ONE", "False"]
+                finally:
+                    reviewers.cleanup_rev_home(home)
+            (source / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "AGENT-TWO", "refreshToken": "OWNER-REFRESH-TWO", "expiresAt": 9999999999999}}))
+            env, home = reviewers.reviewer_env("claude", {}, subscription=True)
+            try:
+                assert json.loads((pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text()) == {"claudeAiOauth": {"accessToken": "AGENT-TWO", "expiresAt": 9999999999999}}
+                assert usage.read_text() == "USAGE-ONLY-CREDENTIAL"
+            finally:
+                reviewers.cleanup_rev_home(home)
+            # Explicit missing source must not use the perfectly readable operator credential.
+            (source / ".credentials.json").unlink()
+            try:
+                reviewers.reviewer_env("claude", {}, subscription=True)
+                raise AssertionError("missing explicit file unexpectedly accepted")
+            except ValueError as error:
+                assert "CLAUDE_CONFIG_DIR" in str(error) and "--auth api" in str(error)
+            assert not any(pathlib.Path(reviewers.REV_HOME_BASE).iterdir())
+            (source / ".credentials.json").write_text("invalid explicit JSON")
+            try:
+                reviewers.reviewer_env("claude", {}, subscription=True)
+                raise AssertionError("invalid explicit file unexpectedly accepted")
+            except ValueError as error:
+                assert "CLAUDE_CONFIG_DIR" in str(error) and "--auth api" in str(error)
+            assert not any(pathlib.Path(reviewers.REV_HOME_BASE).iterdir())
+    finally:
+        reviewers.REV_HOME_BASE = old_base
+        os.environ.clear()
+        os.environ.update(old_env)
+
+
+def test_configured_claude_source_does_not_change_other_provider_or_api_environments():
+    old = os.environ.copy()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ.clear()
+            os.environ.update(HOME=directory, PATH="/usr/bin", CLAUDE_CONFIG_DIR="/missing/agent", TAUCETI_CLAUDE_USAGE_CREDENTIALS="/missing/usage")
+            for provider, subscription, keys in (("claude", False, {"anthropic": "api-key"}), ("codex", True, {})):
+                env, home = reviewers.reviewer_env(provider, keys, subscription=subscription)
+                try:
+                    assert "CLAUDE_CONFIG_DIR" not in env
+                    assert "TAUCETI_CLAUDE_USAGE_CREDENTIALS" not in env
+                finally:
+                    reviewers.cleanup_rev_home(home)
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+
+
+def test_default_claude_file_and_unset_legacy_fallback_are_preserved():
+    old = os.environ.copy()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ.clear()
+            os.environ.update(HOME=directory, PATH="/usr/bin")
+            source = pathlib.Path(directory) / ".claude" / ".credentials.json"
+            source.parent.mkdir()
+            source.write_text("DEFAULT-AGENT")
+            env, home = reviewers.reviewer_env("claude", {}, subscription=True)
+            try:
+                assert env["HOME"] == home
+                assert (pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text() == "DEFAULT-AGENT"
+            finally:
+                reviewers.cleanup_rev_home(home)
+            source.unlink()
+            env, home = reviewers.reviewer_env("claude", {}, subscription=True)
+            try:
+                assert env["HOME"] == directory
+                assert "CLAUDE_CONFIG_DIR" not in env
+            finally:
+                reviewers.cleanup_rev_home(home)
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+
+
+def test_unusable_explicit_file_refuses_before_mixed_provider_round_preparation():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import review
+
+    with tempfile.TemporaryDirectory() as directory:
+        err = io.StringIO()
+        # No input files/ledger exist: reaching their read or a rubric means preflight was too late.
+        argv = ["review", "--repo", "o/r", "--pr", "1", "--providers", "claude,codex", "--auth", "subscription",
+                "--store", str(pathlib.Path(directory) / "store"), "--rubrics-dir", "/not/a/rubric/directory",
+                "--diff-file", "/not/a/diff", "--tool-cwd", directory]
+        with patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(pathlib.Path(directory) / "missing")), patch.object(sys, "argv", argv), patch.object(review, "run_rubric", side_effect=AssertionError("must not infer")), contextlib.redirect_stderr(err):
+            try:
+                review.main()
+                raise AssertionError("invalid configured file unexpectedly accepted")
+            except SystemExit as error:
+                assert error.code == review.PROVIDER_DOWN_EXIT
+        assert not (pathlib.Path(directory) / "store").exists()
+        assert "review aborted: reviewer authentication failed" in err.getvalue()
+        assert "Traceback" not in err.getvalue()
+
+
+def test_explicit_access_only_file_validates_supplied_expiry():
+    from unittest.mock import patch
+    import time
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, CLAUDE_CONFIG_DIR=directory):
+        path = pathlib.Path(directory) / ".credentials.json"
+        for expiry in (None, True, "tomorrow", float("inf"), 10 ** 1000, (time.time() - 60) * 1000):
+            oauth = {"accessToken": "SYNTHETIC", "refreshToken": "OWNER"}
+            oauth["expiresAt"] = expiry
+            path.write_text(json.dumps({"claudeAiOauth": oauth}))
+            try:
+                reviewers.configured_claude_access()
+                raise AssertionError("malformed/expired access credential accepted")
+            except ValueError as error:
+                assert "current agent file" in str(error)
+        for metadata in ({}, {"expiresAt": (time.time() + 60) * 1000}):
+            path.write_text(json.dumps({"claudeAiOauth": {"accessToken": "CURRENT", **metadata}}))
+            assert reviewers.configured_claude_access()["accessToken"] == "CURRENT"
+
+
+def test_required_file_flag_selects_default_file_without_native_fallback():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import review
+    class PreflightPassed(Exception):
+        pass
+    with tempfile.TemporaryDirectory() as directory:
+        home = pathlib.Path(directory)
+        argv = ["review", "--repo", "o/r", "--pr", "1", "--providers", "claude,codex",
+                "--auth", "subscription", "--require-claude-config-file", "--tool-cwd", directory,
+                "--rubrics-dir", "/missing-rubrics", "--diff-file", "/missing-diff", "--store", str(home / "store")]
+        for present in (False, True):
+            if present:
+                (home / ".claude").mkdir()
+                (home / ".claude" / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC"}}))
+            with patch.dict(os.environ, HOME=directory, CLAUDE_CONFIG_DIR=""), patch.object(sys, "argv", argv), patch.object(review, "sweep_rev_homes", side_effect=PreflightPassed), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    review.main()
+                    raise AssertionError("preflight did not terminate at boundary")
+                except SystemExit as error:
+                    assert not present and error.code == review.PROVIDER_DOWN_EXIT
+                except PreflightPassed:
+                    assert present
+                    assert os.environ["CLAUDE_CONFIG_DIR"] == str(home / ".claude")
+                    env, private_home = reviewers.reviewer_env("claude", {}, subscription=True)
+                    try:
+                        assert pathlib.Path(env["CLAUDE_CONFIG_DIR"]) != home / ".claude"
+                        assert json.loads((pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text())["claudeAiOauth"]["accessToken"] == "SYNTHETIC"
+                    finally:
+                        reviewers.cleanup_rev_home(private_home)
+
 
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]

@@ -27,7 +27,7 @@ from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL,
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge, read_paths
-from reviewers import build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
+from reviewers import configured_claude_access, build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import (build_reactivation_block, carry_forward, normalize_finding_path, patch_digest,
                       pick_anchor, seed_stale_approvals, update_case_file)
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
@@ -775,6 +775,9 @@ def main():
                     help="api: each reviewer gets an isolated HOME and its own API key (CI). "
                          "subscription: inherit the environment so a locally logged-in `claude` / "
                          "`codex` reviews on the runner's own subscription (no API key, no spend)")
+    ap.add_argument("--require-claude-config-file", action="store_true",
+                    help="require a Claude agent credential file in subscription mode; use "
+                         "CLAUDE_CONFIG_DIR or ~/.claude, never native login fallback")
     ap.add_argument("--keys-dir", default="",
                     help="dir with files 'anthropic', 'openai', 'kiro', and/or 'openrouter'; each key is "
                          "passed only to the matching reviewer subprocess and never kept in this "
@@ -814,6 +817,20 @@ def main():
         reject_retired_opus(a.claude_model)
     except ValueError as e:
         sys.exit(str(e))
+
+    if a.require_claude_config_file and a.auth != "subscription":
+        ap.error("--require-claude-config-file requires --auth subscription")
+    # An explicit unusable file must not fail halfway through a mixed-provider paid round.
+    selected_providers = {p.strip() for p in a.providers.split(",")}
+    if a.auth == "subscription" and a.mode not in ("init", "merge") and selected_providers & {"claude", "sonnet"}:
+        if a.require_claude_config_file and not os.environ.get("CLAUDE_CONFIG_DIR", "").strip():
+            os.environ["CLAUDE_CONFIG_DIR"] = str(pathlib.Path.home() / ".claude")
+        try:
+            configured_claude_access()
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            print("review aborted: reviewer authentication failed (configured Claude file unavailable or expired)", file=sys.stderr)
+            sys.exit(PROVIDER_DOWN_EXIT)
 
     # Reclaim reviewer HOMEs orphaned by an earlier killed/crashed run before we add more. Each
     # worker has its own HOME, so this base isn't shared, and a worker runs reviews sequentially —
