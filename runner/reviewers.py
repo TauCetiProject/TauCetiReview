@@ -506,16 +506,14 @@ def _tool_trace(stream_lines, root):
     return trace, meta, result
 
 
-# Claude Code picks its own cache TTL (1h for subscribers, 5m otherwise), and the API rejects a
-# 1h breakpoint that comes after a 5m one, so the breakpoint claude_input adds must use the same
-# TTL as Claude Code's own. Pin both to 5m: a round's rubrics run back to back and every turn
-# refreshes the entry, and a 5m write costs 1.25x the input rate against 2x for 1h.
+# Keep the existing five-minute CLI cache policy. Review adds no user breakpoint;
+# Claude Code owns the request's breakpoint allocation, including tool turns.
 _CLAUDE_CACHE_TTL = "5m"
 
 
-# The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL. An older one keeps its
-# own 1h breakpoints, so the API would reject every request carrying our 5m breakpoint before them;
-# with an older or unidentifiable CLI the prompt goes as one block, uncached, as before.
+# The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL.
+# Saved-session caching can use this capability check; ordinary rubric transport
+# adds no user breakpoint on any CLI version.
 _CLAUDE_TTL_MIN_VERSION = (2, 1, 242)
 
 
@@ -533,17 +531,13 @@ def _claude_cache_env(env):
     return {**env, "CLAUDE_CODE_PROMPT_CACHE_TTL": _CLAUDE_CACHE_TTL}
 
 
-def claude_input(prompt, cache=True):
-    """The stream-json user message for one rubric. A ReviewPrompt becomes two text blocks with a
-    cache breakpoint after the shared one, so the next rubric of the round reads the pull request
-    from the cache. Claude Code passes the block's cache_control through to the API unchanged.
-    With `cache` false the whole prompt is one block with no breakpoint."""
-    shared = getattr(prompt, "shared", "")
-    if shared and cache:
-        content = [{"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}},
-                   {"type": "text", "text": prompt.rubric}]
-    else:
-        content = [{"type": "text", "text": str(prompt)}]
+def claude_input(prompt):
+    """Keep PR context in user content and let Claude Code own all cache breakpoints.
+
+    An extra user breakpoint exceeds the API limit after Claude Code adds its
+    own tool-result breakpoints, including with deployment-pinned 2.1.280.
+    """
+    content = [{"type": "text", "text": str(prompt)}]
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
 
@@ -556,7 +550,6 @@ def run_claude(prompt, cwd, model, env):
     # did, and the events before it are the only record of what the reviewer looked at. Parsing is
     # tolerant — a malformed line is counted and skipped, and a stream with no result event falls
     # through to the same parse_error path a malformed json document took.
-    cache = _claude_honours_cache_ttl()
     r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
             "--disable-slash-commands",
             # --tools RESTRICTS the built-in set; --allowedTools only grants permission within
@@ -579,7 +572,7 @@ def run_claude(prompt, cwd, model, env):
             "--tools", *_REVIEW_TOOLS,
             "--allowedTools", *_REVIEW_TOOLS,
             "--input-format", "stream-json"],
-           cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt, cache))
+           cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt))
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     trace, meta = [], {}
     try:
