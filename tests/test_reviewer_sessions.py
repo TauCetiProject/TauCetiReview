@@ -932,6 +932,63 @@ def test_failed_call_or_primer_still_returns_billing_evidence_when_home_cleanup_
                 rounds.release_other_providers("codex")
                 assert not rounds.retired
 
+
+def test_rejected_primer_uses_independent_direct_calls_without_paying_more_primers():
+    for provider in ("claude", "codex"):
+        primes, homes, calls, receipts = [], [], [], []
+        class Rejected:
+            def __init__(self, env, home, *args): self.ready = False;homes.append(home)
+            def prime(self):
+                primes.append(1)
+                return {"returncode": 1, "is_error": True, "text": "", "primer_rejected": True,
+                        "cost_usd": .02, "usage": {"input_tokens": 100}}
+            def close(self): pass
+        def direct(prompt, cwd, model, env):
+            calls.append(prompt)
+            assert not pathlib.Path(homes[0]).exists()
+            assert "PR data" in prompt and "rubric" in prompt
+            assert not list(rounds.journal.glob("*.json"))
+            return {"returncode": 0, "text": "independent assessment", "cost_usd": .01}
+        with tempfile.TemporaryDirectory() as base, patch.object(reviewers, "REV_HOME_BASE", base), patch.object(sessions, "ClaudeSession", Rejected), patch.object(sessions, "CodexSession", Rejected), patch.object(reviewers, "run_claude", side_effect=direct), patch.object(reviewers, "run_codex", side_effect=direct):
+            with sessions.RoundReviewers({"anthropic": "synthetic", "openai": "synthetic"}, False) as rounds:
+                prompt = reviewers.ReviewPrompt("PR data", "rubric one")
+                rejected = rounds.run(provider, prompt, ".", "model", on_primer=receipts.append)
+                assert rejected["primer_rejected"] and receipts[0]["cost_usd"] == .02
+                rounds.finish()
+                for rubric in ("rubric one retry", "rubric two"):
+                    prompt = reviewers.ReviewPrompt("PR data", rubric)
+                    assert not rounds.needs_primer(provider, prompt, ".", "model")
+                    result = rounds.run(provider, prompt, ".", "model", on_primer=receipts.append)
+                    assert result["cost_usd"] == .01 and not result.get("initialization")
+                    direct_home = next(iter(rounds.sessions.values())).owned_home
+                    assert pathlib.Path(direct_home).exists()  # receipt must precede HOME cleanup
+                    rounds.finish()
+                    assert not pathlib.Path(direct_home).exists()
+                assert len(primes) == 1 and len(receipts) == 1 and len(calls) == 2
+
+
+def test_any_codex_reasoning_item_is_not_an_inspectable_acknowledgement():
+    assert not sessions.codex_primer_acknowledges({"items": [{"type": "agentMessage", "text": "READY", "unknownContent": "opaque"}]})
+    for reasoning in ({"type": "reasoning", "id": "opaque"},
+                      {"type": "reasoning", "id": "opaque", "summary": [], "content": [], "startedAtMs": 1, "completedAtMs": 2},
+                      {"type": "reasoning", "encryptedContent": "opaque", "summary": []}):
+        assert not sessions.codex_primer_acknowledges({"items": [reasoning, {"type": "agentMessage", "text": "READY"}]})
+
+
+def test_claude_reset_reloads_only_current_explicit_agent_access():
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory);source=root / "source";source.mkdir();home=root / "private";home.mkdir()
+        c = sessions.ClaudeSession({"HOME": str(home)}, str(home), ".", "model", "PR")
+        private = home / ".claude";private.mkdir()
+        credential = private / ".credentials.json";credential.write_text('{"claudeAiOauth":{"accessToken":"OLD"}}')
+        transcript = private / (c.primer + ".jsonl")
+        c.baseline = {transcript.relative_to(home): _claude_primer_records([{"type": "text", "text": "READY"}])}
+        (source / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "NEW", "refreshToken": "OWNER"}}))
+        with patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(source)):
+            c.reset()
+        assert json.loads(credential.read_text()) == {"claudeAiOauth": {"accessToken": "NEW"}}
+        assert "OWNER" in (source / ".credentials.json").read_text()
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

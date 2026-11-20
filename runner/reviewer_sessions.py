@@ -200,9 +200,10 @@ def codex_primer_acknowledges(turn):
         if kind == "userMessage":
             continue  # the shared PR is untrusted user data, not an acknowledgement
         if kind == "agentMessage" and isinstance(item.get("text"), str):
+            metadata = {"type", "id", "text", "phase", "startedAtMs", "completedAtMs"}
+            if any(value for key, value in item.items() if key not in metadata):
+                return False
             texts.append(item["text"])
-        elif kind == "reasoning" and not any(value for key, value in item.items() if key not in ("id", "type")):
-            continue
         else:
             return False  # tools, substantive reasoning or unknown retained assistant content
     return acknowledges({"text": "".join(texts)})
@@ -212,7 +213,7 @@ def primer_failure(provider, result):
     if result.get("returncode") or result.get("is_error") or result.get("parse_error"):
         return result
     # Model text is untrusted and must never enter native failure classification.
-    return {**result, **failed(f"{provider} primer did not acknowledge without tools")}
+    return {**result, **failed(f"{provider} primer did not acknowledge without tools"), "primer_rejected": True}
 
 
 @functools.lru_cache(maxsize=None)
@@ -270,13 +271,13 @@ class ClaudeSession:
                 if not claude_primer_acknowledges(data):
                     return primer_failure("Claude", result)
                 baseline[path.relative_to(self.home)] = data
-            config = self.home / ".claude.json"
-            if config.exists():
-                baseline[pathlib.Path(".claude.json")] = config.read_bytes()
+            for config in (self.home / ".claude.json", cdir / ".claude.json"):
+                if config.exists():
+                    baseline[config.relative_to(self.home)] = config.read_bytes()
         except OSError as error:
-            return {**result, **failed(f"Claude could not preserve its paid primer: {error}")}
+            return {**result, **failed(f"Claude could not preserve its paid primer: {error}"), "primer_rejected": True}
         if not any(p.suffix == ".jsonl" for p in baseline):
-            return {**result, **failed("Update Claude Code: primer transcript was not saved")}
+            return {**result, **failed("Update Claude Code: primer transcript was not saved"), "primer_rejected": True}
         self.baseline = baseline
         self.ready = True
         return result
@@ -287,6 +288,10 @@ class ClaudeSession:
     def reset(self):
         credential = self.home / ".claude" / ".credentials.json"
         auth = credential.read_bytes() if credential.exists() else None
+        if not self.env.get("ANTHROPIC_API_KEY"):
+            access = reviewers.configured_claude_access()
+            if access is not None:
+                auth = json.dumps({"claudeAiOauth": access}).encode("utf-8")
         # The lease lives outside .claude. No completed fork, debug log, index, memory or
         # tool-output file should become session discovery context for the next rubric.
         if os.path.lexists(self.home / ".claude"):
@@ -471,7 +476,7 @@ class CodexSession:
         except (OSError, ValueError, KeyError, SessionError) as error:
             self.ready = False
             prefix = "Update Codex: " if incompatible_rpc(error) else ""
-            return {**result, **failed(f"{prefix}Codex could not validate its paid primer: {error}")}
+            return {**result, **failed(f"{prefix}Codex could not validate its paid primer: {error}"), "primer_rejected": True}
         return result
 
     def baseline(self):
@@ -571,12 +576,27 @@ class CodexSession:
             self.rpc.close()
 
 
+class DirectSession:
+    """One independent fallback call; its HOME is removed only after the receipt is durable."""
+    def __init__(self, provider, env, home, cwd, model):
+        self.provider, self.env, self.owned_home = provider, env, home
+        self.cwd, self.model = cwd, model
+
+    def run(self, prompt):
+        runner = reviewers.run_claude if self.provider in ("claude", "sonnet") else reviewers.run_codex
+        return runner(str(prompt), self.cwd, self.model, self.env)
+
+    def close(self):
+        pass
+
+
 class RoundReviewers:
     def __init__(self, keys, subscription):
         self.keys, self.subscription = keys, subscription
         self.sessions, self.pending, self.incompatible = {}, None, {}
         self.retired = {}  # discarded sessions remain owned until shutdown and HOME removal succeed
         self.evidence_provider = None
+        self.uncached = set()
         os.makedirs(reviewers.REV_HOME_BASE, exist_ok=True)
         self.journal = pathlib.Path(tempfile.mkdtemp(prefix="rev-round-", dir=reviewers.REV_HOME_BASE))
         self.leases = []
@@ -598,7 +618,19 @@ class RoundReviewers:
         session = self.sessions.get(key)
         initialization = None
         try:
-            if session is None:
+            if provider in self.uncached:
+                # A rejected primer must not be discoverable by the independent fallback.
+                for path in self.journal.glob("*.json"):
+                    path.unlink()
+                env, home = reviewers.reviewer_env(provider, self.keys, self.subscription, round_home=True)
+                if env["HOME"] != home or (provider == "codex" and env["CODEX_HOME"] != os.path.join(home, ".codex")):
+                    reviewers.cleanup_rev_home(home)
+                    raise SessionError("Independent fallback needs an isolated provider login")
+                self.lease(home)
+                session = DirectSession(provider, env, home, os.path.realpath(cwd), model)
+                self.sessions[key] = session
+                result = session.run(prompt)
+            elif session is None:
                 env, home = reviewers.reviewer_env(provider, self.keys, self.subscription, round_home=True)
                 # Never persist/revert a human's personal session tree on a missing-login fallback.
                 if env["HOME"] != home or (provider == "codex" and env["CODEX_HOME"] != os.path.join(home, ".codex")):
@@ -618,7 +650,9 @@ class RoundReviewers:
                         self.pending = key
                         raise CheckpointError("Could not persist primer billing") from error
                 if not session.ready:
-                    if "Update Codex:" in initialization.get("error_message", ""):
+                    if initialization.get("primer_rejected"):
+                        self.reject(provider)
+                    elif "Update Codex:" in initialization.get("error_message", ""):
                         self.incompatible[provider] = initialization["error_message"]
                     self._discard_failed(key)
                     result = initialization
@@ -642,9 +676,16 @@ class RoundReviewers:
         self.pending = key
         return result
 
+    def reject(self, provider):
+        """Also applied when a rejected paid primer is recovered from a durable receipt."""
+        self.uncached.add(provider)
+        for key in list(self.sessions):
+            if key[0] == provider:
+                self._discard_failed(key)
+
     def needs_primer(self, provider, prompt, cwd, model):
         key = (provider, model, os.path.realpath(cwd), hashlib.sha256(prompt.shared.encode()).hexdigest())
-        return provider not in self.incompatible and key not in self.sessions
+        return provider not in self.incompatible and provider not in self.uncached and key not in self.sessions
 
     def release_other_providers(self, provider):
         # Apply this before uncached providers too: their tools must not reach a
@@ -664,6 +705,9 @@ class RoundReviewers:
     def finish(self):
         key, self.pending = self.pending, None
         if key in self.sessions:
+            if isinstance(self.sessions[key], DirectSession):
+                self.discard(key)
+                return True
             try:
                 self.sessions[key].reset()
             except (OSError, ValueError, SessionError, subprocess.SubprocessError) as error:
