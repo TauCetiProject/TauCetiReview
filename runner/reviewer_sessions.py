@@ -289,7 +289,8 @@ class ClaudeSession:
         auth = credential.read_bytes() if credential.exists() else None
         # The lease lives outside .claude. No completed fork, debug log, index, memory or
         # tool-output file should become session discovery context for the next rubric.
-        shutil.rmtree(self.home / ".claude", ignore_errors=True)
+        if os.path.lexists(self.home / ".claude"):
+            shutil.rmtree(self.home / ".claude")
         for rel, data in self.baseline.items():
             path = self.home / rel
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -574,6 +575,7 @@ class RoundReviewers:
     def __init__(self, keys, subscription):
         self.keys, self.subscription = keys, subscription
         self.sessions, self.pending, self.incompatible = {}, None, {}
+        self.retired = {}  # discarded sessions remain owned until shutdown and HOME removal succeed
         self.evidence_provider = None
         os.makedirs(reviewers.REV_HOME_BASE, exist_ok=True)
         self.journal = pathlib.Path(tempfile.mkdtemp(prefix="rev-round-", dir=reviewers.REV_HOME_BASE))
@@ -647,6 +649,8 @@ class RoundReviewers:
     def release_other_providers(self, provider):
         # Apply this before uncached providers too: their tools must not reach a
         # previous cached provider's credentials or private transcript.
+        for previous in list(self.retired):
+            self.discard(previous)  # also before same-provider retries: old rubric state is private
         for previous in list(self.sessions):
             if previous[0] != provider:
                 self.discard(previous)
@@ -672,21 +676,35 @@ class RoundReviewers:
 
     def discard(self, key):
         session = self.sessions.pop(key, None)
-        if session:
+        if session is not None:
+            self.retired[key] = session
+        session = self.retired.get(key)
+        if session is not None:
             try:
                 session.close()
             finally:
                 reviewers.cleanup_rev_home(session.owned_home)
+                # The general cleanup helper is best-effort. A provider transition cannot be:
+                # leftover credentials or fork state would be readable by the next reviewer.
+                if os.path.lexists(session.owned_home):
+                    raise SessionError("Could not remove a discarded reviewer HOME; refusing another reviewer")
+            del self.retired[key]
 
     def close(self):
-        for key in list(self.sessions):
-            self.discard(key)
+        error = None
+        for key in list(dict.fromkeys([*self.sessions, *self.retired])):
+            try:
+                self.discard(key)
+            except (OSError, ValueError, SessionError, subprocess.SubprocessError) as failure:
+                error = error or failure
         for f in self.leases:
             f.close()
         self.leases.clear()
         if self.journal.exists() and self.pending is None:
             reviewers.cleanup_rev_home(str(self.journal))
         atexit.unregister(self.close)
+        if error is not None:
+            raise error
 
     def __enter__(self):
         self.old_term = signal.getsignal(signal.SIGTERM)

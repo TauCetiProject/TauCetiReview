@@ -823,6 +823,82 @@ def test_native_codex_0170_requires_full_history_and_allows_null_metadata():
     else:
         raise AssertionError("native-shaped commentary contaminated the accepted primer")
 
+
+def test_failed_claude_tree_removal_discards_instead_of_restoring_over_fork_state():
+    import shutil
+    with tempfile.TemporaryDirectory() as base, patch.object(reviewers, "REV_HOME_BASE", base):
+        with sessions.RoundReviewers({}, False) as rounds:
+            home = tempfile.mkdtemp(prefix="rev-claude-", dir=base)
+            c = sessions.ClaudeSession({}, home, ".", "model", "PR")
+            c.owned_home = home
+            cdir = pathlib.Path(home) / ".claude"
+            cdir.mkdir()
+            transcript = cdir / (c.primer + ".jsonl")
+            original = _claude_primer_records([{"type": "text", "text": "READY"}])
+            c.baseline = {transcript.relative_to(home): original}
+            transcript.write_text("modified primer must not be overwritten after a failed cleanup")
+            fork = cdir / "fork.jsonl"
+            fork.write_text("PREVIOUS-RUBRIC-ASSESSMENT")
+            original_rmtree = shutil.rmtree
+            def blocked_tree(path, *args, **kwargs):
+                if pathlib.Path(path) == cdir:
+                    if kwargs.get("ignore_errors"):
+                        return  # reproduces the old best-effort silent failure
+                    raise OSError("injected tree deletion failure")
+                return original_rmtree(path, *args, **kwargs)
+            key = ("claude", "model", ".", "shared")
+            rounds.sessions[key], rounds.pending, rounds.evidence_provider = c, key, "claude"
+            with patch.object(sessions.shutil, "rmtree", side_effect=blocked_tree):
+                try:
+                    c.reset()
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError("reset succeeded while prior fork state survived")
+                assert fork.exists() and transcript.read_bytes() != original
+                assert rounds.finish() is False
+            assert not rounds.sessions and not rounds.retired
+            assert not pathlib.Path(home).exists()
+
+
+def test_discarded_home_cleanup_failure_blocks_provider_switch_and_same_provider_retry():
+    class FakeSession:
+        def __init__(self, env, home, *args): self.ready = True
+        def prime(self): return {"returncode": 0, "text": "READY", "cost_usd": .01}
+        def run(self, tail): return {"returncode": 0, "text": "paid result", "cost_usd": .02}
+        def reset(self): raise sessions.SessionError("injected reset failure")
+        def close(self): pass
+    for provider in ("claude", "codex"):
+        with tempfile.TemporaryDirectory() as base, patch.object(reviewers, "REV_HOME_BASE", base), patch.object(sessions, "ClaudeSession", FakeSession):
+            with sessions.RoundReviewers({"anthropic": "synthetic", "openai": "synthetic"}, False) as rounds:
+                prompt = reviewers.ReviewPrompt("PR", "rubric")
+                result = rounds.run("claude", prompt, ".", "model")
+                assert result["cost_usd"] == .03
+                key, old = next(iter(rounds.sessions.items()))
+                marker = pathlib.Path(old.owned_home) / "previous-rubric.json"
+                marker.write_text("PREVIOUS-RUBRIC-ASSESSMENT-AND-OWN-CREDENTIAL")
+                with patch.object(reviewers, "cleanup_rev_home"), patch.object(sessions, "CodexSession") as next_provider:
+                    try:
+                        rounds.finish()
+                    except sessions.SessionError:
+                        pass
+                    else:
+                        raise AssertionError("discard silently accepted a surviving HOME")
+                    assert rounds.sessions == {} and rounds.retired[key] is old
+                    assert marker.exists()
+                    with patch.object(reviewers, "reviewer_env", side_effect=AssertionError("new environment before cleanup")):
+                        try:
+                            rounds.run(provider, prompt, ".", "model")
+                        except sessions.SessionError:
+                            pass
+                        else:
+                            raise AssertionError("reviewer ran with prior private HOME still reachable")
+                    next_provider.assert_not_called()
+                    assert rounds.evidence_provider == "claude"
+                # Once removal works, the same owned object can be safely retried and forgotten.
+                rounds.release_other_providers(provider)
+                assert not rounds.retired and not pathlib.Path(old.owned_home).exists()
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:
