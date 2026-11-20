@@ -1,5 +1,6 @@
 """Both sources use the real engine, shared workspace and publication lifecycle."""
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -52,7 +53,7 @@ class SharedCLI(unittest.TestCase):
                     with patch.object(cli, '_main', side_effect=fail), contextlib.redirect_stderr(io.StringIO()):
                         assert cli.main() == expected
 
-    def test_engine_handoff_unchanged_retry_and_context_for_both_sources(self):
+    def test_engine_budget_deferral_handoff_unchanged_retry_and_context_for_both_sources(self):
         for kind in ('github', 'forgejo'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
                 root = pathlib.Path(directory)
@@ -72,6 +73,7 @@ class SharedCLI(unittest.TestCase):
                 binary = root / 'bin'; binary.mkdir()
                 codex = binary / 'codex'
                 calls = root / 'model-calls'
+                starts = root / 'provider-starts'
                 last_prompt = root / 'last-prompt'
                 (root / '.codex').mkdir()
                 (root / '.codex/auth.json').write_text('{}')
@@ -79,6 +81,7 @@ class SharedCLI(unittest.TestCase):
 assert not any(key.startswith(('GH_', 'TAUCETI_FORGEJO_', 'TAUCETI_SOURCE_', 'GIT_CONFIG_')) for key in os.environ)
 assert 'GIT_NO_LAZY_FETCH' not in os.environ
 assert not any(key in os.environ for key in ('TAUCETI_CONF', 'TAUCETI_CONF_SOURCE', 'TAUCETI_CONF_SNAPSHOT'))
+with open(__STARTS__, 'a') as stream: stream.write('started\\n')
 shared = ''
 turns = []
 def send(value): print(json.dumps(value), flush=True)
@@ -114,7 +117,8 @@ for line in sys.stdin:
   send({'method':'turn/completed','params': {'turn':{'id':turn,'status':'completed'}}})
   continue
  send({'id': message['id'], 'result': result})
-'''.replace('__CALLS__', repr(str(calls))).replace('__PROMPT__', repr(str(last_prompt))))
+'''.replace('__CALLS__', repr(str(calls))).replace('__PROMPT__', repr(str(last_prompt)))
+                    .replace('__STARTS__', repr(str(starts))))
                 codex.chmod(0o700)
                 model_program = codex.read_text()
                 configuration = root / 'project.toml'
@@ -156,12 +160,18 @@ for line in sys.stdin:
                 prepare_mathlib = stack.enter_context(patch.object(cli, 'prepare_mathlib_source', side_effect=mathlib))
                 real_run = cli.run
                 clones = []
+                budget = {'defer': False}
                 def run(command, **kwargs):
                     if command[:2] == ['git', 'clone']:
                         clones.append(command[-2])
                         destination = pathlib.Path(command[-1]); destination.mkdir(exist_ok=True)
                         (destination / 'Roadmap.md').write_text('Plan')
                         return type('Result', (), dict(returncode=0))()
+                    if budget['defer'] and len(command) > 1 and pathlib.Path(command[1]).name == 'review.py':
+                        # Exercise the real engine's reservation and marker, not a
+                        # fabricated successful subprocess or marker-only predicate.
+                        command = list(command)
+                        command[command.index('--daily-budget') + 1] = '0'
                     return real_run(command, **kwargs)
                 stack.enter_context(patch.object(cli, 'run', side_effect=run))
                 result_file = root / 'result.json' 
@@ -171,6 +181,44 @@ for line in sys.stdin:
                         '--store', str(w.ledger.parent), '--post', '--no-sync', '--no-coordinate',
                         '--reviewer', 'codex', '--rubrics', 'style']
                 stack.enter_context(patch.object(sys, 'argv', argv))
+                # No paid verdict exists for PR7 yet. A separate already-settled
+                # receipt must survive the real zero-budget CLI/engine round trip.
+                ledger = json.loads(w.ledger.read_text())
+                ledger['prs']['7'].pop('pending_publication_head_sha', None)
+                day = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+                ledger['days'][day] = .02
+                ledger['review_attempts'] = {'abc123': {'day': day, 'cost_usd': .02}}
+                ledger['completed_review_attempts'] = ['abc123']
+                paid = w.ledger.parent / 'reviews/99/1/attempts/style-0000-abc123.json'
+                paid.parent.mkdir(parents=True)
+                paid.write_text(json.dumps({'schema': 'tauceti.review-attempt/v1', 'id': 'abc123',
+                    'day': day, 'rubric': 'style', 'fingerprint': 'other-paid-context',
+                    'provider': 'codex', 'model': 'fixture', 'head_sha': '9' * 40,
+                    'phase': 'rubric', 'settlement_cost_usd': .02,
+                    'result': {'returncode': 0, 'cost_usd': .02}, 'verdict': {'verdict': 'approve'}}))
+                paid_bytes = paid.read_bytes()
+                w.ledger.write_text(json.dumps(ledger))
+                writes = list(w.api.writes)
+                budget['defer'] = True
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                    assert cli.main() == 0
+                assert 'Review deferred: daily budget' in stderr.getvalue()
+                assert 'engine did not run' not in stderr.getvalue() and 'Traceback' not in stderr.getvalue()
+                assert not starts.exists() and not calls.exists(), 'deferral must not buy a primer or rubric'
+                assert w.api.writes == writes, 'budget deferral is not a scoreboard or PR comment'
+                assert not (work / 'scoreboard.md').exists() and not (work / 'post_plan.json').exists()
+                assert not (work / 'code').exists() and not (work / 'mathlib').exists()
+                assert json.loads(result_file.read_text()) == dict(head_sha=HEAD, changed=False)
+                assert json.loads((work / 'review-context.json').read_text())['complete'] == 'budget-deferred'
+                stopped = json.loads(w.ledger.read_text())
+                assert stopped['days'] == ledger['days'] and stopped['review_attempts'] == ledger['review_attempts']
+                assert not stopped['prs']['7']['rounds'] and not stopped['prs']['7']['state']
+                assert stopped['completed_review_attempts'] == ['abc123'] and paid.read_bytes() == paid_bytes
+                budget['defer'] = False
+                prepare_mathlib.reset_mock()
+                clones.clear()
+                # A funded retry uses the normal publication lifecycle below.
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     assert cli.main() in (None, 0)
                 prepare_mathlib.assert_called_once()
