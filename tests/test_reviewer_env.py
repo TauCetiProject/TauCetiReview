@@ -198,10 +198,10 @@ def test_claude_subscription_honors_configured_file_and_keeps_usage_login_out():
                     assert child.stdout.splitlines() == ["AGENT-ONE", "False"]
                 finally:
                     reviewers.cleanup_rev_home(home)
-            (source / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "AGENT-TWO", "refreshToken": "OWNER-REFRESH-TWO"}}))
+            (source / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "AGENT-TWO", "refreshToken": "OWNER-REFRESH-TWO", "expiresAt": 9999999999999}}))
             env, home = reviewers.reviewer_env("claude", {}, subscription=True)
             try:
-                assert json.loads((pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text()) == {"claudeAiOauth": {"accessToken": "AGENT-TWO"}}
+                assert json.loads((pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text()) == {"claudeAiOauth": {"accessToken": "AGENT-TWO", "expiresAt": 9999999999999}}
                 assert usage.read_text() == "USAGE-ONLY-CREDENTIAL"
             finally:
                 reviewers.cleanup_rev_home(home)
@@ -288,9 +288,29 @@ def test_unusable_explicit_file_refuses_before_mixed_provider_round_preparation(
                 review.main()
                 raise AssertionError("invalid configured file unexpectedly accepted")
             except SystemExit as error:
-                assert "CLAUDE_CONFIG_DIR" in str(error)
+                assert error.code == review.PROVIDER_DOWN_EXIT
         assert not (pathlib.Path(directory) / "store").exists()
-        assert not err.getvalue()  # No traceback, token, or arbitrary file content.
+        assert "review aborted: reviewer authentication failed" in err.getvalue()
+        assert "Traceback" not in err.getvalue()
+
+
+def test_explicit_access_only_file_requires_known_fresh_expiry():
+    from unittest.mock import patch
+    import time
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, CLAUDE_CONFIG_DIR=directory):
+        path = pathlib.Path(directory) / ".credentials.json"
+        for expiry in (None, True, "tomorrow", float("inf"), (time.time() - 60) * 1000, (time.time() + 60) * 1000):
+            oauth = {"accessToken": "SYNTHETIC", "refreshToken": "OWNER"}
+            if expiry is not None:
+                oauth["expiresAt"] = expiry
+            path.write_text(json.dumps({"claudeAiOauth": oauth}))
+            try:
+                reviewers.configured_claude_access()
+                raise AssertionError("expired/unknown access credential accepted")
+            except ValueError as error:
+                assert "five minutes" in str(error)
+        path.write_text(json.dumps({"claudeAiOauth": {"accessToken": "CURRENT", "expiresAt": 9999999999999}}))
+        assert reviewers.configured_claude_access()["accessToken"] == "CURRENT"
 
 
 if __name__ == "__main__":

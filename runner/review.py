@@ -817,11 +817,13 @@ def main():
 
     # An explicit unusable file must not fail halfway through a mixed-provider paid round.
     selected_providers = {p.strip() for p in a.providers.split(",")}
-    if a.auth == "subscription" and a.mode not in ("init", "merge") and not a.dry_run and selected_providers & {"claude", "sonnet"}:
+    if a.auth == "subscription" and a.mode not in ("init", "merge") and selected_providers & {"claude", "sonnet"}:
         try:
             configured_claude_access()
         except ValueError as error:
-            sys.exit(str(error))
+            print(str(error), file=sys.stderr)
+            print("review aborted: reviewer authentication failed (configured Claude file unavailable or expires too soon)", file=sys.stderr)
+            sys.exit(PROVIDER_DOWN_EXIT)
 
     # Reclaim reviewer HOMEs orphaned by an earlier killed/crashed run before we add more. Each
     # worker has its own HOME, so this base isn't shared, and a worker runs reviews sequentially —

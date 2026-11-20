@@ -2,7 +2,7 @@
 
 Run as a script (runner/ on sys.path), so imports are flat siblings, not package-relative."""
 
-import functools, json, os, pathlib, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, time
+import functools, json, math, os, pathlib, re, secrets, shutil, sqlite3, subprocess, sys, tempfile, time
 from contextlib import closing
 from urllib.parse import quote
 
@@ -146,17 +146,22 @@ def configured_claude_access():
     if not configured:
         return None
     try:
-        source = pathlib.Path(configured).expanduser()
+        source = pathlib.Path(configured)
         if not source.is_absolute():
             raise ValueError("relative Claude source")
         value = json.loads((source / ".credentials.json").read_text(encoding="utf-8"))
         oauth = value.get("claudeAiOauth") if isinstance(value, dict) else None
         if not isinstance(oauth, dict) or not isinstance(oauth.get("accessToken"), str) or not oauth["accessToken"].strip():
             raise ValueError("invalid Claude credential")
+        expires = oauth.get("expiresAt")
+        # Every attempt gets a fresh access-only snapshot. Require startup headroom; an
+        # unbounded multi-turn call still requires the source owner to keep access current.
+        if type(expires) not in (int, float) or not math.isfinite(expires) or expires <= (time.time() + 300) * 1000:
+            raise ValueError("Claude access credential expires too soon")
         return {key: value for key, value in oauth.items() if key != "refreshToken"}
     except (OSError, ValueError):
         raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
-                         "provide the agent file, unset it for the normal login route, or select --auth api") from None
+                         "provide a current agent file (at least five minutes left), refresh its source, unset it for the normal login route, or select --auth api") from None
 
 
 def reviewer_env(provider, keys, subscription=False):
@@ -215,7 +220,7 @@ def reviewer_env(provider, keys, subscription=False):
                 except (OSError, ValueError):
                     cleanup_rev_home(home)
                     raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
-                                     "provide the agent file, unset it for the normal login route, or select --auth api") from None
+                                     "provide a current agent file (at least five minutes left), refresh its source, unset it for the normal login route, or select --auth api") from None
                 # Use this fresh private directory even when the parent names a different one.
                 env["CLAUDE_CONFIG_DIR"] = str(cdir)
             else:
