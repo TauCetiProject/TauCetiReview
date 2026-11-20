@@ -299,7 +299,7 @@ def test_explicit_access_only_file_validates_supplied_expiry():
     import time
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, CLAUDE_CONFIG_DIR=directory):
         path = pathlib.Path(directory) / ".credentials.json"
-        for expiry in (None, True, "tomorrow", float("inf"), (time.time() - 60) * 1000):
+        for expiry in (None, True, "tomorrow", float("inf"), 10 ** 1000, (time.time() - 60) * 1000):
             oauth = {"accessToken": "SYNTHETIC", "refreshToken": "OWNER"}
             oauth["expiresAt"] = expiry
             path.write_text(json.dumps({"claudeAiOauth": oauth}))

@@ -159,7 +159,7 @@ def configured_claude_access():
         if "expiresAt" in oauth and (type(expires) not in (int, float) or not math.isfinite(expires) or expires <= time.time() * 1000):
             raise ValueError("invalid or expired Claude access credential")
         return {key: value for key, value in oauth.items() if key != "refreshToken"}
-    except (OSError, ValueError):
+    except (OSError, ValueError, OverflowError):
         raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
                          "provide a current agent file, refresh its source, unset it for the normal login route, or select --auth api") from None
 
