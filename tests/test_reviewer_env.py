@@ -294,23 +294,56 @@ def test_unusable_explicit_file_refuses_before_mixed_provider_round_preparation(
         assert "Traceback" not in err.getvalue()
 
 
-def test_explicit_access_only_file_requires_known_fresh_expiry():
+def test_explicit_access_only_file_validates_supplied_expiry():
     from unittest.mock import patch
     import time
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, CLAUDE_CONFIG_DIR=directory):
         path = pathlib.Path(directory) / ".credentials.json"
-        for expiry in (None, True, "tomorrow", float("inf"), (time.time() - 60) * 1000, (time.time() + 60) * 1000):
+        for expiry in (None, True, "tomorrow", float("inf"), (time.time() - 60) * 1000):
             oauth = {"accessToken": "SYNTHETIC", "refreshToken": "OWNER"}
-            if expiry is not None:
-                oauth["expiresAt"] = expiry
+            oauth["expiresAt"] = expiry
             path.write_text(json.dumps({"claudeAiOauth": oauth}))
             try:
                 reviewers.configured_claude_access()
-                raise AssertionError("expired/unknown access credential accepted")
+                raise AssertionError("malformed/expired access credential accepted")
             except ValueError as error:
-                assert "five minutes" in str(error)
-        path.write_text(json.dumps({"claudeAiOauth": {"accessToken": "CURRENT", "expiresAt": 9999999999999}}))
-        assert reviewers.configured_claude_access()["accessToken"] == "CURRENT"
+                assert "current agent file" in str(error)
+        for metadata in ({}, {"expiresAt": (time.time() + 60) * 1000}):
+            path.write_text(json.dumps({"claudeAiOauth": {"accessToken": "CURRENT", **metadata}}))
+            assert reviewers.configured_claude_access()["accessToken"] == "CURRENT"
+
+
+def test_required_file_flag_selects_default_file_without_native_fallback():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import review
+    class PreflightPassed(Exception):
+        pass
+    with tempfile.TemporaryDirectory() as directory:
+        home = pathlib.Path(directory)
+        argv = ["review", "--repo", "o/r", "--pr", "1", "--providers", "claude,codex",
+                "--auth", "subscription", "--require-claude-config-file", "--tool-cwd", directory,
+                "--rubrics-dir", "/missing-rubrics", "--diff-file", "/missing-diff", "--store", str(home / "store")]
+        for present in (False, True):
+            if present:
+                (home / ".claude").mkdir()
+                (home / ".claude" / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC"}}))
+            with patch.dict(os.environ, HOME=directory, CLAUDE_CONFIG_DIR=""), patch.object(sys, "argv", argv), patch.object(review, "sweep_rev_homes", side_effect=PreflightPassed), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    review.main()
+                    raise AssertionError("preflight did not terminate at boundary")
+                except SystemExit as error:
+                    assert not present and error.code == review.PROVIDER_DOWN_EXIT
+                except PreflightPassed:
+                    assert present
+                    assert os.environ["CLAUDE_CONFIG_DIR"] == str(home / ".claude")
+                    env, private_home = reviewers.reviewer_env("claude", {}, subscription=True)
+                    try:
+                        assert pathlib.Path(env["CLAUDE_CONFIG_DIR"]) != home / ".claude"
+                        assert json.loads((pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text())["claudeAiOauth"]["accessToken"] == "SYNTHETIC"
+                    finally:
+                        reviewers.cleanup_rev_home(private_home)
 
 
 if __name__ == "__main__":

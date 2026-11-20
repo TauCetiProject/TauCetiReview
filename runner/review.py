@@ -775,6 +775,9 @@ def main():
                     help="api: each reviewer gets an isolated HOME and its own API key (CI). "
                          "subscription: inherit the environment so a locally logged-in `claude` / "
                          "`codex` reviews on the runner's own subscription (no API key, no spend)")
+    ap.add_argument("--require-claude-config-file", action="store_true",
+                    help="require a Claude agent credential file in subscription mode; use "
+                         "CLAUDE_CONFIG_DIR or ~/.claude, never native login fallback")
     ap.add_argument("--keys-dir", default="",
                     help="dir with files 'anthropic', 'openai', 'kiro', and/or 'openrouter'; each key is "
                          "passed only to the matching reviewer subprocess and never kept in this "
@@ -815,14 +818,18 @@ def main():
     except ValueError as e:
         sys.exit(str(e))
 
+    if a.require_claude_config_file and a.auth != "subscription":
+        ap.error("--require-claude-config-file requires --auth subscription")
     # An explicit unusable file must not fail halfway through a mixed-provider paid round.
     selected_providers = {p.strip() for p in a.providers.split(",")}
     if a.auth == "subscription" and a.mode not in ("init", "merge") and selected_providers & {"claude", "sonnet"}:
+        if a.require_claude_config_file and not os.environ.get("CLAUDE_CONFIG_DIR", "").strip():
+            os.environ["CLAUDE_CONFIG_DIR"] = str(pathlib.Path.home() / ".claude")
         try:
             configured_claude_access()
         except ValueError as error:
             print(str(error), file=sys.stderr)
-            print("review aborted: reviewer authentication failed (configured Claude file unavailable or expires too soon)", file=sys.stderr)
+            print("review aborted: reviewer authentication failed (configured Claude file unavailable or expired)", file=sys.stderr)
             sys.exit(PROVIDER_DOWN_EXIT)
 
     # Reclaim reviewer HOMEs orphaned by an earlier killed/crashed run before we add more. Each

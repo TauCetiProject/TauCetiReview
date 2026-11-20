@@ -25,9 +25,12 @@ On your `PATH`, all logged in:
   have. With both, the reviewer is drawn per rubric, like CI. For a dedicated Claude
   agent login, set `CLAUDE_CONFIG_DIR` to the directory containing its `.credentials.json`;
   the reviewer copies its current access credential into a private config directory, leaving
-  the refresh token with the source owner. The access token must have a known expiry at least
-  five minutes ahead when each attempt starts. Refresh the source before long reviews; this
-  startup check does not guarantee that an arbitrarily long model call will finish before expiry.
+  the refresh token with the source owner. If expiry metadata is supplied it must be valid and
+  unexpired; setup-token files without expiry metadata are supported. Refresh the source before
+  long reviews: an access-only snapshot cannot renew itself during an arbitrarily long call.
+  `--require-claude-config-file` also requires a file when the directory is unset (using
+  `~/.claude`), refusing native login fallback. This explicit compatibility flag is forwarded to
+  the engine, so older CLIs or pinned engines reject it before any model inference.
 - For explicit Kiro reviews, `kiro-cli` signed in with `kiro-cli login` (or a
   headless `KIRO_API_KEY`). Kiro is never auto-drawn.
 - Python ≥ 3.10.

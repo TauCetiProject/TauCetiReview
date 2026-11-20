@@ -154,14 +154,14 @@ def configured_claude_access():
         if not isinstance(oauth, dict) or not isinstance(oauth.get("accessToken"), str) or not oauth["accessToken"].strip():
             raise ValueError("invalid Claude credential")
         expires = oauth.get("expiresAt")
-        # Every attempt gets a fresh access-only snapshot. Require startup headroom; an
-        # unbounded multi-turn call still requires the source owner to keep access current.
-        if type(expires) not in (int, float) or not math.isfinite(expires) or expires <= (time.time() + 300) * 1000:
-            raise ValueError("Claude access credential expires too soon")
+        # Setup-token files may omit expiry metadata. Validate a supplied expiry without
+        # inventing a lifetime guarantee for an arbitrarily long access-only attempt.
+        if "expiresAt" in oauth and (type(expires) not in (int, float) or not math.isfinite(expires) or expires <= time.time() * 1000):
+            raise ValueError("invalid or expired Claude access credential")
         return {key: value for key, value in oauth.items() if key != "refreshToken"}
     except (OSError, ValueError):
         raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
-                         "provide a current agent file (at least five minutes left), refresh its source, unset it for the normal login route, or select --auth api") from None
+                         "provide a current agent file, refresh its source, unset it for the normal login route, or select --auth api") from None
 
 
 def reviewer_env(provider, keys, subscription=False):
@@ -204,7 +204,7 @@ def reviewer_env(provider, keys, subscription=False):
             # Honor the same configured agent source as Worker. A separate usage login is not an
             # agent credential and is deliberately absent from this environment and file selection.
             configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
-            source_dir = pathlib.Path(configured).expanduser() if configured else pathlib.Path.home() / ".claude"
+            source_dir = pathlib.Path(configured) if configured else pathlib.Path.home() / ".claude"
             src = source_dir / ".credentials.json"
             if configured or src.is_file():
                 cdir = pathlib.Path(home) / ".claude"
@@ -220,7 +220,7 @@ def reviewer_env(provider, keys, subscription=False):
                 except (OSError, ValueError):
                     cleanup_rev_home(home)
                     raise ValueError("CLAUDE_CONFIG_DIR must name an absolute directory with a readable Claude credential file; "
-                                     "provide a current agent file (at least five minutes left), refresh its source, unset it for the normal login route, or select --auth api") from None
+                                     "provide a current agent file, refresh its source, unset it for the normal login route, or select --auth api") from None
                 # Use this fresh private directory even when the parent names a different one.
                 env["CLAUDE_CONFIG_DIR"] = str(cdir)
             else:

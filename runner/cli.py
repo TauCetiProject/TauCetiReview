@@ -746,6 +746,9 @@ def _main(cleanup, leases, phase):
                     help="subscription: use your logged-in claude/codex; api: use "
                          "ANTHROPIC_API_KEY / OPENAI_API_KEY / KIRO_API_KEY from the environment "
                          "(billed). Default: $TAUCETI_REVIEW_AUTH, else subscription")
+    ap.add_argument("--require-claude-config-file", action="store_true",
+                    help="require the configured or default Claude agent file in subscription "
+                         "mode; refuse native login fallback (requires a supporting engine)")
     ap.add_argument("--post", action="store_true",
                     help="post the scoreboard + per-rubric threads to the PR as you "
                          "(default: dry run — print the review, post nothing)")
@@ -827,6 +830,8 @@ def _main(cleanup, leases, phase):
     if a.publication_protocol:
         print(json.dumps({"native_publisher": 2}))
         return
+    if a.require_claude_config_file and a.auth != "subscription":
+        ap.error("--require-claude-config-file requires --auth subscription")
     # The source adapter validates both legacy GitHub names and qualified native
     # selectors, including their repository/server identity binding.
     if not a.sync_only:
@@ -1151,6 +1156,7 @@ def _main(cleanup, leases, phase):
            *(["--archive-dir", outbox] if outbox else []),
            *(["--submitted-by", a.submitted_by] if a.submitted_by else []),
            "--ci-build", ci_build or "", "--auth", a.auth,
+           *(["--require-claude-config-file"] if a.require_claude_config_file else []),
            "--providers", providers, "--daily-budget", "1000000", "--no-post",
            "--kiro-model", a.kiro_model,
            "--scoreboard-file", str(work / "scoreboard.md"),
