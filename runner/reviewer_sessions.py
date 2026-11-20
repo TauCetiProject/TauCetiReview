@@ -454,7 +454,7 @@ class CodexSession:
         # Check paginated history support before making a paid request.
         try:
             self.rpc.request("thread/turns/list", {"threadId": self.thread, "limit": 2,
-                                                  "sortDirection": "asc"})
+                                                  "sortDirection": "asc", "itemsView": "full"})
         except SessionError as error:
             # Current native builds recognize the method but materialize the
             # thread only on its first turn. That rejection proves capability.
@@ -475,9 +475,11 @@ class CodexSession:
 
     def baseline(self):
         data = self.rpc.request("thread/turns/list", {"threadId": self.thread, "limit": 2,
-                                                     "sortDirection": "asc"})
+                                                     "sortDirection": "asc", "itemsView": "full"})
         if [t.get("id") for t in data.get("data", [])] != [self.primer] or data.get("nextCursor"):
             raise SessionError("Codex primer history was not restored; refusing another rubric")
+        if data["data"][0].get("itemsView") != "full":
+            raise SessionError("Update Codex: complete persisted primer history is required")
         if not codex_primer_acknowledges(data["data"][0]):
             raise SessionError("Codex retained primer was not acknowledgement-only")
 
