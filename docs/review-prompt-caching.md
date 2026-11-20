@@ -2,7 +2,10 @@
 
 Claude and Codex keep the shared protocol and PR context in user messages. A
 primer contains no rubric, reactivation text, or verdict marker and must reply
-`READY` without tools. Every rubric attempt then receives its own rubric tail and
+`READY` without tools or substantive reasoning. Acceptance checks the entire saved
+assistant history, including commentary, rather than just the terminal reply.
+Codex history requests explicitly select `itemsView: full`; summary-only history
+is refused. Every rubric attempt then receives its own rubric tail and
 a fresh verdict marker. No PR content is promoted into a system/developer prompt,
 and the runner adds no cache-control breakpoint to Claude Code's requests.
 
@@ -24,7 +27,9 @@ environment.
 
 Switching providers closes the previous provider's server, removes its HOME, and
 clears private evidence before the next reviewer starts, including transitions to
-uncached providers. Returning to that provider requires another primer. This
+uncached providers and transitions after a failed or discarded primer. Evidence
+ownership survives session removal; a failed journal deletion blocks the next
+provider. Returning to that provider requires another primer. This
 preserves the existing single-provider credential exposure; same-uid processes
 remain outside a strong OS isolation boundary.
 
@@ -42,13 +47,31 @@ Before resetting provider history, the runner writes a public-safe attempt
 receipt under the round's store directory, then durably settles its spending.
 Primer requests are settled separately before the first rubric starts. Receipts
 record validated verdicts and input fingerprints, allowing a process restart to
-recover a completed attempt without another model call. Settlement is idempotent;
+recover an unfinished round's completed attempts without another model call, even
+when the CLI creates a new temporary workspace or the next invocation uses a
+different round directory. Recovery identity includes the PR head, rubric and
+reactivation text, model/auth configuration, input artifacts, and readable source
+content. Git sources use immutable tree IDs plus dirty, untracked, ignored,
+symlink-target, flagged-file and submodule content; exported trees are hashed
+once per invocation. Temporary workspace names and round numbers are excluded.
+Completed round receipts are retired and cannot replace a requested new review.
+Settlement is idempotent;
 a failed ledger update after a receipt write is repaired when the store is next
 opened. Completed failed rubric attempts are retired so normal provider recovery
 can make new requests on a later invocation.
 Dry-run receipts live separately and cannot be settled or replayed by a real run.
-The budget reservation includes an additional call allowance when a primer is
-needed. As before, call allowances are estimates rather than hard provider limits.
+Receipt recovery runs before the daily-budget check. Every actual new call,
+including retries and provider/model fallbacks, reserves its allowance only after
+a recovery miss. The reservation includes an additional call allowance when a
+primer is needed. As before, call allowances are estimates rather than hard
+provider limits. Recovered costs remain counted exactly once.
+
+If the budget prevents any new result, the engine records a head-specific
+`review-deferred.json` marker without creating an empty round or publication. The
+outer CLI treats this as a clean deferral, preserves paid receipts, and posts no
+review. A later invocation can recover those receipts even with no budget left.
+A stale marker, mismatched head, or existing scoreboard/post plan is never accepted
+as a clean deferral.
 
 Raw provider errors, session IDs, credentials, and transcripts are excluded from
 these receipts. Private evidence stays in an owner-only leased review directory.
@@ -80,7 +103,8 @@ journaling is best effort; public receipts and ledger settlement remain mandator
 
 ## Reproducing validation
 
-The ordinary CI workflow runs `tests/test_reviewer_sessions.py` alongside the
+The ordinary CI workflow runs `tests/test_reviewer_sessions.py`,
+`tests/test_receipt_recovery.py`, and `tests/test_budget_deferral.py` alongside the
 existing billing, publication, tool-policy, and review tests. The following tests
 are opt-in because they require native CLIs or paid model requests:
 
@@ -108,7 +132,17 @@ nor its assessment. Live tests inspect the first request before tool use, since 
 cache read after a tool call alone cannot prove reuse across rubrics. They require
 a valid rubric verdict and successful inspection of the source fixture.
 
-## Validation observations, 2026-11-12
+## Validation observations, 2026-11-20
+
+Native request capture passed with the actual Claude Code 2.1.280 binary and with
+Codex 0.163.0 and 0.170.0. The Codex captures include the full retained primer
+history. These runs used local fake providers and synthetic credentials, with no
+paid model calls. They establish request format, retained-history compatibility,
+and rubric separation; they do not refresh the live billing observations below.
+The primer validator rejects substantive retained reasoning, so a real model that
+adds such reasoning fails closed instead of sharing it across rubrics.
+
+## Historical live validation, 2026-11-12
 
 Initial implementation acceptance used Claude Code 2.1.322 and Codex 0.167.2 on
 this host. Codex is the host's patched build; deployment must validate its actual
