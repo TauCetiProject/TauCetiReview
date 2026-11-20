@@ -161,6 +161,107 @@ def test_claude_attempts_reuse_one_empty_home():
         reviewers.cleanup_rev_home(home3)
     assert not os.path.exists(home1)
 
+def test_claude_subscription_honors_configured_file_and_keeps_usage_login_out():
+    old_env, old_base = os.environ.copy(), reviewers.REV_HOME_BASE
+    try:
+        with tempfile.TemporaryDirectory() as root:
+            root = pathlib.Path(root)
+            operator, source, usage = root / "operator", root / "agent", root / "usage.json"
+            (operator / ".claude").mkdir(parents=True)
+            source.mkdir()
+            (operator / ".claude" / ".credentials.json").write_text("OPERATOR-CREDENTIAL")
+            (operator / ".claude" / "settings.json").write_text("OPERATOR-SETTINGS")
+            (source / ".credentials.json").write_text("AGENT-ONE")
+            (source / "CLAUDE.md").write_text("AGENT-PERSONAL-CONFIG")
+            usage.write_text("USAGE-ONLY-CREDENTIAL")
+            reviewers.REV_HOME_BASE = str(root / "reviews")
+            os.environ.clear()
+            os.environ.update(HOME=str(operator), PATH="/usr/bin", USER="test-user", LOGNAME="test-user",
+                              CLAUDE_CONFIG_DIR=str(source), TAUCETI_CLAUDE_USAGE_CREDENTIALS=str(usage),
+                              GH_TOKEN="GITHUB-SECRET", CLAUDE_CODE_OAUTH_TOKEN="ENVIRONMENT-AGENT")
+            for provider in ("claude", "sonnet"):
+                env, home = reviewers.reviewer_env(provider, {}, subscription=True)
+                try:
+                    private = pathlib.Path(env["CLAUDE_CONFIG_DIR"])
+                    assert env["HOME"] == home != str(operator)
+                    assert private == pathlib.Path(home) / ".claude"
+                    assert (private / ".credentials.json").read_text() == "AGENT-ONE"
+                    assert (private / ".credentials.json").stat().st_mode & 0o777 == 0o600
+                    assert set(p.name for p in private.iterdir()) == {".credentials.json"}
+                    assert not any(key in env for key in ("GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "TAUCETI_CLAUDE_USAGE_CREDENTIALS"))
+                    # The final subprocess sees the private config, not the parent config or usage login.
+                    child = reviewers.subprocess.run(
+                        [sys.executable, "-c", "import os,pathlib; print((pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])/'.credentials.json').read_text()); print('TAUCETI_CLAUDE_USAGE_CREDENTIALS' in os.environ)"],
+                        env=env, capture_output=True, text=True, check=True)
+                    assert child.stdout.splitlines() == ["AGENT-ONE", "False"]
+                finally:
+                    reviewers.cleanup_rev_home(home)
+            (source / ".credentials.json").write_text("AGENT-TWO")
+            env, home = reviewers.reviewer_env("claude", {}, subscription=True)
+            try:
+                assert (pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text() == "AGENT-TWO"
+                assert usage.read_text() == "USAGE-ONLY-CREDENTIAL"
+            finally:
+                reviewers.cleanup_rev_home(home)
+            # Explicit missing source must not use the perfectly readable operator credential.
+            (source / ".credentials.json").unlink()
+            try:
+                reviewers.reviewer_env("claude", {}, subscription=True)
+                raise AssertionError("missing explicit file unexpectedly accepted")
+            except ValueError as error:
+                assert str(error) == "Configured Claude subscription credential file is unavailable"
+            assert not any(pathlib.Path(reviewers.REV_HOME_BASE).iterdir())
+    finally:
+        reviewers.REV_HOME_BASE = old_base
+        os.environ.clear()
+        os.environ.update(old_env)
+
+
+def test_configured_claude_source_does_not_change_other_provider_or_api_environments():
+    old = os.environ.copy()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ.clear()
+            os.environ.update(HOME=directory, PATH="/usr/bin", CLAUDE_CONFIG_DIR="/missing/agent", TAUCETI_CLAUDE_USAGE_CREDENTIALS="/missing/usage")
+            for provider, subscription, keys in (("claude", False, {"anthropic": "api-key"}), ("codex", True, {})):
+                env, home = reviewers.reviewer_env(provider, keys, subscription=subscription)
+                try:
+                    assert "CLAUDE_CONFIG_DIR" not in env
+                    assert "TAUCETI_CLAUDE_USAGE_CREDENTIALS" not in env
+                finally:
+                    reviewers.cleanup_rev_home(home)
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+
+
+def test_default_claude_file_and_unset_legacy_fallback_are_preserved():
+    old = os.environ.copy()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ.clear()
+            os.environ.update(HOME=directory, PATH="/usr/bin")
+            source = pathlib.Path(directory) / ".claude" / ".credentials.json"
+            source.parent.mkdir()
+            source.write_text("DEFAULT-AGENT")
+            env, home = reviewers.reviewer_env("claude", {}, subscription=True)
+            try:
+                assert env["HOME"] == home
+                assert (pathlib.Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json").read_text() == "DEFAULT-AGENT"
+            finally:
+                reviewers.cleanup_rev_home(home)
+            source.unlink()
+            env, home = reviewers.reviewer_env("claude", {}, subscription=True)
+            try:
+                assert env["HOME"] == directory
+                assert "CLAUDE_CONFIG_DIR" not in env
+            finally:
+                reviewers.cleanup_rev_home(home)
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:

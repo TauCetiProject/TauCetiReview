@@ -157,7 +157,8 @@ def reviewer_env(provider, keys, subscription=False):
     on the subscription but sees none of the runner's personal `CLAUDE.md` / `AGENTS.md`, skills,
     plugins, or settings, so the review does not depend on who runs it. If the credential is not
     where we expect (e.g. a macOS keychain login), we fall back to the real HOME so auth still
-    works, trading reproducibility for a working review.
+    works, trading reproducibility for a working review. An explicit CLAUDE_CONFIG_DIR instead
+    selects its credential file and never falls back to the operator home or Keychain.
     """
     # Not under /tmp: codex refuses to create helper binaries when CODEX_HOME is in /tmp. The caller
     # removes `home` once the reviewer returns (cleanup_rev_home), so these don't accumulate.
@@ -176,14 +177,24 @@ def reviewer_env(provider, keys, subscription=False):
         env.update(USER=user, LOGNAME=os.environ.get("LOGNAME") or user)
     if provider in ("claude", "sonnet"):
         if subscription:
-            # Seed only the OAuth credential into the clean HOME; no personal CLAUDE.md/skills.
-            src = os.path.expanduser("~/.claude/.credentials.json")
-            if os.path.exists(src):
-                cdir = os.path.join(home, ".claude")
-                os.makedirs(cdir, exist_ok=True)
-                shutil.copyfile(src, os.path.join(cdir, ".credentials.json"))
+            # Honor the same configured agent source as Worker. A separate usage login is not an
+            # agent credential and is deliberately absent from this environment and file selection.
+            configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+            source_dir = pathlib.Path(configured).expanduser() if configured else pathlib.Path.home() / ".claude"
+            src = source_dir / ".credentials.json"
+            if configured or src.is_file():
+                cdir = pathlib.Path(home) / ".claude"
+                try:
+                    cdir.mkdir(mode=0o700, exist_ok=True)
+                    shutil.copyfile(src, cdir / ".credentials.json")
+                    (cdir / ".credentials.json").chmod(0o600)
+                except OSError:
+                    cleanup_rev_home(home)
+                    raise ValueError("Configured Claude subscription credential file is unavailable") from None
+                # Use this fresh private directory even when the parent names a different one.
+                env["CLAUDE_CONFIG_DIR"] = str(cdir)
             else:
-                env["HOME"] = os.path.expanduser("~")  # fallback: keychain/other; less reproducible
+                env["HOME"] = os.path.expanduser("~")  # legacy native Keychain fallback only
         else:
             env["ANTHROPIC_API_KEY"] = keys["anthropic"]
     elif provider == "kiro":

@@ -22,7 +22,9 @@ On your `PATH`, all logged in:
 - `claude` ([Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code)) signed into a
   Claude subscription, and/or `codex` ([Codex](https://www.npmjs.com/package/@openai/codex)) signed
   into a ChatGPT subscription. You need **at least one**; each rubric is judged by whichever you
-  have. With both, the reviewer is drawn per rubric, like CI.
+  have. With both, the reviewer is drawn per rubric, like CI. For a dedicated Claude
+  agent login, set `CLAUDE_CONFIG_DIR` to the directory containing its `.credentials.json`;
+  the reviewer copies only that file into its private config directory.
 - For explicit Kiro reviews, `kiro-cli` signed in with `kiro-cli login` (or a
   headless `KIRO_API_KEY`). Kiro is never auto-drawn.
 - Python ≥ 3.10.
@@ -195,7 +197,10 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   config/`AGENTS.md`, skills, and MCP servers do **not** influence the review — two people running
   the same rubrics on the same PR get reviews that differ only by the model, not by their local
   setup. (The repo's own in-tree `CLAUDE.md` is still visible, as part of the code under review.)
-  On macOS, where the login lives in the keychain rather than a credential file, it falls back to
+  An explicit `CLAUDE_CONFIG_DIR` selects its credential file on every platform. A missing or
+  unreadable explicit file stops preparation rather than selecting the operator's login. The
+  separate `TAUCETI_CLAUDE_USAGE_CREDENTIALS` login is never copied or passed to a reviewer.
+  With no configured directory or credential file, macOS falls back to
   your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
