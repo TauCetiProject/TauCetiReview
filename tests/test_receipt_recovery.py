@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Paid results survive workspace/round changes; only genuinely new calls reserve budget."""
 import json
+import hashlib
 import pathlib
 import shutil
 import subprocess
@@ -345,8 +346,10 @@ def test_paid_uncached_failure_is_retained_when_retry_cannot_be_funded():
     for provider in ("kiro", "deepseek"):
         billing._install_stubs(); billing._VERDICTS.clear()
         calls = []
+        paid_prompts = []
         def failed_once(prompt, cwd, model, env):
             calls.append(model)
+            paid_prompts.append(hashlib.sha256(prompt.encode()).hexdigest())
             assert len(calls) == 1, "unfunded retry reached the provider"
             return {"returncode": 0, "text": "no verdict", "cost_usd": .01,
                     "usage": {"input_tokens": 123, "output_tokens": 45}}
@@ -367,10 +370,72 @@ def test_paid_uncached_failure_is_retained_when_retry_cannot_be_funded():
             assert recorded["cost"] == .01 and recorded["mode"] == "withheld"
             result = json.loads((store / "reviews/1/1/correctness.json").read_text())
             assert result["retry_deferred_for_budget"] and result["cost_usd"] == .01
+            assert result["prompt_sha256"] == paid_prompts[0]
+            assert result["attempts"][0]["prompt_sha256"] == paid_prompts[0]
             assert result["usage"] == {"input_tokens": 123, "output_tokens": 45}
             assert recorded["tokens"] == review.sum_usage([result])
         finally:
             shutil.rmtree(d)
+
+
+def test_symlink_fanout_has_linear_inventory_visits_and_no_json_expansion():
+    for git in (False, True):
+        for levels in (3, 6):
+            with tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                for index in range(levels + 1):
+                    current = root / f"d{index}"; current.mkdir()
+                    if index < levels:
+                        for name in ("a", "b"):
+                            (current / name).symlink_to(f"../d{index + 1}")
+                leaf = root / f"d{levels}/leaf.txt"; leaf.write_text("visible source")
+                if git:
+                    subprocess.run(["git", "init", "-q", str(root)], check=True)
+                    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+                    subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fanout"], check=True)
+                visits = {"directories": 0, "files": 0, "metadata": 0}
+                original_iterdir, original_open, original_lstat = pathlib.Path.iterdir, pathlib.Path.open, pathlib.Path.lstat
+                def counted_tree(path):
+                    visits["directories"] += 1
+                    assert visits["directories"] <= levels + 2, "link referents were recursively inventoried"
+                    return original_iterdir(path)
+                def counted_file(path, *args, **kwargs):
+                    visits["files"] += 1
+                    assert visits["files"] <= 1, "leaf bytes were expanded through links"
+                    return original_open(path, *args, **kwargs)
+                def counted_metadata(path, *args, **kwargs):
+                    visits["metadata"] += 1
+                    assert visits["metadata"] <= 100 * (levels + 1), "source visits grew faster than the link inventory"
+                    return original_lstat(path, *args, **kwargs)
+                with patch.object(pathlib.Path, "iterdir", counted_tree), patch.object(pathlib.Path, "open", counted_file), patch.object(pathlib.Path, "lstat", counted_metadata):
+                    identity = source_identity(root)
+                assert visits["directories"] == (0 if git else levels + 2)
+                assert visits["files"] == (0 if git else 1)
+                size = len(json.dumps(identity))
+                assert size < 2000 * (levels + 1)
+                print("FANOUT_COUNTS", json.dumps({"git": git, "levels": levels, **visits, "json_bytes": size}))
+                leaf.write_text("changed visible source")
+                assert source_identity(root) != identity, "target bytes still invalidate recovery"
+
+
+def test_symlinks_into_excluded_git_metadata_cannot_certify_unmeasured_bytes():
+    from types import SimpleNamespace
+    from review_attempts import context_identity
+    for git in (False, True):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            if git:
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+            else:
+                (root / "nested/.git").mkdir(parents=True)
+                (root / "nested/.git/config").write_text("unmeasured metadata")
+            (root / "link").symlink_to(".git/config" if git else "nested/.git/config")
+            if git:
+                subprocess.run(["git", "-C", str(root), "add", "link"], check=True)
+                subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "metadata link"], check=True)
+            args = SimpleNamespace(tool_cwd=str(root), code_path=".")
+            first, second = context_identity(args), context_identity(args)
+            assert first.startswith("nonreusable:") and first != second
 
 
 if __name__ == "__main__":

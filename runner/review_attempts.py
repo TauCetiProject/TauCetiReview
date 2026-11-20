@@ -174,7 +174,10 @@ def source_identity(path):
             candidate = current / pending.pop(0)
             info = candidate.lstat()
             if stat.S_ISLNK(info.st_mode):
-                target = pathlib.Path(os.path.abspath(candidate.parent / os.readlink(candidate)))
+                raw_target = pathlib.Path(os.readlink(candidate))
+                if ".git" in raw_target.parts:
+                    raise ValueError("reviewer source link enters excluded metadata")
+                target = pathlib.Path(os.path.abspath(candidate.parent / raw_target))
                 if not target.is_relative_to(root):
                     raise ValueError("reviewer source link leaves its root")
                 links += 1
@@ -186,17 +189,20 @@ def source_identity(path):
                 current = candidate
         return current
 
-    def content(item, ancestors=frozenset()):
+    def content(item):
         if item != root:
             item = inside(item.parent) / item.name
         info = item.lstat()
         if stat.S_ISLNK(info.st_mode):
             resolved = inside(item)
-            if resolved in ancestors:
-                raise ValueError("cyclic reviewer source link")
-            return ["link", str(resolved.relative_to(root)), content(resolved, ancestors | {resolved})]
+            relative = resolved.relative_to(root)
+            if ".git" in relative.parts:
+                raise ValueError("reviewer source link enters excluded metadata")
+            # Target bytes are already covered by the ordinary tree inventory.
+            # Expanding targets here turns acyclic link fan-out exponential.
+            return ["link", os.readlink(item), str(relative)]
         if item.is_dir():
-            return ["tree", [(p.name, content(p, ancestors)) for p in sorted(item.iterdir()) if p.name != ".git"]]
+            return ["tree", [(p.name, content(p)) for p in sorted(item.iterdir()) if p.name != ".git"]]
         if not stat.S_ISREG(info.st_mode):
             raise ValueError("unsupported reviewer source entry")
         digest = hashlib.sha256()

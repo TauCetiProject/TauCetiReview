@@ -565,7 +565,8 @@ def run_rubric(ctx, rubric):
                                            "price_inherited", "usage", "first_request_usage", "initialization",
                                            "usage_incomplete", "session_id", "parse_error")
                          if r.get(k) is not None}
-                        | {"model": model, "secs": round(time.monotonic() - t, 1)}
+                        | {"model": model, "secs": round(time.monotonic() - t, 1),
+                           "prompt_sha256": r.get("_receipt_prompt_sha256") or hashlib.sha256(prompt.encode()).hexdigest()}
                         | ({} if has_verdict(r) else {"error_kind": error_kind(r)}))
         last_result = r
         return r
@@ -637,7 +638,7 @@ def run_rubric(ctx, rubric):
                        f"-{a.pr}-{rubric}-{rid}"),
                started_at=started_at, duration_s=round(time.monotonic() - t0, 1),
                attempts=attempts,
-               prompt_sha256=res.get("_receipt_prompt_sha256") or hashlib.sha256(prompt.encode()).hexdigest(),
+               prompt_sha256=attempts[-1]["prompt_sha256"],
                verdict_obj=(res.get("_receipt_verdict") if "_receipt_verdict" in res
                             else extract_verdict(res.get("text", ""), marker))
                if has_verdict(res) else None)
