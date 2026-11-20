@@ -1,0 +1,228 @@
+# Shared PR caching across independent rubrics
+
+Claude and Codex keep the shared protocol and PR context in user messages. A
+primer contains no rubric, reactivation text, or verdict marker and must reply
+`READY` without tools or substantive reasoning. Acceptance checks all assistant content exposed by the saved
+history, including commentary, rather than just the terminal reply.
+Codex history requests explicitly select `itemsView: full`; summary-only history
+is refused. Every rubric attempt then receives its own rubric tail and
+a fresh verdict marker. No PR content is promoted into a system/developer prompt,
+and the runner adds no cache-control breakpoint to Claude Code's requests.
+
+For an accepted primer, Claude launches each attempt with `--resume <primer> --fork-session`. The original
+transcript and minimal CLI metadata are restored at the same private HOME path
+between forks; completed forks, debug files, indexes, and memory are removed.
+Refreshed authentication is preserved separately; an explicitly configured
+agent source is reread between attempts as an access-only copy. Private CLI
+metadata is restored without copying operator settings. The five-minute cache TTL,
+model, cwd, and tool definitions stay stable.
+
+Codex runs one local `codex app-server --listen stdio://` process per round/model.
+It retains a single persistent paginated thread and uses `thread/revert` before
+each completed rubric's turn to return to the primer. Rubrics are serial within
+that thread. The next turn is refused until the reset completes and the retained
+history contains only the primer. Native `codex exec fork` creates a different
+cache identity and did not reuse the PR prefix in the measured subscription runs.
+Connected apps, delegation, automatic memory, and web search are disabled for this
+review path; shell tools retain the existing read-only sandbox and credential-free
+environment.
+
+A thinking block, any Codex reasoning item, substantive commentary, or an
+uninspectable saved primer prevents reuse. Full Codex history does not decrypt
+opaque reasoning; an empty summary is not proof that no reasoning was retained.
+The rejected primer's usage is settled, then the normal retry and later rubrics
+for that provider use complete prompts in fresh independent CLIs. The provider is
+not primed again during the round. Recovering a rejected-primer receipt restores
+this fallback choice before reserving a new call. This preserves working reviews
+without carrying the rejected primer into another rubric, but forfeits
+cross-rubric cache savings and adds the one rejected primer's cost.
+
+Switching providers closes the previous provider's server, removes its HOME, and
+clears private evidence before the next reviewer starts, including transitions to
+uncached providers and transitions after a failed or discarded primer. Evidence
+ownership survives session removal; a failed journal deletion blocks the next
+provider. Failed fork-tree removal discards that session; a discarded HOME stays
+owned until its removal is verified, including before same-provider retries.
+Returning to a cache-eligible provider requires another primer. This
+preserves the existing single-provider credential exposure; same-uid processes
+remain outside a strong OS isolation boundary. A read-only shell under the same
+uid can still discover on-disk rollouts, journal entries or public receipt/store
+artifacts. Request-history independence is not filesystem isolation.
+
+Session state lives only for the current review round. Changing shared context,
+provider, exact model, or cwd creates another primer. A CLI lacking the required
+fork/TTL or paginated-revert capabilities produces an actionable compatibility
+error. Missing copyable subscription credentials require an isolated login or API
+authentication; this path never operates on the user's personal session tree.
+Ordinary cache misses do not invalidate a review. Primers add overhead, so a
+single-rubric round may cost more than an uncached direct call.
+
+## Results and spending survive a reset
+
+Before resetting provider history, the runner writes a public-safe attempt
+receipt under the round's store directory, then durably settles its spending.
+Primer requests are settled separately before the first rubric starts. Receipts
+record validated verdicts and input fingerprints, allowing a process restart to
+recover an unfinished round's completed attempts without another model call, even
+when the CLI creates a new temporary workspace or the next invocation uses a
+different round directory. Recovery identity includes the PR head, rubric and
+reactivation text, model/auth configuration, input artifacts, and readable source
+content. Git sources use immutable tree IDs plus dirty, untracked, ignored,
+in-root link paths, flagged-file and submodule content; exported trees are
+hashed once per invocation. Link identity records its literal text and resolved
+relative path; target contents are covered once by the ordinary tree inventory,
+so shared-target fan-out cannot multiply hashing work. Identity computation never traverses links outside a
+declared source root. Dangling links, unresolvable link cycles, external links or unreadable source entries
+disable recovery with a fresh per-invocation identity instead of aborting review
+or certifying unobserved content. Receipts from such an invocation cannot be
+reused after a reset. Temporary workspace names and round numbers are excluded.
+Completed round receipts are retired and cannot replace a requested new review.
+Settlement is idempotent;
+a failed ledger update after a receipt write is repaired when the store is next
+opened. Completed failed rubric attempts are retired so normal provider recovery
+can make new requests on a later invocation.
+Dry-run receipts live separately and cannot be settled or replayed by a real run.
+Receipt recovery runs before the daily-budget check. Every actual new call,
+including retries and provider/model fallbacks, reserves its allowance only after
+a recovery miss. The reservation includes an additional call allowance when a
+primer is needed. As before, call allowances are estimates rather than hard
+provider limits. Recovered costs remain counted exactly once. If an uncached
+paid attempt fails and its retry is unfunded, the paid cost and usage remain in
+the normal error/withheld-round accounting.
+
+If the budget prevents any new result, the engine records a head-specific
+`review-deferred.json` marker without creating an empty round or publication. The
+outer CLI treats this as a clean deferral, preserves paid receipts, and posts no
+review. A later invocation can recover those receipts even with no budget left.
+A stale marker, mismatched head, or existing scoreboard/post plan is never accepted
+as a clean deferral.
+
+Raw provider errors, session IDs, credentials, and transcripts are excluded from
+these receipts. Private evidence stays in an owner-only leased review directory.
+Normal cleanup removes reviewer state; abandoned directories are age-gated and
+active leases prevent the cleanup sweep from removing a live round. A review
+receipt does not itself authorize publication or alter existing exact-head and
+verdict validation rules.
+
+Claude's terminal cost can include the primer again on a fork. Incremental costs
+therefore come from unique API response IDs and final streamed output counters,
+including thinking tokens. Codex uses each turn's response-usage observations;
+inherited/resettable thread totals are never treated as new spend or refunds.
+First-request counters and initialization usage are retained in public run and
+attempt records, so production analysis can establish reuse before any tool call.
+Cache reads, writes, and ordinary input remain distinct. Pricing is per response
+using the existing dated model table, including TTL and long-context tiers, and
+derived prices remain labeled estimates. Round totals include initialization,
+retries, and recovered attempt receipts. If response usage is unavailable, the
+review is rejected and receipts/round records retain an incomplete-cost flag;
+observed spend is a lower bound, not an assertion that the request was free.
+Paid primer usage is preserved even when its transcript snapshot or history
+validation fails. Stdio writes as well as response waits have bounded deadlines,
+so an app-server that stops reading cannot strand a large prompt indefinitely.
+Model calls default to a one-hour limit, configurable with
+`TAUCETI_REVIEW_CALL_TIMEOUT_S`; control RPCs use 30-second deadlines. Linux
+app-servers receive a parent-death signal if the runner is forcibly killed.
+Abnormal calls retain available counters and flag spend as incomplete. Private
+journaling is best effort; public receipts and ledger settlement remain mandatory.
+
+## Reproducing validation
+
+The ordinary CI workflow runs `tests/test_reviewer_sessions.py`,
+`tests/test_receipt_recovery.py`, and `tests/test_budget_deferral.py` alongside the
+existing billing, publication, tool-policy, and review tests. The following tests
+are opt-in because they require native CLIs or paid model requests:
+
+```bash
+# Actual CLI requests captured by a local fake provider; no paid model calls.
+python tests/native_session_input.py --provider claude --model claude-opus-5-5 --cli /path/to/claude
+python tests/native_session_input.py --provider codex --model gpt-6.1-sol --cli /path/to/codex
+
+# Real native thinking/reasoning handling and independent fallback, still local-only.
+python tests/native_session_input.py --provider claude --model claude-opus-5-5 --reasoning-output
+python tests/native_session_input.py --provider codex --reasoning-output
+python tests/native_session_input.py --provider codex --reasoning-output --empty-reasoning-summary
+
+# Real rubrics, verdict markers, reference material, reactivation context, and tools.
+python tests/live_prompt_cache.py --provider claude --auth subscription
+python tests/live_prompt_cache.py --provider codex --auth subscription
+
+# Larger-than-argv context, forged PR instructions, and an independent repeated attempt.
+python tests/live_prompt_cache.py --provider claude --large --adversarial --retry
+python tests/live_prompt_cache.py --provider codex --large --adversarial --retry
+
+# Requires the selected provider's API key in the process environment.
+python tests/live_prompt_cache.py --provider claude --auth api
+python tests/live_prompt_cache.py --provider codex --auth api
+```
+
+The native request capture asserts that the shared PR appears only in user
+messages and that the next rubric contains neither the previous rubric's marker
+nor its assessment. Live tests inspect the first request before tool use, since a
+cache read after a tool call alone cannot prove reuse across rubrics. They require
+a valid rubric verdict and successful inspection of the source fixture.
+
+## Validation observations, 2026-11-20
+
+Native acknowledgement-only capture passed with actual Claude Code 2.1.280 and
+2.1.304 binaries using `claude-opus-5-5`, and Codex 0.163.0 using `gpt-6.1-sol`.
+The incident's Bubble CLI was 2.1.280; the review workflow remains pinned to
+2.1.304, which is now covered at this revision too. The Codex capture includes the
+full retained primer history.
+
+Extended native captures emit a Claude thinking block or a Codex encrypted
+reasoning item, including an empty-summary variant. The primer is rejected once;
+the next two calls use independent full prompts without the opaque state,
+primer judgment, earlier rubric or earlier assessment. The Opus requests enable
+adaptive thinking; Codex requests reasoning with `context: all_turns`. Eligibility
+therefore depends on actual retained output, not a promise that these models
+never reason. Normal acknowledgement-only output exercises saved-session reuse.
+
+All these runs used loopback fake providers and synthetic credentials, with zero
+paid model calls. They establish request format, retained-history compatibility,
+and rubric separation. They do not establish current live cache hit rates or
+savings, and do not refresh the historical billing observations below.
+
+## Historical live validation, 2026-11-12
+
+Initial implementation acceptance used Claude Code 2.1.322 and Codex 0.167.2 on
+this host. Codex is the host's patched build; deployment must validate its actual
+binary. These versions are evidence points, not inferred minimum versions.
+
+| Subscription run | Model | Successful rubric calls | First-request cache reads | Total estimated cost including primer |
+| --- | --- | ---: | --- | ---: |
+| Claude | `claude-opus-5-5` | 3 | 16,819 tokens for every rubric | $0.225695 |
+| Codex, apps/delegation/memory disabled | `gpt-6.1-sol` | 3 | Shared PR reused on each rubric | $0.087327 |
+
+The larger-than-argv adversarial runs also completed four rubric attempts per provider
+(including one repeated attempt from the primer): Claude read 95,045 shared-prefix
+tokens on every first request, with a $0.797164 total including initialization;
+Codex read 92,544 on every first request, with a $0.307295 total. Neither run
+followed the forged PR instructions. These fixtures validate behavior, not the
+production cost-saving percentage.
+
+Both native input-capture tests passed. Both production-model runs completed tool
+calls and parsed verdicts. A direct Haiku check established that final response
+counters match incremental native billing while the fork's terminal total also
+includes its primer. The source fixture intentionally contains a vacuous theorem;
+an adverse review of that fixture is a successful acceptance result.
+
+Deployment-host checks on `tauchonki` used its actual Claude Code 2.1.304 and
+Codex 0.163.0 binaries. Both passed native request capture against the local fake
+provider, including the final control-loop changes. CI pins these accepted CLI
+versions; upgrades require repeating native acceptance. With its enrolled credential kept on that host, Claude API-auth
+acceptance passed three production-model rubrics with tool use: every first
+request read 16,457 shared-prefix tokens; estimated cost including initialization
+was $0.226303. Worker and CI admissions were unchanged.
+
+The user explicitly waived the live OpenAI API-auth acceptance test. It was not
+run: local and deployment-host Codex credentials use ChatGPT authentication and
+contain no API key. Codex validation covers subscription authentication and native
+request capture, not live API-key billing. This is a recorded validation limit,
+not a rollout gate. Upstream review, current-head CI, and live deployment checks
+still apply. Passing finite prompt-injection fixtures is not a security proof.
+
+Deploy through the normal review-source revision update, with worker and CI
+admissions enabled. Verify running revisions, completed useful reviews, first-turn
+cache metrics, spend reconciliation, and cleanup of interrupted sessions. Recover
+only missing/failed rubrics from the earlier cache-control incident against the
+correct current PR head; do not replay published successes.
