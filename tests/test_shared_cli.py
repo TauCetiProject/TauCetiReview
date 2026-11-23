@@ -110,7 +110,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                 stack.enter_context(patch.object(cli, 'rubrics_publication', return_value=(False, True)))
                 stack.enter_context(patch.object(cli, 'cli_sha', return_value=('d' * 40, False)))
                 stack.enter_context(patch.object(cli, 'need'))
-                def prepare(repo, head, merge_base, selected_work):
+                def prepare(repo, head, merge_base, selected_work, number=None):
                     (selected_work / 'code').mkdir(exist_ok=True)
                     (selected_work / 'code/Proof.lean').write_text('theorem proof : True := trivial\n')
                     (selected_work / 'code/lake-manifest.json').write_text('{"packages":[]}')
