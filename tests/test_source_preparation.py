@@ -17,6 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'runner'
 import cli
 import pr_diff
 from test_pr_diff import _fixture, _diff, _git
+from tauceti_tools.forge import Forge, ForgeError, RepositoryRef
 
 
 def test_same_fetch_supplies_exact_patch_paths_and_source():
@@ -142,6 +143,64 @@ def test_relative_workspace_stages_source_at_the_requested_path():
             assert (work / 'diff.txt').is_file() and not (work / 'code/.git').exists()
         finally:
             os.chdir(cwd)
+
+
+def test_fork_head_missing_from_base_is_fetched_from_its_head_repository():
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        fork_url, mb, head, _ = _fixture(root)
+        # The base holds main only, as when Forgejo lacks a fork PR's refs/pull/N/head.
+        base = root / 'base.git'
+        _git(root, 'clone', '-q', '--no-local', '--bare', '--single-branch', '-b', 'main', fork_url, str(base))
+        _git(base, 'config', 'uploadpack.allowFilter', 'true')
+        _git(base, 'config', 'uploadpack.allowReachableSHA1InWant', 'true')
+        source = types.SimpleNamespace(repository=types.SimpleNamespace(clone_url=base.as_uri()),
+                                       cache_key='k', git_environment=lambda: None)
+        work = root / 'work'; work.mkdir()
+        lookups = []
+        def head_repository(_source, number, sha):
+            lookups.append((number, sha))
+            return None if number is None else fork_url
+        with patch.object(cli, 'review_source', return_value=source), \
+                patch.object(cli, 'CACHE_DIR', root / 'cache'), \
+                patch.object(cli, 'head_repository_url', head_repository), \
+                contextlib.redirect_stderr(io.StringIO()):
+            try:
+                cli.prepare_review_source('o/r', head, mb, work)
+            except RuntimeError as error:
+                assert cli.unreachable_head(error, head), error
+            else:
+                raise AssertionError('base without the head prepared a source')
+            assert lookups == [(None, head)]
+            cli.prepare_review_source('o/r', head, mb, work, number=7)
+        assert lookups[-1] == (7, head)
+        assert (work / 'diff.txt').read_bytes() == _diff(fork_url, mb, head)[0]
+        assert (work / 'code/TauCeti/F319.lean').read_text().endswith('by trivial\n')
+        assert not (work / 'diff.txt.partial').exists()
+
+
+def test_head_repository_is_a_distinct_repository_on_the_same_forge_at_the_selected_head():
+    forge = Forge('forgejo', 'https://git.example.org')
+    head = 'a' * 40
+    def source(row):
+        return types.SimpleNamespace(repository=RepositoryRef(forge, 'Project/Repo'), pull=lambda number: row)
+    def pull(name, sha=head):
+        return {'head': {'sha': sha, 'repo': None if name is None else {'full_name': name}}}
+    assert cli.head_repository_url(source(pull('Someone/Repo')), 7, head) == 'https://git.example.org/Someone/Repo.git'
+    assert cli.head_repository_url(source(pull('Someone/Repo')), None, head) is None
+    assert cli.head_repository_url(source(pull('project/repo')), 7, head) is None
+    assert cli.head_repository_url(source(pull('Someone/Repo', 'b' * 40)), 7, head) is None
+    assert cli.head_repository_url(source(pull(None)), 7, head) is None
+    assert cli.head_repository_url(source(pull('https://evil.example/x')), 7, head) is None
+    def unavailable(number):
+        raise ForgeError('down')
+    failing = types.SimpleNamespace(repository=RepositoryRef(forge, 'Project/Repo'), pull=unavailable)
+    try:
+        cli.head_repository_url(failing, 7, head)
+    except pr_diff.PreparationUnavailable:
+        pass
+    else:
+        raise AssertionError('metadata outage was not a preparation wait')
 
 
 def _fresh_archive_failure(post_status):

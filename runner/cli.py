@@ -38,7 +38,7 @@ import tempfile
 import time
 import uuid
 
-from tauceti_tools.forge import ForgeError
+from tauceti_tools.forge import ForgeError, RepositoryRef
 from tauceti_tools.review_source import source_for
 
 try:
@@ -269,18 +269,65 @@ def merge_base_sha(repo, base, head, number=None):
         raise repository_diff.PreparationUnavailable(f"PR comparison unavailable ({type(error).__name__})") from error
 
 
-def prepare_review_source(repo, head, merge_base, work):
+def head_repository_url(source, number, head):
+    """The clone URL of a PR's head repository on the same forge, when it is not the base.
+
+    A fork PR's head is in the base repository only through `refs/pull/N/head`, which Forgejo
+    writes when the fork branch is pushed and can lack (a restored repository lost them for fork
+    PRs). The fork branch still reaches the head and, as its ancestor, the merge base. None when
+    the PR has moved, has no separate head repository, or names one this forge cannot hold."""
+    if number is None:
+        return None
+    try:
+        row = source.pull(int(number))
+    except (ForgeError, OSError, subprocess.TimeoutExpired) as error:
+        raise repository_diff.PreparationUnavailable(f"PR metadata unavailable ({type(error).__name__})") from error
+    side = row.get("head") if isinstance(row, dict) else None
+    if not isinstance(side, dict) or side.get("sha") != head:
+        return None
+    name = (side.get("repo") or {}).get("full_name") if isinstance(side.get("repo"), dict) else None
+    if not isinstance(name, str):
+        return None
+    try:
+        fork = RepositoryRef(source.repository.forge, name)
+    except ValueError:
+        return None
+    return None if fork.key == source.repository.key else fork.clone_url
+
+
+def unreachable_head(error, head):
+    return head in str(error) and re.search(r"not our ref|unadvertised object", str(error), re.I) is not None
+
+
+def prepare_review_source(repo, head, merge_base, work, number=None):
     """One endpoint fetch supplies the canonical patch and exact source, without history.
+
+    The base repository is tried first. When it cannot serve the head commit of PR `number`,
+    the same exact commits are fetched from the PR's head repository instead.
 
     Returns the PR-level diff guards this exact diff fails (see `diff_guard_violations`)."""
     if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, merge_base)):
         raise RuntimeError("invalid review comparison identity")
     source = review_source(repo)
+    try:
+        return _prepare_review_source(source, source.repository.clone_url, head, merge_base, work)
+    except RuntimeError as error:
+        if not unreachable_head(error, head):
+            raise
+        remote = head_repository_url(source, number, head)
+        if remote is None:
+            raise
+        print(f"PR #{number} head {head[:12]} is not in the base repository; fetching it from {remote}",
+              file=sys.stderr)
+        return _prepare_review_source(source, remote, head, merge_base, work)
+
+
+def _prepare_review_source(source, remote, head, merge_base, work):
     partial = work / "diff.txt.partial"
     cache = CACHE_DIR / 'git' / source.cache_key
     try:
         with partial.open('wb') as out:
-            paths = repository_diff.git_diff(source.repository.clone_url, merge_base, head,
+            paths = repository_diff.git_diff(remote, merge_base, head,
                                             diff_out=out, limit=None, fetch_limit=None,
                                             source_dir=work / 'code',
                                             cache_dir=cache,
@@ -1050,7 +1097,7 @@ def _main(cleanup, leases, phase):
         if not merge_base:
             die(f"could not resolve the merge base of PR #{a.pr} ({base[:12]}...{head[:12]})")
         with preparation_step("exact Git source and diff"):
-            guards = tuple(prepare_review_source(a.repo, head, merge_base, work) or ())
+            guards = tuple(prepare_review_source(a.repo, head, merge_base, work, number=int(a.pr)) or ())
     except RuntimeError as error:
         if re.search(r"HTTP (?:404|422)|not our ref|unadvertised object", str(error), re.I):
             current, current_base = pr_ref_oids(a.repo, a.pr)
@@ -1062,7 +1109,7 @@ def _main(cleanup, leases, phase):
                 return HEAD_CHANGED_EXIT
             # A known current GitHub head can precede Git transport propagation.
             # Unknown/invalid comparisons keep the ordinary deterministic error.
-            if head in str(error) and re.search(r"not our ref|unadvertised object", str(error), re.I):
+            if unreachable_head(error, head):
                 raise repository_diff.PreparationUnavailable(str(error)) from error
         raise
     # CI's build-check conclusion for this head — GitHub's own result (trusted, not author input).
