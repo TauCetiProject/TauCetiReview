@@ -198,7 +198,12 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
                 assert ledger['prs']['7']['rounds'][-1]['ran'] == ['style']
                 answered = [row for row in w.source.findings(7)
                             if f'<!--tauceti-reply:style:through:{through}-->' in row['body']]
-                assert len(answered) == 1 and answered[0]['in_reply_to_id'] == root_id
+                if kind == 'github':
+                    # The contest cleared the finding: the green scoreboard says so, and GitHub's
+                    # comment-write limit is not spent on an in-thread confirmation.
+                    assert answered == []
+                else:
+                    assert len(answered) == 1 and answered[0]['in_reply_to_id'] == root_id
                 codex.write_text('#!' + sys.executable + "\nraise RuntimeError('adjudicated contest reran')\n")
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     assert cli.main() in (None, 0)
