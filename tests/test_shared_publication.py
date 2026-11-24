@@ -157,6 +157,7 @@ def workflow(kind, tmp_path, stack):
     stack.enter_context(patch.object(post, 'already_replied', lambda repo, pr, rubric, through, me:
         post.reply_seen(source.findings(pr), rubric, through, me)))
     stack.enter_context(patch.object(post, 'resolve_thread'))
+    stack.enter_context(patch.object(post, 'review_thread_states', lambda repo, pr: None))
     ledger = store / 'ledger.json'
     ledger.write_text(json.dumps(dict(days={}, prs={'7': dict(state={}, pending_publication_head_sha=HEAD)})))
     meta = json.dumps(dict(head_sha=HEAD, runs=[dict(id='run-1')]))
@@ -352,6 +353,14 @@ class SharedPublication(unittest.TestCase):
                                                 'scoreboard_publisher', lambda self: publisher))
                 assert publish(w) == 85
                 assert json.loads(w.receipt.read_text())['state'] == 'prepared'
+
+    def test_forgejo_keeps_close_notes_and_clearing_answers(self):
+        # Forgejo has no thread resolution and no comment-write limit: a cleared finding is
+        # still marked by editing its root, and a clearing contest answer is still posted.
+        self.assertFalse(publication_transport.NativePublication.closes_by_resolving)
+        self.assertTrue(publication_transport.NativePublication.posts_clearing_replies)
+        self.assertTrue(publication_transport.GitHubPublication.closes_by_resolving)
+        self.assertFalse(publication_transport.GitHubPublication.posts_clearing_replies)
 
     def test_required_root_then_board_and_idempotent_replay(self):
         for kind in ("github", "forgejo"):

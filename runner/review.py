@@ -334,11 +334,16 @@ def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_di
         bpath = threads_dir / f"{rubric}.md"
         if posts_review_thread(s):
             bpath.write_text(render_thread(cf, prov=prov))
-            actions.append(
-                {"rubric": rubric, "action": "upsert", "required": True,
-                 "run_id": cf.get("run_id"), "body": str(bpath),
-                 "comment_id": (thread or {}).get("comment_id"),
-                 "path": pick_anchor(cf, fallback_path, set(paths_sorted))})
+            anchor = pick_anchor(cf, fallback_path, set(paths_sorted))
+            action = {"rubric": rubric, "action": "upsert", "required": True,
+                      "run_id": cf.get("run_id"), "body": str(bpath),
+                      "comment_id": (thread or {}).get("comment_id"), "path": anchor}
+            # A line a batched GitHub review may anchor the thread to, when it is an added line.
+            line = next((str(f.get("line")) for f in (cf.get("findings") or [])
+                         if f.get("file") == anchor and str(f.get("line")).isdigit()), None)
+            if line and int(line) > 0:
+                action["finding_line"] = int(line)
+            actions.append(action)
         elif s in ("green", "stale") and thread:
             bpath.write_text(f"<!--tauceti-rubric:{rubric}-->\n### ✅ {rubric} — now passing on "
                              f"`{head[:7]}`.\n\n"
@@ -351,10 +356,12 @@ def render_thread_plan(candidates, ran, state_map, head, prov, paths, threads_di
             rpath = threads_dir / f"{rubric}.reply.md"
             rpath.write_text(render_contest_reply(cf, head, prov,
                                                   answered_id=had_contest[rubric]))
+            # `clears`: the answer only confirms what the green scoreboard and the resolved
+            # thread already show, so a rate-limited forge may skip posting it.
             actions.append(
                 {"rubric": rubric, "action": "reply", "required": False,
                  "body": str(rpath), "in_reply_to": thread["comment_id"],
-                 "reply_dedupe": had_contest[rubric]})
+                 "reply_dedupe": had_contest[rubric], "clears": s == "green"})
     return actions
 
 

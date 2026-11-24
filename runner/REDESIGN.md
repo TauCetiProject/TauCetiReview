@@ -91,10 +91,15 @@ A reactivated rubric gets the normal rubric prompt plus a compact block:
 - **Detail threads** (blocking only): one **PR review comment** per blocking rubric, anchored
   at its top finding's `file:line` (file-level fallback for line-0 / PR-wide findings; default
   to the first changed file). Body carries the findings and a hidden `<!--tauceti-rubric:NAME-->`
-  marker so a reply can be mapped back to the rubric. Re-runs **edit the thread root in place**;
-  author replies accumulate beneath it.
+  marker so a reply can be mapped back to the rubric. Re-runs **edit the thread root in place**
+  while its thread is live (on GitHub: not resolved or outdated; otherwise a new root replaces it
+  and the old thread is resolved); author replies accumulate beneath it. On GitHub, two or more
+  new roots in one round are posted as **one review** with a line comment each (one content write
+  against GitHub's hourly limit instead of one per thread).
 - **On flip to green**: resolve the thread (GraphQL `resolveReviewThread`) and update the
-  scoreboard; post no new comment.
+  scoreboard; post no new comment and no edit. A contest answer that only says the finding
+  cleared is not posted on GitHub either; one whose finding stands is. (Forgejo, which has no
+  thread resolution or write limit, still marks the root "now passing" and answers every contest.)
 
 ## Security boundary (unchanged trust split)
 
