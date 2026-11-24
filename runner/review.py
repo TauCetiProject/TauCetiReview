@@ -986,8 +986,7 @@ def main():
     # the seeded ones once the PR is otherwise clean, exactly as if it had made them itself.
     if (a.mode in ("commit", "reply") and not a.shadow and not handoff_board and a.prior_scoreboard_json
             and pathlib.Path(a.prior_scoreboard_json).exists()):
-        seeded = seed_stale_approvals(state_map, prior_board, candidates, head, a.merge_base_sha,
-                                      rubrics_version)
+        seeded = seed_stale_approvals(state_map, prior_board, candidates, head, a.merge_base_sha)
         if seeded:
             prov["seeded_rubrics"] = ",".join(seeded)
             src = state_map[seeded[0]]["imported_from"]

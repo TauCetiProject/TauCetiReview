@@ -71,8 +71,7 @@ def carry_forward(state_map, head_sha, digest, rubrics_version=None):
 
 
 
-def seed_stale_approvals(state_map, board, candidates, head_sha=None, merge_base_sha=None,
-                         rubrics_version=None):
+def seed_stale_approvals(state_map, board, candidates, head_sha=None, merge_base_sha=None):
     """Seed an approval from another reviewer's scoreboard (`board`: the newest completed one on the
     PR, as {comment_id, by, head_sha, states}) into every candidate rubric this store has no verdict
     for, so a reviewer taking over a PR shows it as ♻️ and defers re-running it while other rubrics
@@ -83,14 +82,15 @@ def seed_stale_approvals(state_map, board, candidates, head_sha=None, merge_base
     never promotes it to green either. The board is untrusted input: only well-formed origin fields
     are kept. Returns the rubrics seeded, sorted.
 
-    One exception: a `green` row on a board that judged exactly this review input (the same
-    `head_sha`, `merge_base_sha` and `rubrics_version` as this round, all present) is seeded as
-    approved at `head_sha`, not stale, so a reviewer taking over never re-runs a rubric that was
-    already approved on this head. That grants a forged board nothing new: under the merge gate's
+    One exception: a `green` row on a board that judged exactly this diff (the same `head_sha` and
+    `merge_base_sha` as this round, both present) is seeded as approved at `head_sha`, not stale,
+    so a reviewer taking over never re-runs a rubric that was already approved on this head. A
+    rubric edit does not reopen it, as for any approval at a given head (render.rubrics_fingerprint).
+    The board's `replies_through` becomes its contest watermark. That grants a forged board nothing new: under the merge gate's
     no-bar model the newest completed board at the current head is already the verdict, and
     handoff.can_reuse_completed_review already accepts such a board as the completed review. Such
-    an approval also replaces a stale approval this store holds from an earlier head; any other
-    local verdict is kept. It still has no `approved_digest`, so it never carries to a new head."""
+    an approval also replaces an infrastructure error or a stale approval from an earlier head in
+    this store; a local finding is kept and re-judged. It still has no `approved_digest`, so it never carries to a new head."""
     states = (board or {}).get("states")
     if not isinstance(states, dict):
         return []
@@ -98,22 +98,27 @@ def seed_stale_approvals(state_map, board, candidates, head_sha=None, merge_base
               "by": lambda v: isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9-]+(\[bot\])?", v),
               "head_sha": lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{40}", v)}
     origin = {k: board[k] for k, ok in checks.items() if ok(board.get(k))}
-    same_input = bool(head_sha and merge_base_sha and rubrics_version
-                      and origin.get("head_sha") == head_sha
-                      and board.get("merge_base_sha") == merge_base_sha
-                      and board.get("rubrics_version") == rubrics_version)
+    same_input = bool(head_sha and merge_base_sha and origin.get("head_sha") == head_sha
+                      and board.get("merge_base_sha") == merge_base_sha)
+    through = board.get("replies_through")
+    through = through if isinstance(through, int) and not isinstance(through, bool) else 0
     seeded = []
     for rubric in candidates:
         cf = state_map.get(rubric) or {}
         current = same_input and states.get(rubric) == "green"
-        stale_local = cf.get("verdict") == "approve" and cf.get("approved_sha") != head_sha
-        if (cf.get("verdict") and not (current and stale_local)) or states.get(rubric) not in ("green", "stale"):
+        superseded = (cf.get("verdict") == "error"
+                      or cf.get("verdict") == "approve" and cf.get("approved_sha") != head_sha)
+        if (cf.get("verdict") and not (current and superseded)) or states.get(rubric) not in ("green", "stale"):
             continue
         cf = state_map.setdefault(rubric, {})
-        for stale_field in ("approved_digest", "approved_rubrics_version", "carried_from_sha"):
+        for stale_field in ("approved_digest", "approved_rubrics_version", "carried_from_sha", "error_kind"):
             cf.pop(stale_field, None)
         cf.update(rubric=rubric, verdict="approve", approved_sha=head_sha if current else None,
                   imported_from=origin)
+        if current:
+            # The board adjudicated every author reply up to `replies_through` (the handoff's
+            # has_unhandled_contest reads it the same way); only a newer reply reopens this rubric.
+            cf["last_reply_seen"] = max(cf.get("last_reply_seen") or 0, through)
         cf.setdefault("thread", None)
         cf.setdefault("author_replies", [])
         seeded.append(rubric)
