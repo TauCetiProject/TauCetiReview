@@ -611,6 +611,22 @@ def _release_active_claims():
         _ACTIVE_GIT_CLAIMS.pop().release()
 
 
+def _keep_active_claims():
+    """Stop renewing this run's head leases but leave them in place, so they lapse at their TTL.
+
+    Used when a finished review's publication is retained for retry: until the retry lands, the
+    PR still shows an older scoreboard, and a released lease would let a peer review this head
+    again. The lease is cooperative and expires on its own (claim.sh `expires_at`), exactly as
+    when a holder dies, and `--recover-only` publishes the retained review without a lease."""
+    while _ACTIVE_GIT_CLAIMS:
+        claim = _ACTIVE_GIT_CLAIMS.pop()
+        claim.stop.set()
+        if claim.thread:
+            claim.thread.join(timeout=35)
+            claim.thread = None
+        claim.held = False
+
+
 def _install_claim_cleanup():
     global _CLEANUP_INSTALLED
     if _CLEANUP_INSTALLED:
@@ -726,25 +742,30 @@ def preparation_step(name):
 def main():
     _install_claim_cleanup()
     phase = {'inference': False, 'preparing': False}
+    result = None
     with contextlib.ExitStack() as cleanup, contextlib.ExitStack() as leases:
         try:
-            return _main(cleanup, leases, phase)
+            result = _main(cleanup, leases, phase)
+            return result
         except repository_diff.PreparationUnavailable as error:
             print(f"tauceti-review: preparation unavailable before inference: {error}", file=sys.stderr)
             return PREPARATION_WAIT_EXIT
         except publication.PublicationPending as error:
             print(f"tauceti-review: {error}", file=sys.stderr)
-            return publication.PUBLICATION_WAIT_EXIT
+            result = publication.PUBLICATION_WAIT_EXIT
+            return result
         except publication.PublicationBlocked as error:
             print(f"tauceti-review: {error}", file=sys.stderr)
             return publication.PUBLICATION_BLOCKED_EXIT
         except ForgeError as error:
             print(f'tauceti-review: source unavailable ({type(error).__name__})', file=sys.stderr)
-            return publication.PUBLICATION_WAIT_EXIT if phase['inference'] else PREPARATION_WAIT_EXIT
+            result = publication.PUBLICATION_WAIT_EXIT if phase['inference'] else PREPARATION_WAIT_EXIT
+            return result
         except ValueError as error:
             if phase['inference']:
                 print(f'tauceti-review: rendered output retained ({type(error).__name__})', file=sys.stderr)
-                return publication.PUBLICATION_WAIT_EXIT
+                result = publication.PUBLICATION_WAIT_EXIT
+                return result
             if phase['preparing']:
                 print(f'tauceti-review: invalid preparation: {error}', file=sys.stderr)
                 return PREPARATION_WAIT_EXIT
@@ -763,10 +784,16 @@ def main():
                 return PREPARATION_WAIT_EXIT
             if phase['inference']:
                 print(f'tauceti-review: rendered output retained ({type(error).__name__})', file=sys.stderr)
-                return publication.PUBLICATION_WAIT_EXIT
+                result = publication.PUBLICATION_WAIT_EXIT
+                return result
             raise
         finally:
-            _release_active_claims()
+            # A review rendered at this head but not yet published keeps its lease until the TTL,
+            # so peers do not repeat it while the PR still shows an older scoreboard.
+            if result == publication.PUBLICATION_WAIT_EXIT and phase['inference']:
+                _keep_active_claims()
+            else:
+                _release_active_claims()
 
 
 def _main(cleanup, leases, phase):
