@@ -43,6 +43,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from tauceti_tools import git_inputs
 from tauceti_tools.git_inputs import (INDEX_ABBREV, MAX_BYTES, MAX_FETCH_BYTES, FETCH_TIMEOUT, DIFF_TIMEOUT,
@@ -95,10 +96,15 @@ def git_diff(remote, merge_base, head, diff_out=None, limit=MAX_BYTES,
         if source_dir is not None:
             # Diff while HEAD is unborn and there is no worktree: PR attributes
             # must not change the canonical patch. Only then materialize source.
+            # The checkout writes a private index beside the source, never the cache's: a
+            # checkout killed at its timeout leaves its `index.lock` there, where it is
+            # discarded, instead of in the cache, where it would fail every later review.
             os.mkdir(source_dir)
             try:
-                _git(d, ["--work-tree", os.fspath(source_dir), "checkout", "--force", head, "--", "."],
-                     local, DIFF_TIMEOUT, limit=limit)
+                with tempfile.TemporaryDirectory(prefix="pr-index-", dir=parent) as private:
+                    _git(d, ["--work-tree", os.fspath(source_dir), "checkout", "--force", head, "--", "."],
+                         {**local, "GIT_INDEX_FILE": os.path.join(private, "index")}, DIFF_TIMEOUT,
+                         limit=limit)
             except BaseException:
                 shutil.rmtree(source_dir, ignore_errors=True)
                 raise
