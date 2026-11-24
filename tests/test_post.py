@@ -269,7 +269,7 @@ def test_find_review_roots_extracts_identity_head_and_run():
     finally:
         post.subprocess.run = orig
     assert roots == [{"id": 7, "node_id": "N7", "path": "x.lean", "login": "bot", "thread_kind": None,
-                      "subject_type": None, "review_id": None, "rubric": "api-design", "head_sha": "abc", "run_ids": ["r-1"],
+                      "subject_type": None, "rubric": "api-design", "head_sha": "abc", "run_ids": ["r-1"],
                       "created_at": "2026-08-04T00:00:00Z", "body": body}], roots
 
 
@@ -296,7 +296,9 @@ def _post_fixture(*, thread_id=None, pending="r-new"):
     return ledger_path, plan
 
 
-def _execute(fake_gh, roots, *, thread_id=None, scoreboards=..., threads=None):
+def _execute(fake_gh, roots, *, thread_id=None, scoreboards=..., threads=...):
+    threads = {r["id"]: {"thread_id": f"T{r['id']}", "resolved": False, "outdated": False}
+               for r in roots} if threads is ... else threads
     ledger_path, plan = _post_fixture(thread_id=thread_id)
     saved = (post.gh_api, post.find_review_roots, post.current_login,
              post.find_scoreboard_comments, post.review_thread_states)
@@ -430,12 +432,14 @@ class EditClosingPublication(post.GitHubPublication):
     posts_clearing_replies = True
 
 
-def _publish(fake, plan, ledger_path, roots, *, threads=None, transport_cls=post.GitHubPublication,
+def _publish(fake, plan, ledger_path, roots, *, threads=..., transport_cls=post.GitHubPublication,
              reviews=None):
     """Run execute_post with GitHub stubs; return (status, resolved thread ids, printed output)."""
     import contextlib, io
     resolved, out = [], io.StringIO()
     listings = iter(reviews or [])
+    if threads is ...:
+        threads = {r["id"]: {"thread_id": f"T{r['id']}", "resolved": False, "outdated": False} for r in roots}
     saved = (post.gh_api, post.find_review_roots, post.current_login, post.find_scoreboard_comments,
              post.review_thread_states, post.resolve_thread_id, post.resolve_thread)
     post.gh_api = fake
@@ -514,7 +518,7 @@ def test_identical_closed_body_skips_patch_but_resolves_thread():
     status, resolved, _ = _publish(fake, plan, ledger_path, roots, transport_cls=EditClosingPublication)
     assert status == 0
     assert ("PATCH", "/repos/o/r/pulls/comments/80") not in fake.calls
-    assert resolved == [80]
+    assert resolved == ["T80"]
 
 
 def _with_reply(ledger_path, plan, *, clears):
@@ -629,8 +633,16 @@ class BatchGH(TransactionGH):
     def __init__(self, review=None, failure=None, **kwargs):
         super().__init__(**kwargs)
         self.review, self.failure, self.inputs, self.next_id = review, failure, [], 700
+        self.review_rows = _batched_roots()
 
     def __call__(self, method, endpoint, fields=None, body_file=None, failures=None, action="", input_file=None):
+        if method == "GET" and "/reviews/" in endpoint:
+            self.calls.append((method, endpoint))
+            return [{"id": r["id"], "node_id": r["node_id"], "path": r["path"], "in_reply_to_id": None,
+                     "user": {"login": "bot"}, "created_at": "z",
+                     "body": f"<!--tauceti-rubric:{r['rubric']}-->\n<!--tauceti-meta:v1 "
+                             + json.dumps({"head_sha": r["head_sha"], "runs": [{"id": i} for i in r["run_ids"]]})
+                             + "-->"} for r in self.review_rows]
         if endpoint.endswith("/reviews"):
             self.calls.append((method, endpoint))
             self.inputs.append(json.loads(pathlib.Path(input_file).read_text()))
@@ -645,19 +657,20 @@ class BatchGH(TransactionGH):
         return super().__call__(method, endpoint, fields, body_file, failures, action, input_file)
 
 
-def _batched_roots(review_id):
+def _batched_roots():
     return [{"id": 801, "node_id": "N801", "path": "code/x.lean", "login": "bot", "rubric": "api-design",
-             "review_id": review_id, "head_sha": "h" * 40, "run_ids": ["r-new"], "created_at": "z"},
+             "head_sha": "h" * 40, "run_ids": ["r-new"], "created_at": "z"},
             {"id": 802, "node_id": "N802", "path": "code/y.lean", "login": "bot", "rubric": "naming",
-             "review_id": review_id, "head_sha": "h" * 40, "run_ids": ["r-2"], "created_at": "z"}]
+             "head_sha": "h" * 40, "run_ids": ["r-2"], "created_at": "z"}]
 
 
 def test_new_roots_land_as_one_batched_review():
     ledger_path, plan, work = _two_new_findings()
     fake = BatchGH(review={"id": 55})
-    status, _, out = _publish(fake, plan, ledger_path, [], reviews=[[], _batched_roots(55)])
+    status, _, out = _publish(fake, plan, ledger_path, [])
     assert status == 0, out
     assert fake.calls == [("POST", "/repos/o/r/pulls/1/reviews"),
+                          ("GET", "/repos/o/r/pulls/1/reviews/55/comments?per_page=100"),
                           ("POST", "/repos/o/r/issues/1/comments")], fake.calls
     request = fake.inputs[0]
     assert request["event"] == "COMMENT" and request["commit_id"] == "h" * 40
@@ -685,7 +698,7 @@ def test_batch_request_is_identical_on_retry():
 def test_crash_after_batched_review_adopts_its_roots():
     ledger_path, plan, work = _two_new_findings()
     fake = BatchGH(review={"id": 55})
-    status, _, _ = _publish(fake, plan, ledger_path, _batched_roots(55))
+    status, _, _ = _publish(fake, plan, ledger_path, _batched_roots())
     assert status == 0
     assert fake.calls == [("POST", "/repos/o/r/issues/1/comments")], fake.calls
 
@@ -705,7 +718,8 @@ def test_rejected_batch_falls_back_to_file_comments():
 def test_unconfirmed_batch_withholds_the_scoreboard():
     ledger_path, plan, work = _two_new_findings()
     fake = BatchGH(review={"id": 55})
-    status, _, _ = _publish(fake, plan, ledger_path, [], reviews=[[], []])
+    fake.review_rows = []
+    status, _, _ = _publish(fake, plan, ledger_path, [])
     assert status == 1
     assert all("/issues/" not in e for _, e in fake.calls), fake.calls
 
@@ -735,6 +749,34 @@ def test_resolved_or_outdated_root_is_replaced_not_edited():
         assert resolved == ([] if state["resolved"] else ["T41"]), "the superseded root collapses"
         cf = json.loads(ledger_path.read_text())["prs"]["1"]["state"]["api-design"]
         assert cf["thread"]["comment_id"] == 700
+        assert "superseded" not in cf["thread"], cf
+
+
+def test_superseded_root_is_remembered_until_resolved():
+    roots = [{"id": 41, "node_id": "N41", "path": "code/x.lean", "login": "bot",
+              "rubric": "api-design", "head_sha": "g" * 40, "run_ids": ["r-old"],
+              "created_at": "2026-08-03T00:00:00Z"}]
+    ledger_path, plan = _post_fixture(thread_id=41)
+    outdated = {41: {"thread_id": "T41", "resolved": False, "outdated": True}}
+    class BoardFailsGH(TransactionGH):
+        def __call__(self, method, endpoint, *args, failures=None, **kwargs):
+            if endpoint == "/repos/o/r/issues/1/comments":
+                failures.append({"action": "scoreboard POST", "error": "injected"})
+                return None
+            return super().__call__(method, endpoint, *args, failures=failures, **kwargs)
+
+    status, _, _ = _publish(BoardFailsGH(), plan, ledger_path, roots, threads=outdated)
+    assert status == 1
+    cf = json.loads(ledger_path.read_text())["prs"]["1"]["state"]["api-design"]
+    assert cf["thread"] == {**cf["thread"], "comment_id": 700, "superseded": [41]}, cf
+    # The retry adopts the new root and still resolves the one it replaced.
+    adopted = roots + [{"id": 700, "node_id": "N700", "path": "code/x.lean", "login": "bot",
+                        "rubric": "api-design", "head_sha": "h" * 40, "run_ids": ["r-new"], "created_at": "z"}]
+    states = {**outdated, 700: {"thread_id": "T700", "resolved": False, "outdated": False}}
+    status, resolved, _ = _publish(TransactionGH(), plan, ledger_path, adopted, threads=states)
+    assert status == 0 and resolved == ["T41"]
+    cf = json.loads(ledger_path.read_text())["prs"]["1"]["state"]["api-design"]
+    assert "superseded" not in cf["thread"], cf
 
 
 def test_live_root_is_edited_in_place():
@@ -748,11 +790,11 @@ def test_live_root_is_edited_in_place():
     assert status == 0
     assert fake.calls[0] == ("PATCH", "/repos/o/r/pulls/comments/41"), fake.calls
     assert "thread_edit=1" in out
-    # Without thread states, a line root from another head is not trusted to be live.
+    # Without thread states no root is known to be live: the publication waits for a retry.
     fake = TransactionGH()
     ledger_path, plan = _post_fixture(thread_id=41)
     status, _, _ = _publish(fake, plan, ledger_path, roots, threads=None)
-    assert fake.calls[0] == ("POST", "/repos/o/r/pulls/1/comments"), fake.calls
+    assert status == 1 and fake.calls == [], fake.calls
 
 
 def test_rejected_flag_marks_invalid_requests_but_not_throttles():

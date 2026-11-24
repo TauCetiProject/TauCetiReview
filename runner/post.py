@@ -95,7 +95,6 @@ def normalize_roots(comments, principal=lambda user: user.get("login"),
             "id": c.get("id"), "node_id": c.get("node_id"), "path": c.get("path"),
             "login": principal(c.get("user") or {}),
             "thread_kind": c.get("thread_kind"), "subject_type": c.get("subject_type"),
-            "review_id": c.get("pull_request_review_id"),
             "rubric": rubric_match.group(1) if rubric_match else None,
             "head_sha": reviewed_head(c, meta),
             "run_ids": [run.get("id") for run in (meta.get("runs") or []) if run.get("id")],
@@ -576,7 +575,6 @@ def _execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, e
     # Phase 1: every genuine blocker root is required. Remote discovery is itself required because
     # it proves ownership before PATCH and makes a POST-crash retry idempotent.
     roots = transport.roots()
-    superseded = {}  # rubric -> our older root that a new root replaces
     if required and roots is None:
         failures.append({"action": "required thread discovery",
                          "error": "could not list review roots"})
@@ -600,10 +598,14 @@ def _execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, e
             atomic_write_json(ledger_path, ledger)
         def confirmed(t, chosen):
             cf = pr_state["state"].setdefault(t["rubric"], {})
-            old_id = (cf.get("thread") or {}).get("comment_id")
-            if old_id and old_id != chosen["id"]:
-                superseded[t["rubric"]] = old_id
+            old = cf.get("thread") or {}
+            # Our older root that this one replaces: persisted, so a retry still resolves it.
+            stale = [i for i in old.get("superseded") or [] if i != chosen["id"]]
+            if old.get("comment_id") and old["comment_id"] != chosen["id"]:
+                stale = sorted(set(stale) | {old["comment_id"]})
             posted_threads[t["rubric"]] = record_required_root(cf, chosen, t)
+            if stale:
+                cf["thread"]["superseded"] = stale
             atomic_write_json(ledger_path, ledger)
 
         if creates:
@@ -694,15 +696,27 @@ def _execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, e
         except (ForgeError, OSError) as error:
             failures.append({'action': f"optional {t['action']} {t['rubric']}",
                              'error': type(error).__name__})
-    for rubric, old_id in superseded.items():
-        # A new root replaced our older one (resolved, outdated, or on another head); collapse it.
-        old = roots_by_id.get(old_id)
-        if old and old.get("login") == me:
-            try:
-                if transport.resolve(old_id):
-                    writes["resolve"] += 1
-            except (ForgeError, OSError) as error:
-                failures.append({'action': f"optional resolve {rubric}", 'error': type(error).__name__})
+    for rubric, cf in pr_state["state"].items():
+        thread = cf.get("thread") if isinstance(cf, dict) else None
+        if not isinstance(thread, dict) or not thread.get("superseded"):
+            continue
+        # A new root replaced these older ones of ours (resolved, outdated, or on another head);
+        # collapse them, and forget each once its thread is resolved or gone.
+        pending = []
+        for old_id in thread["superseded"]:
+            old = roots_by_id.get(old_id)
+            if roots is None or (old and old.get("login") == me and not transport.settled(old_id)):
+                try:
+                    if roots is not None and transport.resolve(old_id):
+                        writes["resolve"] += 1
+                except (ForgeError, OSError) as error:
+                    failures.append({'action': f"optional resolve {rubric}", 'error': type(error).__name__})
+                if roots is None or not transport.settled(old_id):
+                    pending.append(old_id)
+        if pending:
+            thread["superseded"] = pending
+        else:
+            thread.pop("superseded", None)
 
     atomic_write_json(ledger_path, ledger)
     archive_outcome(archive_dir, repo, pr, plan, sb_id, True, posted_threads, failures, writes)

@@ -73,6 +73,10 @@ class PublicationTransport:
         self.repo, self.number, self.head, self.plan, self.helpers = repo, number, head, plan, helpers
         self.source = source
 
+    def settled(self, identifier):
+        """Whether our superseded root needs no further resolution (no resolution without threads)."""
+        return True
+
     def create_findings(self, actions, failures, writes, confirmed):
         """Create one root per required action, calling `confirmed(action, root)` as each lands."""
         for action in actions:
@@ -127,19 +131,23 @@ class GitHubPublication(PublicationTransport):
         return self.helpers.current_login()
 
     def roots(self):
+        # Discovery includes thread liveness: without it, a finding could be edited into a
+        # resolved (collapsed) thread, so the publication waits for a retry instead.
         roots = self.helpers.find_review_roots(self.repo, self.number)
-        if roots is not None:
-            self.threads = self.helpers.review_thread_states(self.repo, self.number)
-        return roots
+        if roots is None:
+            return None
+        self.threads = self.helpers.review_thread_states(self.repo, self.number)
+        return roots if self.threads is not None else None
 
     def editable(self, root, action=None):
         # Edit a root in place only while its thread is live: a new finding written into a
-        # resolved or outdated thread would be collapsed out of sight. Without thread states, a
-        # line comment is trusted only on the head it was written for.
+        # resolved or outdated thread would be collapsed out of sight.
         state = (self.threads or {}).get(root.get('id'))
-        if state is not None:
-            return not state['resolved'] and not state['outdated']
-        return root.get('subject_type') != 'line' or root.get('head_sha') == self.head
+        return state is not None and not state['resolved'] and not state['outdated']
+
+    def settled(self, identifier):
+        state = (self.threads or {}).get(identifier)
+        return state is None or state['resolved']
 
     def create_findings(self, actions, failures, writes, confirmed):
         """Post new roots as one review with a line comment each when two or more can be anchored
@@ -171,11 +179,16 @@ class GitHubPublication(PublicationTransport):
         batched = [a for a, _ in anchored]
         if review is not None:
             writes['review_batch'] += 1
-            roots = self.helpers.find_review_roots(self.repo, self.number) or []
+            # The review's own comments, read directly: the PR comment history a worker host
+            # serves may lag behind this write.
+            rows = (self.helpers.gh_api('GET', f"/repos/{self.repo}/pulls/{self.number}/reviews/"
+                                               f"{review.get('id')}/comments?per_page=100")
+                    if review.get('id') is not None else None)
+            roots = self.helpers.normalize_roots(rows) if isinstance(rows, list) else []
             for action in batched:
-                root = next((c for c in roots if review.get('id') is not None
-                             and c.get('review_id') == review.get('id')
-                             and c.get('rubric') == action['rubric']), None)
+                root = next((c for c in roots if c.get('rubric') == action['rubric']
+                             and (action.get('run_id') is None or action['run_id'] in c.get('run_ids', []))),
+                            None)
                 if root:
                     confirmed(action, {'id': root['id'], 'node_id': root.get('node_id'),
                                        'path': root.get('path') or action.get('path', '')})

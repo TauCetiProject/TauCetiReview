@@ -157,7 +157,9 @@ def workflow(kind, tmp_path, stack):
     stack.enter_context(patch.object(post, 'already_replied', lambda repo, pr, rubric, through, me:
         post.reply_seen(source.findings(pr), rubric, through, me)))
     stack.enter_context(patch.object(post, 'resolve_thread'))
-    stack.enter_context(patch.object(post, 'review_thread_states', lambda repo, pr: None))
+    stack.enter_context(patch.object(post, 'review_thread_states', lambda repo, pr: {
+        root['id']: dict(thread_id=f"T{root['id']}", resolved=False, outdated=False)
+        for root in post.normalize_roots(source.findings(pr))}))
     ledger = store / 'ledger.json'
     ledger.write_text(json.dumps(dict(days={}, prs={'7': dict(state={}, pending_publication_head_sha=HEAD)})))
     meta = json.dumps(dict(head_sha=HEAD, runs=[dict(id='run-1')]))
