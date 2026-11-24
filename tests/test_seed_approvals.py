@@ -112,6 +112,11 @@ check("the board's reply watermark covers replies it adjudicated",
       verdict.has_new_contest(watched["a"]), False)
 watched["a"]["author_replies"].append({"id": 60, "body": "still"})
 check("a newer reply still reopens the rubric", verdict.has_new_contest(watched["a"]), True)
+aborted = {"a": {"verdict": "error", "reviewed_sha": HEAD, "last_reply_seen": 60,
+                 "author_replies": [{"id": 60, "body": "unjudged"}]}}
+casefile.seed_stale_approvals(aborted, {**same, "replies_through": 50}, ["a"], HEAD, MB)
+check("a reply an errored run never judged still reopens the imported approval",
+      verdict.has_new_contest(aborted["a"]), True)
 missing = {}
 casefile.seed_stale_approvals(missing, {k: v for k, v in same.items() if k != "merge_base_sha"}, ["a"],
                               HEAD, MB)

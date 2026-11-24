@@ -118,7 +118,9 @@ def seed_stale_approvals(state_map, board, candidates, head_sha=None, merge_base
         if current:
             # The board adjudicated every author reply up to `replies_through` (the handoff's
             # has_unhandled_contest reads it the same way); only a newer reply reopens this rubric.
-            cf["last_reply_seen"] = max(cf.get("last_reply_seen") or 0, through)
+            # The board's watermark replaces the local one: a run that errored or aborted can have
+            # advanced the local watermark past a reply it never judged.
+            cf["last_reply_seen"] = through
         cf.setdefault("thread", None)
         cf.setdefault("author_replies", [])
         seeded.append(rubric)
