@@ -986,12 +986,19 @@ def main():
     # the seeded ones once the PR is otherwise clean, exactly as if it had made them itself.
     if (a.mode in ("commit", "reply") and not a.shadow and not handoff_board and a.prior_scoreboard_json
             and pathlib.Path(a.prior_scoreboard_json).exists()):
-        seeded = seed_stale_approvals(state_map, prior_board, candidates)
+        seeded = seed_stale_approvals(state_map, prior_board, candidates, head, a.merge_base_sha,
+                                      rubrics_version)
         if seeded:
             prov["seeded_rubrics"] = ",".join(seeded)
             src = state_map[seeded[0]]["imported_from"]
-            print(f"[seed] {', '.join(seeded)}: approved in {src.get('by') or 'another'}'s review of "
-                  f"{(src.get('head_sha') or '')[:9]}; shown as stale, re-run before merge.")
+            current = [r for r in seeded if state_map[r].get("approved_sha") == head]
+            stale = [r for r in seeded if r not in current]
+            if current:
+                print(f"[seed] {', '.join(current)}: approved at this head in {src.get('by') or 'another'}'s "
+                      "review; kept as approved, not re-run.")
+            if stale:
+                print(f"[seed] {', '.join(stale)}: approved in {src.get('by') or 'another'}'s review of "
+                      f"{(src.get('head_sha') or '')[:9]}; shown as stale, re-run before merge.")
 
     # Fold author replies gathered from the PR's rubric threads into each rubric's case file, so a
     # re-run sees the author's contest (untrusted argument) and re-adjudicates against it. Replaces

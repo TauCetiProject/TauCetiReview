@@ -589,7 +589,8 @@ def latest_scoreboard(comments):
         if best is None or key > best[0]:
             best = (key, {"comment_id": c.get("id"), "by": (c.get("user") or {}).get("login"),
                           "head_sha": meta["head_sha"], "states": meta["states"],
-                          **{k: meta[k] for k in ("replies_through", "rubrics_version") if k in meta}})
+                          **{k: meta[k] for k in ("replies_through", "rubrics_version", "merge_base_sha")
+                             if k in meta}})
     return best[1] if best else None
 
 

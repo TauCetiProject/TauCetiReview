@@ -71,7 +71,8 @@ def carry_forward(state_map, head_sha, digest, rubrics_version=None):
 
 
 
-def seed_stale_approvals(state_map, board, candidates):
+def seed_stale_approvals(state_map, board, candidates, head_sha=None, merge_base_sha=None,
+                         rubrics_version=None):
     """Seed an approval from another reviewer's scoreboard (`board`: the newest completed one on the
     PR, as {comment_id, by, head_sha, states}) into every candidate rubric this store has no verdict
     for, so a reviewer taking over a PR shows it as ♻️ and defers re-running it while other rubrics
@@ -80,7 +81,16 @@ def seed_stale_approvals(state_map, board, candidates):
     verdict: trusting the board only postpones work, and a forged board can do no more than that.
     It has no `approved_digest` (any left on a verdict-less case file is dropped), so carry_forward
     never promotes it to green either. The board is untrusted input: only well-formed origin fields
-    are kept. Returns the rubrics seeded, sorted."""
+    are kept. Returns the rubrics seeded, sorted.
+
+    One exception: a `green` row on a board that judged exactly this review input (the same
+    `head_sha`, `merge_base_sha` and `rubrics_version` as this round, all present) is seeded as
+    approved at `head_sha`, not stale, so a reviewer taking over never re-runs a rubric that was
+    already approved on this head. That grants a forged board nothing new: under the merge gate's
+    no-bar model the newest completed board at the current head is already the verdict, and
+    handoff.can_reuse_completed_review already accepts such a board as the completed review. Such
+    an approval also replaces a stale approval this store holds from an earlier head; any other
+    local verdict is kept. It still has no `approved_digest`, so it never carries to a new head."""
     states = (board or {}).get("states")
     if not isinstance(states, dict):
         return []
@@ -88,15 +98,22 @@ def seed_stale_approvals(state_map, board, candidates):
               "by": lambda v: isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9-]+(\[bot\])?", v),
               "head_sha": lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{40}", v)}
     origin = {k: board[k] for k, ok in checks.items() if ok(board.get(k))}
+    same_input = bool(head_sha and merge_base_sha and rubrics_version
+                      and origin.get("head_sha") == head_sha
+                      and board.get("merge_base_sha") == merge_base_sha
+                      and board.get("rubrics_version") == rubrics_version)
     seeded = []
     for rubric in candidates:
         cf = state_map.get(rubric) or {}
-        if cf.get("verdict") or states.get(rubric) not in ("green", "stale"):
+        current = same_input and states.get(rubric) == "green"
+        stale_local = cf.get("verdict") == "approve" and cf.get("approved_sha") != head_sha
+        if (cf.get("verdict") and not (current and stale_local)) or states.get(rubric) not in ("green", "stale"):
             continue
         cf = state_map.setdefault(rubric, {})
         for stale_field in ("approved_digest", "approved_rubrics_version", "carried_from_sha"):
             cf.pop(stale_field, None)
-        cf.update(rubric=rubric, verdict="approve", approved_sha=None, imported_from=origin)
+        cf.update(rubric=rubric, verdict="approve", approved_sha=head_sha if current else None,
+                  imported_from=origin)
         cf.setdefault("thread", None)
         cf.setdefault("author_replies", [])
         seeded.append(rubric)
