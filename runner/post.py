@@ -118,7 +118,8 @@ def choose_required_root(head, action, cf, roots, me, transport):
     rubric, run_id = action["rubric"], action.get("run_id")
     exact = _newest(c for c in roots
                     if c.get("login") == me and c.get("rubric") == rubric
-                    and c.get("head_sha") == head and run_id in c.get("run_ids", []))
+                    and c.get("head_sha") == head and run_id in c.get("run_ids", [])
+                    and transport.live(c))
     if exact:
         return "adopt", exact
     known_id = (cf.get("thread") or {}).get("comment_id") or action.get("comment_id")
@@ -135,14 +136,26 @@ def choose_required_root(head, action, cf, roots, me, transport):
     return "create", None
 
 
-def record_required_root(cf, chosen, action):
+def record_required_root(cf, chosen, action, roots=(), me=None):
+    """Point the case file at `chosen`. A different root it pointed at before, unless known to
+    be another identity's, is kept in `superseded` until its thread is resolved."""
+    old = cf.get("thread") or {}
+    stale = [i for i in old.get("superseded") or [] if i != chosen["id"]]
+    previous = old.get("comment_id")
+    owner = next((c.get("login") for c in roots if c.get("id") == previous), me)
+    if previous and previous != chosen["id"] and owner == me and previous not in stale:
+        stale.append(previous)
     cf["thread"] = {
-        **(cf.get("thread") or {}),
+        **old,
         "comment_id": chosen["id"],
         "node_id": chosen.get("node_id"),
         "path": chosen.get("path") or action.get("path"),
         "published_run_id": action.get("run_id"),
     }
+    if stale:
+        cf["thread"]["superseded"] = stale
+    else:
+        cf["thread"].pop("superseded", None)
     return chosen["id"]
 
 
@@ -592,20 +605,13 @@ def _execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, e
                     required_root_failed(rubric, failures)
                     continue
                 writes["thread_edit"] += 1
-            posted_threads[rubric] = record_required_root(cf, chosen, t)
+            posted_threads[rubric] = record_required_root(cf, chosen, t, roots, me)
             # Persist the confirmed root immediately. Keep its pending marker until the
             # scoreboard succeeds; a crash or scoreboard failure must schedule another repair.
             atomic_write_json(ledger_path, ledger)
         def confirmed(t, chosen):
             cf = pr_state["state"].setdefault(t["rubric"], {})
-            old = cf.get("thread") or {}
-            # Our older root that this one replaces: persisted, so a retry still resolves it.
-            stale = [i for i in old.get("superseded") or [] if i != chosen["id"]]
-            if old.get("comment_id") and old["comment_id"] != chosen["id"]:
-                stale = sorted(set(stale) | {old["comment_id"]})
-            posted_threads[t["rubric"]] = record_required_root(cf, chosen, t)
-            if stale:
-                cf["thread"]["superseded"] = stale
+            posted_threads[t["rubric"]] = record_required_root(cf, chosen, t, roots, me)
             atomic_write_json(ledger_path, ledger)
 
         if creates:
@@ -702,17 +708,23 @@ def _execute_post(repo, pr, plan, ledger_path, archive_dir="", transport=None, e
             continue
         # A new root replaced these older ones of ours (resolved, outdated, or on another head);
         # collapse them, and forget each once its thread is resolved or gone.
+        # A root missing from the (possibly lagging) comment history is kept until its thread
+        # state shows it resolved or gone.
         pending = []
         for old_id in thread["superseded"]:
             old = roots_by_id.get(old_id)
-            if roots is None or (old and old.get("login") == me and not transport.settled(old_id)):
-                try:
-                    if roots is not None and transport.resolve(old_id):
-                        writes["resolve"] += 1
-                except (ForgeError, OSError) as error:
-                    failures.append({'action': f"optional resolve {rubric}", 'error': type(error).__name__})
-                if roots is None or not transport.settled(old_id):
-                    pending.append(old_id)
+            if old and old.get("login") != me:
+                continue  # never resolve another identity's thread
+            if roots is None:
+                pending.append(old_id)
+                continue
+            try:
+                if not transport.settled(old_id) and transport.resolve(old_id):
+                    writes["resolve"] += 1
+            except (ForgeError, OSError) as error:
+                failures.append({'action': f"optional resolve {rubric}", 'error': type(error).__name__})
+            if not transport.settled(old_id):
+                pending.append(old_id)
         if pending:
             thread["superseded"] = pending
         else:

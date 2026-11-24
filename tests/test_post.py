@@ -931,6 +931,52 @@ def test_shared_transport_owns_pacing_and_retry_budget():
         assert gh.call_count == 1 and not sleep.called
 
 
+def test_resolved_exact_root_is_not_adopted():
+    exact = {"id": 701, "node_id": "N701", "path": "code/x.lean", "login": "bot", "rubric": "api-design",
+             "head_sha": "h" * 40, "run_ids": ["r-new"], "created_at": "z"}
+    ledger_path, plan = _post_fixture()
+    fake = TransactionGH()
+    status, _, _ = _publish(fake, plan, ledger_path, [exact],
+                            threads={701: {"thread_id": "T701", "resolved": True, "outdated": False}})
+    assert status == 0
+    assert fake.calls[0] == ("POST", "/repos/o/r/pulls/1/comments"), fake.calls
+    assert json.loads(ledger_path.read_text())["prs"]["1"]["state"]["api-design"]["thread"]["comment_id"] == 700
+
+
+def test_crash_adoption_still_resolves_the_replaced_root():
+    old = {"id": 41, "node_id": "N41", "path": "code/x.lean", "login": "bot", "rubric": "api-design",
+           "head_sha": "g" * 40, "run_ids": ["r-old"], "created_at": "y"}
+    new = {"id": 701, "node_id": "N701", "path": "code/x.lean", "login": "bot", "rubric": "api-design",
+           "head_sha": "h" * 40, "run_ids": ["r-new"], "created_at": "z"}
+    ledger_path, plan = _post_fixture(thread_id=41)  # the crash left the ledger at the old root
+    states = {41: {"thread_id": "T41", "resolved": False, "outdated": True},
+              701: {"thread_id": "T701", "resolved": False, "outdated": False}}
+    status, resolved, _ = _publish(TransactionGH(), plan, ledger_path, [old, new], threads=states)
+    assert status == 0 and resolved == ["T41"]
+    thread = json.loads(ledger_path.read_text())["prs"]["1"]["state"]["api-design"]["thread"]
+    assert thread["comment_id"] == 701 and "superseded" not in thread
+
+
+def test_superseded_root_missing_from_lagging_history_is_still_resolved():
+    ledger_path, plan = _post_fixture()
+    ledger = json.loads(ledger_path.read_text())
+    ledger["prs"]["1"]["state"]["api-design"]["thread"] = {"comment_id": 701, "superseded": [41]}
+    ledger_path.write_text(json.dumps(ledger))
+    new = {"id": 701, "node_id": "N701", "path": "code/x.lean", "login": "bot", "rubric": "api-design",
+           "head_sha": "h" * 40, "run_ids": ["r-new"], "created_at": "z"}
+    states = {41: {"thread_id": "T41", "resolved": False, "outdated": True},
+              701: {"thread_id": "T701", "resolved": False, "outdated": False}}
+    status, resolved, _ = _publish(TransactionGH(), plan, ledger_path, [new], threads=states)
+    assert status == 0 and resolved == ["T41"]
+    # A thread GitHub no longer lists is gone, and is forgotten.
+    ledger = json.loads(ledger_path.read_text())
+    ledger["prs"]["1"]["state"]["api-design"]["thread"]["superseded"] = [42]
+    ledger_path.write_text(json.dumps(ledger))
+    status, resolved, _ = _publish(TransactionGH(), plan, ledger_path, [new], threads=states)
+    assert status == 0 and resolved == []
+    assert "superseded" not in json.loads(ledger_path.read_text())["prs"]["1"]["state"]["api-design"]["thread"]
+
+
 def test_thread_plan_marks_clearing_answers_and_finding_lines():
     import review
     head = "h" * 40

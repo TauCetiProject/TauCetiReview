@@ -77,6 +77,10 @@ class PublicationTransport:
         """Whether our superseded root needs no further resolution (no resolution without threads)."""
         return True
 
+    def live(self, root):
+        """Whether a finding in `root` is visible; only GitHub collapses resolved threads."""
+        return True
+
     def create_findings(self, actions, failures, writes, confirmed):
         """Create one root per required action, calling `confirmed(action, root)` as each lands."""
         for action in actions:
@@ -148,6 +152,9 @@ class GitHubPublication(PublicationTransport):
     def settled(self, identifier):
         state = (self.threads or {}).get(identifier)
         return state is None or state['resolved']
+
+    def live(self, root):
+        return self.editable(root)
 
     def create_findings(self, actions, failures, writes, confirmed):
         """Post new roots as one review with a line comment each when two or more can be anchored
