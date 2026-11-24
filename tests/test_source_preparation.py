@@ -84,6 +84,39 @@ def test_reused_source_cache_cannot_apply_prior_pr_attributes_to_a_diff():
             assert b'+theorem t0 : True := by trivial' in out.read_bytes()
 
 
+def test_killed_checkout_cannot_lock_the_cache_for_later_reviews():
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        url, base, head, _ = _fixture(root)
+        cache = root / 'git-cache'
+        git = pr_diff._git
+        def killed(d, args, env, *a, **kw):
+            if 'checkout' in args:
+                # What a checkout killed at its timeout leaves behind: the lock on its index.
+                index = env.get('GIT_INDEX_FILE') or os.path.join(d, 'index')
+                pathlib.Path(index + '.lock').touch()
+                raise RuntimeError('git checkout timed out')
+            return git(d, args, env, *a, **kw)
+        with patch.object(pr_diff, '_git', killed), open(os.devnull, 'wb') as sink:
+            try:
+                pr_diff.git_diff(url, base, head, sink, source_dir=root / 'killed',
+                                 cache_dir=cache, fetch_limit=None, limit=None)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError('the killed checkout succeeded')
+        assert not (root / 'killed').exists()
+        assert not (cache / 'index.lock').exists() and not list(root.glob('pr-index-*'))
+        # A lock a killed checkout left in the cache before this fix does not block the next one.
+        (cache / 'index.lock').touch()
+        with open(root / 'diff.txt', 'wb') as out:
+            pr_diff.git_diff(url, base, head, out, source_dir=root / 'code',
+                             cache_dir=cache, fetch_limit=None, limit=None)
+        assert (root / 'diff.txt').read_bytes() == _diff(url, base, head)[0]
+        assert (root / 'code/TauCeti/F319.lean').read_text().endswith('by trivial\n')
+        assert not (cache / 'index').exists() and not list(root.glob('pr-index-*'))
+
+
 def test_preparation_outage_retries_without_models_or_stale_workspace():
     with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as stack:
         root = pathlib.Path(d); work = root / 'work'; store = root / 'store'; store.mkdir()
