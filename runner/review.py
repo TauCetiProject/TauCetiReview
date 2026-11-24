@@ -19,15 +19,15 @@ import archive
 from dataclasses import dataclass, field
 
 from ledger import Ledger
-from handoff import (DEFAULT_RUBRICS, can_reuse_completed_review, has_unhandled_contest,
-                     rubrics_for, thread_action_rubrics)
+from handoff import (DEFAULT_RUBRICS, can_reuse_completed_review, clauses_for,
+                     has_unhandled_contest, rubrics_for, thread_action_rubrics)
 from pricing import CLAUDE_MODEL, CODEX_FALLBACK_MODEL, CODEX_MODEL, KIRO_MODEL, OPENROUTER_MODELS, PRICES_SHA, SONNET_MODEL, sum_usage, warn_unpriced
 # Re-exported for merge_from_scoreboard (changed_paths/decide_merge/DEFAULT_RUBRICS) and the price
 # tests, which read these as review.X — kept importable here though review.py no longer uses them.
 from pricing import PRICES, _PRICE_WINDOWS, dispatch_models  # noqa: F401
 from verdict import extract_verdict, has_new_contest, is_blocking, is_unresolved, newest_reply_id, overall_label, posts_review_thread, state_of, today
 from merge import changed_paths, decide_merge, read_paths
-from reviewers import configured_claude_access, build_prompt, ci_status_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
+from reviewers import configured_claude_access, build_prompt, ci_status_block, phased_clause_block, cleanup_rev_home, codex_model_unavailable, exact_kiro_model, reject_retired_opus, reviewer_env, run_claude, run_codex, run_kiro, run_pi, sweep_rev_homes
 from casefile import (build_reactivation_block, carry_forward, normalize_finding_path, patch_digest,
                       pick_anchor, seed_stale_approvals, update_case_file)
 from render import meta_block, render_contest_reply, render_scoreboard, render_thread, rubrics_fingerprint, thread_meta
@@ -456,8 +456,9 @@ def run_rubric(ctx, rubric):
     is_reply = (a.mode == "reply" and rubric == a.reply_rubric)
     reblock = build_reactivation_block(cf_prev, reply_text if is_reply else None)
     # base_context is the same for every rubric of the round, so its prompt prefix can be cached;
-    # the reactivation block is per-rubric and goes after the rubric text.
-    prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context, marker, reblock)
+    # the phased-in clauses and the reactivation block are per-rubric and go after the rubric text.
+    clauses = phased_clause_block(clauses_for(rubric, a.repo, a.pr))
+    prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context, marker, clauses + reblock)
     # Pin the provider to whoever first reviewed this rubric, so a follow-up audits its own
     # prior finding (and an author can't shop for a softer model); else roll at random over
     # the available providers. A pinned provider that is no longer available is re-drawn.

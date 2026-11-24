@@ -2,7 +2,9 @@
 
 PRs opened earlier keep their completed scoreboards: the merge gate does not ask them for the new
 row, the handoff probe still calls their review complete, and the engine does not run the angle on
-them. Reviewer subprocesses are stubbed, so there is no spend and no network.
+them. A clause being phased in within a rubric is applied the same way: only the reviewer of a PR
+above its cutoff is told that it applies. Reviewer subprocesses are stubbed, so there is no spend
+and no network.
 
 Run: python tests/test_phased_rubrics.py
 """
@@ -11,6 +13,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -342,6 +345,85 @@ class Sweep(unittest.TestCase):
         self.assertEqual(source.count("decide_from_comments(comments, head, "), 3)
         self.assertEqual(source.count("decide_from_comments(comments, head, set(rubrics_for(REPO, n)), ")
                          + source.count("decide_from_comments(comments, head, required, "), 3)
+
+
+CLAUSE = ("correctness", "roadmap-report")
+
+
+def clause_cutoffs(table):
+    """Patch the phased clause's cutoffs, in place, as the shipped constant is read."""
+    rubric, clause = CLAUSE
+    return patch.dict(admission_policy.PHASED_CLAUSES, {rubric: {clause: table}})
+
+
+class PhasedClauses(unittest.TestCase):
+    """A clause being phased in within a rubric that runs on every PR: the reviewer of a PR above
+    its cutoff is told, after the rubric text, that it applies; no other reviewer is."""
+
+    def test_only_prs_above_the_cutoff_are_told_the_clause_applies(self):
+        rubric, clause = CLAUSE
+        with clause_cutoffs({REPO: 100, FORGEJO: 3}):
+            self.assertEqual(handoff.clauses_for(rubric, REPO, 100), [])
+            self.assertEqual(handoff.clauses_for(rubric, REPO, 101), [clause])
+            self.assertEqual(handoff.clauses_for(rubric, REPO, "101"), [clause])
+            self.assertEqual(handoff.clauses_for(rubric, FORGEJO, 3), [])
+            self.assertEqual(handoff.clauses_for(rubric, FORGEJO, 4), [clause])
+            self.assertEqual(handoff.clauses_for(rubric, "Owner/Repo", 101), [])
+            self.assertEqual(handoff.clauses_for("scope", REPO, 101), [])
+            for pr in ("", "abc", None):
+                self.assertEqual(handoff.clauses_for(rubric, REPO, pr), [])
+        with clause_cutoffs({REPO: None}):
+            self.assertEqual(handoff.clauses_for(rubric, REPO, 10 ** 9), [])
+
+    def test_a_source_binding_names_the_repository_under_review(self):
+        rubric, clause = CLAUSE
+        binding = {"forge": {"kind": "forgejo", "url": "https://git.taucetiproject.org"},
+                   "name": "TauCetiProject/TauCeti", "id": 1}
+        with clause_cutoffs({REPO: 100, FORGEJO: 3}):
+            with patch.dict(os.environ, TAUCETI_SOURCE_BINDING=json.dumps(binding)):
+                self.assertEqual(handoff.clauses_for(rubric, REPO, 4), [clause])
+
+    def test_the_block_follows_the_rubric_and_leaves_the_shared_prefix_alone(self):
+        import reviewers
+        rubric, clause = CLAUSE
+        self.assertEqual(reviewers.phased_clause_block([]), "")
+        block = reviewers.phased_clause_block([clause])
+        self.assertIn(f"`{clause}`", block)
+        self.assertIn("verified by the runner", block)
+        plain = reviewers.build_prompt(ROOT / "rubrics", rubric, "CTX", "MARKER")
+        told = reviewers.build_prompt(ROOT / "rubrics", rubric, "CTX", "MARKER", block)
+        self.assertEqual(told.shared, plain.shared)
+        self.assertNotIn(block, told.shared)
+        self.assertGreater(told.rubric.index(block), told.rubric.index("## Verdict"))
+
+    def test_the_shipped_table_is_well_formed_and_each_rubric_names_its_clauses(self):
+        for rubric, clauses in admission_policy.PHASED_CLAUSES.items():
+            text = (ROOT / "rubrics" / f"{rubric}.md").read_text()
+            for clause, table in clauses.items():
+                self.assertRegex(clause, r"^[a-z0-9]+(-[a-z0-9]+)*$")
+                self.assertIn(f"`{clause}`", text, (rubric, clause))
+                keys = [admission_policy.repository_key(repo) for repo in table]
+                self.assertEqual(len(set(keys)), len(keys), keys)
+                for after in table.values():
+                    self.assertTrue(after is None or (type(after) is int and after >= 0), after)
+
+    def test_the_engine_tells_only_that_rubrics_reviewer_and_only_above_the_cutoff(self):
+        import reviewers
+        rubric, clause = CLAUSE
+        block = reviewers.phased_clause_block([clause])
+        prompts, fake = {}, tb._fake_runner
+
+        def capture(prompt, cwd, model, env):
+            prompts[re.search(r"ANGLE:(\S+)", prompt).group(1)] = str(prompt)
+            return fake(prompt, cwd, model, env)
+
+        with clause_cutoffs({"Owner/Repo": 100}), patch.object(tb, "_fake_runner", capture):
+            for pr, told in ((100, False), (101, True)):
+                prompts.clear()
+                Engine().ran(pr, "--rubrics", f"{rubric},scope")
+                self.assertEqual(sorted(prompts), sorted([rubric, "scope"]))
+                self.assertEqual(block in prompts[rubric], told, pr)
+                self.assertNotIn(block, prompts["scope"])
 
 
 if __name__ == "__main__":

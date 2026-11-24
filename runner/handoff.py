@@ -21,7 +21,7 @@ if __name__ == "__main__" and os.environ.get("TAUCETI_CONF"):
     except Exception:
         _CONFIG_VALID = False
 
-from admission_policy import PHASED_RUBRICS, with_phased_rubrics
+from admission_policy import PHASED_RUBRICS, phased_clauses, with_phased_rubrics
 from ledger import Ledger
 from verdict import is_unresolved, posts_review_thread, state_of
 
@@ -52,6 +52,12 @@ def rubrics_for(repo, pr):
     The project's angles (the list in its configuration, or the defaults), then any being phased
     in for that PR (`PHASED_RUBRICS` in admission_policy.py)."""
     return with_phased_rubrics(DEFAULT_RUBRICS, _reviewed_repository(repo), pr)
+
+
+def clauses_for(rubric, repo, pr):
+    """The clauses of `rubric` being phased in (`PHASED_CLAUSES` in admission_policy.py) that apply
+    to PR number `pr` of `repo`."""
+    return phased_clauses(rubric, _reviewed_repository(repo), pr)
 
 
 def table_rubrics():

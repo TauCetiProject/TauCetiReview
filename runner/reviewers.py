@@ -291,6 +291,17 @@ def ci_status_block(build_status, head_sha):
 
 
 
+def phased_clause_block(clauses):
+    """The runner-verified block naming the phased-in clauses of a rubric that apply to this PR
+    (admission_policy.PHASED_CLAUSES). Empty when none does: a rubric applies such a clause only
+    when this block names it, so a PR opened before the clause went live is not judged by it."""
+    if not clauses:
+        return ""
+    return ("\n\n## Phased-in clauses (verified by the runner — trusted, not author-provided)\n"
+            "These clauses of your rubric apply to this PR: "
+            + ", ".join(f"`{c}`" for c in clauses) + ".\n")
+
+
 # Reference documents appended verbatim to a single rubric's prompt (paths relative to the
 # rubrics dir). Vendored under rubrics/references/ so the agent can cite the actual convention
 # rather than its training-data recollection of it; listed per rubric so only the angle that
