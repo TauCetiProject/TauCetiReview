@@ -49,4 +49,8 @@ A new requirement within a rubric that already runs on every PR is phased in the
 runner-verified block after the rubric text, and the rubric applies such a clause only when that
 block names it. Correctness's `roadmap-report` clause, which asks a PR correcting a wrong roadmap
 statement to carry a roadmap report in its description, is phased in this way; until its cutoffs
-are set it applies to no PR.
+are set it applies to no PR. Where it applies, the block also gives the runner's check of the
+form of the description's report markers (`runner/roadmap_reports.py`), read afresh on every run,
+since neither the worker that writes a marker nor the job board that harvests it refuses a
+malformed one. Whether the anchor occurs in the roadmap at the commit the marker names is left to
+the board: the reviewer's roadmap checkout has no history.

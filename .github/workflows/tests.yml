@@ -42,6 +42,7 @@ jobs:
       - run: python tests/test_diff_context.py
       - run: python tests/test_admission_policy.py
       - run: python tests/test_phased_rubrics.py
+      - run: python tests/test_roadmap_reports.py
       - run: python tests/test_sweep.py
       - run: python tests/test_sweep_budget.py
       - run: python tests/test_direct_merge.py

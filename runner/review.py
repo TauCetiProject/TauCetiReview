@@ -16,6 +16,7 @@ if os.environ.get("TAUCETI_CONF") or any(arg == "--conf" or arg.startswith("--co
     bootstrap()
 
 import archive
+import roadmap_reports
 from dataclasses import dataclass, field
 
 from ledger import Ledger
@@ -428,6 +429,20 @@ class RunContext:
         return kinds.pop() if len(kinds) == 1 else "provider_unavailable"
 
 
+def phased_clauses_checked(a, rubric):
+    """The phased-in clauses of `rubric` that apply to this PR, and the runner's check for each that
+    has one. The description is read afresh on every run, so a reply round after a description-only
+    fix sees the description as it now is."""
+    clauses = clauses_for(rubric, a.repo, a.pr)
+    details = {}
+    if "roadmap-report" in clauses:
+        path = pathlib.Path(a.pr_desc_file) if a.pr_desc_file else None
+        body = (roadmap_reports.description_body(path.read_text())
+                if path and path.is_file() else None)
+        details["roadmap-report"] = roadmap_reports.summary(body)
+    return clauses, details
+
+
 def run_rubric(ctx, rubric):
     """Review one rubric: build the prompt, dispatch the (pinned or drawn) reviewer with one retry,
     parse the verdict from behind the one-time marker, archive + persist, and fold into the case
@@ -457,7 +472,7 @@ def run_rubric(ctx, rubric):
     reblock = build_reactivation_block(cf_prev, reply_text if is_reply else None)
     # base_context is the same for every rubric of the round, so its prompt prefix can be cached;
     # the phased-in clauses and the reactivation block are per-rubric and go after the rubric text.
-    clauses = phased_clause_block(clauses_for(rubric, a.repo, a.pr))
+    clauses = phased_clause_block(*phased_clauses_checked(a, rubric))
     prompt = build_prompt(pathlib.Path(a.rubrics_dir), rubric, base_context, marker, clauses + reblock)
     # Pin the provider to whoever first reviewed this rubric, so a follow-up audits its own
     # prior finding (and an author can't shop for a softer model); else roll at random over

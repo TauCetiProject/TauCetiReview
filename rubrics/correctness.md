@@ -33,16 +33,16 @@ weaker than it pretends. Approve only once you have tried and failed.
 ## Roadmap corrections
 
 When a PR departs from its roadmap target because the roadmap's statement (README or
-`Suggested.lean` pin) is wrong, try to break that claim too: the counterexample or obstruction
-must be real, and the PR's statement must be the right correction, not a convenient weakening.
-Where the runner's phased-in block names `roadmap-report`, the description must also carry a
-roadmap report (a `### Roadmap report` section stating what is wrong, why, and the correction,
-plus its `tauceti-roadmap-report:v1` marker) so the correction reaches the roadmap's authors; if
-it is missing, `request_changes` asking for it. Any report present whose claim is false or
-unsupported (the statement holds as written, or the roadmap text it quotes does not say what it
-claims) is also `request_changes`. Tools check the marker's fields: judge the mathematics and the
-report's presence. An edit to the description alone starts no new review, so ask the author to
-reply on your thread once it is made.
+`Suggested.lean` pin) is wrong, test that claim: the counterexample or obstruction must be real,
+and the PR's statement the right correction, not a convenient weakening. Where the runner's
+phased-in block names `roadmap-report`, such a PR must carry a roadmap report (a
+`### Roadmap report` section saying what is wrong, why, and the correction, and a
+`tauceti-roadmap-report:v1` marker) so the correction reaches the roadmap's authors. The runner
+checks the markers' fields and gives the result in that block. `request_changes` for a departure
+with no marker, for each problem the block lists (asking for its fix), and for a report whose
+claim is false or unsupported (the statement holds as written, or the quoted roadmap text does
+not say that), which you judge. A description edit starts no new review: ask the author to reply
+on your thread after it.
 
 ## Missing prerequisites
 

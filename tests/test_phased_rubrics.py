@@ -426,6 +426,47 @@ class PhasedClauses(unittest.TestCase):
                 self.assertEqual(block in prompts[rubric], told, pr)
                 self.assertNotIn(block, prompts["scope"])
 
+    def test_the_engine_reports_the_current_descriptions_markers_only_where_the_clause_applies(self):
+        import roadmap_reports as rr
+        rubric, _ = CLAUSE
+        prompts, fake = {}, tb._fake_runner
+
+        def capture(prompt, cwd, model, env):
+            prompts[re.search(r"ANGLE:(\S+)", prompt).group(1)] = str(prompt)
+            return fake(prompt, cwd, model, env)
+
+        sha = "a" * 40
+        good = rr.PREFIX + json.dumps({"roadmap": "R", "file": "README.md", "roadmap_sha": sha,
+                                       "anchor": "x", "kind": "false-statement",
+                                       "effect": "worked-around"}) + "-->"
+        bad = good.replace("false-statement", "typo")
+        head = "Roadmap report markers in the PR description, checked by the runner for form only: "
+        with tempfile.TemporaryDirectory() as tmp:
+            desc = pathlib.Path(tmp) / "pr_desc.txt"
+
+            def review(pr, text):
+                desc.write_text(text)
+                prompts.clear()
+                Engine().ran(pr, "--rubrics", f"{rubric},scope", "--pr-desc-file", str(desc))
+                self.assertNotIn(head, prompts["scope"])
+                self.assertNotIn(head, prompts[rubric].split("[END OF PULL REQUEST CONTENT]")[0])
+                return prompts[rubric].split("# Your rubric")[1]
+
+            with clause_cutoffs({"Owner/Repo": 100}), patch.object(tb, "_fake_runner", capture):
+                tail = review(100, f"# t\n\n### Roadmap report\n{bad}\n")
+                self.assertNotIn(head, tail)  # below the cutoff nothing is checked or shown
+                tail = review(101, f"# t\n\n### Roadmap report\n{bad}\n")
+                self.assertIn(head + "0 valid; problems to fix:\n- marker 1: `kind` must be", tail)
+                self.assertGreater(tail.index(head), tail.index("## Phased-in clauses"))
+                # The author fixes the description alone: the next run reads it afresh.
+                self.assertIn(head + "1 found, all valid.\n", review(101, f"# t\n\n### Roadmap report\n{good}\n"))
+                self.assertIn(head + "none found.\n", review(101, "# t\n\nNo report.\n"))
+                self.assertIn(head + "none found.\n", review(101, f"# {good}\n\nNo report.\n"))  # title
+                desc.unlink()
+                prompts.clear()
+                Engine().ran(101, "--rubrics", rubric)
+                self.assertIn(head + "not checked", prompts[rubric])
+
 
 if __name__ == "__main__":
     unittest.main()
