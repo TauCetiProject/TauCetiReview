@@ -616,6 +616,23 @@ def test_shared_transport_owns_pacing_and_retry_budget():
         assert gh.call_count == 1 and not sleep.called
 
 
+def test_installation_token_identity_names_the_configured_app_bot():
+    from unittest.mock import patch
+    denied = types.SimpleNamespace(returncode=1, stdout='', stderr='HTTP 403: Resource not accessible by integration')
+    for configured, expected in (('', post.REVIEW_BOT), ('tauceti-review-poster[bot]', 'tauceti-review-poster[bot]')):
+        with (patch.dict(post.os.environ, {"GH_TOKEN": "ghs_x", post.APP_LOGIN_ENV: configured}),
+              patch.object(post.subprocess, 'run', return_value=denied)):
+            assert post.current_login() == expected
+    for invalid in ('kim-em', 'Bad[bot]', 'a[bot] b'):
+        with (patch.dict(post.os.environ, {"GH_TOKEN": "ghs_x", post.APP_LOGIN_ENV: invalid}),
+              patch.object(post.subprocess, 'run', return_value=denied)):
+            try:
+                post.current_login()
+            except post.Incomplete:
+                continue
+            raise AssertionError(f"accepted {invalid!r}")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:

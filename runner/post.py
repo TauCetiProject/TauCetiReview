@@ -266,10 +266,24 @@ SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 # scoreboards, but the native transport refuses to edit or delete them, so a new board is posted.
 RECEIPT_SCOREBOARD_MARKER = "<!--tauceti-source:v2 "
 REVIEW_BOT = "tauceti-review-bot[bot]"
+# A worker posting through another GitHub App's installation names that App's bot here.
+APP_LOGIN_ENV = "TAUCETI_REVIEW_APP_LOGIN"
+APP_LOGIN_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,33}\[bot\]")
+
+
+def installation_login():
+    """The bot an installation token acts as: TAUCETI_REVIEW_APP_LOGIN when it names one, else
+    the review App's bot."""
+    login = os.environ.get(APP_LOGIN_ENV, "").strip()
+    if not login:
+        return REVIEW_BOT
+    if not APP_LOGIN_RE.fullmatch(login):
+        raise Incomplete(f"{APP_LOGIN_ENV} is not a GitHub App bot login")
+    return login
 
 
 def current_login():
-    """Who this token acts as: the operator for a user token, or the review bot for an installation
+    """Who this token acts as: the operator for a user token, or the App's bot for an installation
     token (which cannot read /user). We only ever edit/delete comments authored by this login, so a
     write-scoped token never overwrites or removes a comment belonging to someone else."""
     r = subprocess.run(["gh", "api", "user", "--jq", ".login"], text=True, capture_output=True)
@@ -282,7 +296,7 @@ def current_login():
     token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN') or ''
     if (token.startswith('ghs_') and '403' in (r.stderr or '')
             and 'resource not accessible by integration' in (r.stderr or '').lower()):
-        return REVIEW_BOT
+        return installation_login()
     raise Incomplete('publication identity is unavailable')
 
 
