@@ -41,7 +41,14 @@ PHASED_RUBRICS = {"quality-pass": {
 # in a runner-verified block after the rubric text, that the clause applies, and the rubric applies
 # it only then, so a PR opened earlier is not asked for something its author could not have known
 # of. The merge gate is unaffected: the rubric's row is required either way.
-PHASED_CLAUSES = {}
+#
+# roadmap-report (correctness): a PR that departs from its roadmap target because the roadmap's
+# statement is wrong carries a roadmap report in its description. Set the cutoffs as for
+# quality-pass once Tau Ceti's workers write the report.
+PHASED_CLAUSES = {"correctness": {"roadmap-report": {
+    "TauCetiProject/TauCeti": None,
+    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": None,
+}}}
 
 
 def repository_key(repo):

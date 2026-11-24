@@ -30,6 +30,20 @@ weaker than it pretends. Approve only once you have tried and failed.
   unfalsifiable; require the witness or consumer in the same PR.
 - Over-strong typeclass or structural assumptions that quietly narrow the claim.
 
+## Roadmap corrections
+
+When a PR departs from its roadmap target because the roadmap's statement (README or
+`Suggested.lean` pin) is wrong, try to break that claim too: the counterexample or obstruction
+must be real, and the PR's statement must be the right correction, not a convenient weakening.
+Where the runner's phased-in block names `roadmap-report`, the description must also carry a
+roadmap report (a `### Roadmap report` section stating what is wrong, why, and the correction,
+plus its `tauceti-roadmap-report:v1` marker) so the correction reaches the roadmap's authors; if
+it is missing, `request_changes` asking for it. Any report present whose claim is false or
+unsupported (the statement holds as written, or the roadmap text it quotes does not say what it
+claims) is also `request_changes`. Tools check the marker's fields: judge the mathematics and the
+report's presence. An edit to the description alone starts no new review, so ask the author to
+reply on your thread once it is made.
+
 ## Missing prerequisites
 
 If the PR needs something that does not exist and fakes it (assumes it, bundles it as a
@@ -38,6 +52,7 @@ first, as its own work.
 
 ## Verdict
 
-- `block` on any such fault. When blocking on uncertainty, name the specific statement, the
-  suspected mismatch, and the test or source that failed to resolve it.
+- `block` on any such fault, except the roadmap report above. When blocking on uncertainty, name
+  the specific statement, the suspected mismatch, and the test or source that failed to resolve
+  it.
 - `approve` only once you have tried to break every new statement and definition and failed.

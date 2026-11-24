@@ -404,7 +404,8 @@ class PhasedClauses(unittest.TestCase):
                 self.assertIn(f"`{clause}`", text, (rubric, clause))
                 keys = [admission_policy.repository_key(repo) for repo in table]
                 self.assertEqual(len(set(keys)), len(keys), keys)
-                for after in table.values():
+                for key, after in zip(keys, table.values()):
+                    self.assertRegex(key, r"^(github|forgejo):https://[^/\s]+/[^/\s]+/[^/\s]+$")
                     self.assertTrue(after is None or (type(after) is int and after >= 0), after)
 
     def test_the_engine_tells_only_that_rubrics_reviewer_and_only_above_the_cutoff(self):

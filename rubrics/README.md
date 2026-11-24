@@ -43,3 +43,10 @@ numbers its own PRs. The angle is added after the project's own list of rubrics,
 is the default or comes from its configuration.
 The review bot's own Mathlib bumps and lint repairs need no report, because no author runs the
 checklist on them.
+
+A new requirement within a rubric that already runs on every PR is phased in the same way, by
+`PHASED_CLAUSES` in the same file: the engine names the clauses that apply to a PR in a
+runner-verified block after the rubric text, and the rubric applies such a clause only when that
+block names it. Correctness's `roadmap-report` clause, which asks a PR correcting a wrong roadmap
+statement to carry a roadmap report in its description, is phased in this way; until its cutoffs
+are set it applies to no PR.
