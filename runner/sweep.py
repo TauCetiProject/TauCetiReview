@@ -267,7 +267,7 @@ def decide_action(*, merge_ok, in_queue, evictions_at_head, behind, escalate=EVI
             return "update_branch", (f"evicted {evictions_at_head}x at this head and {behind} commit(s) "
                                      "behind main; updating onto main to re-test and re-review")
         return "flag", (f"evicted {evictions_at_head}x at this head but not behind main; "
-                        "left to the worker to repair the integration failure")
+                        "awaiting integration-failure repair")
     return "enqueue", (f"green and not queued ({evictions_at_head} prior eviction(s) at head); "
                        "re-enqueuing")
 
