@@ -24,8 +24,8 @@ strand forever. This runs on a schedule and re-drives them:
                  head (the queue squash-merges, so the extra merge commit never reaches main).
 
   flag           Fork updates are handed to the worker tending the PR: the upstream App cannot
-                 write contributor forks. If update-branch conflicts (e.g. two PRs added the same declaration), the PR needs
-                 human/worker reconciliation, not a retry: label it `needs-rebase`, comment once, and
+                 write contributor forks. If update-branch conflicts (e.g. two PRs added the same declaration), the PR is
+                 left to the worker rebase, not a retry: label it `needs-rebase`, comment once, and
                  stop at this head. Workers use their existing per-PR rebase budget. A new head
                  retires the request. Also used after repeated evictions when NOT behind main.
 
@@ -267,7 +267,7 @@ def decide_action(*, merge_ok, in_queue, evictions_at_head, behind, escalate=EVI
             return "update_branch", (f"evicted {evictions_at_head}x at this head and {behind} commit(s) "
                                      "behind main; updating onto main to re-test and re-review")
         return "flag", (f"evicted {evictions_at_head}x at this head but not behind main; "
-                        "needs a human look")
+                        "awaiting integration-failure repair")
     return "enqueue", (f"green and not queued ({evictions_at_head} prior eviction(s) at head); "
                        "re-enqueuing")
 
