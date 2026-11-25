@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""The shared prefix of a review round's rubric prompts, and how run_claude marks it for caching.
+"""Shared prompt layout and CLI-owned cache-breakpoint compatibility.
 
-A review round runs one `claude -p` per rubric over the same pull request. The pull request is most
-of each prompt, so every rubric after the first should read it from the prompt cache rather than
-pay to write it again. That needs two things: every rubric's prompt starts with the same text, and
-that text ends at a cache breakpoint, which a single `-p` text block cannot carry.
-
-Dependency-free: run with `python tests/test_prompt_cache.py` or under pytest.
+PR context remains user data. Each rubric runs independently; adding our own
+breakpoint can exceed the API's four-block limit after a tool call.
 """
 import json, pathlib, sys
 
@@ -32,13 +28,12 @@ def test_rubrics_share_a_prefix_that_holds_the_pull_request():
     assert "# Naming and notation" in prompts[1].rubric
 
 
-def test_claude_input_marks_the_shared_prefix():
+def test_claude_input_keeps_the_whole_prompt_in_one_unmarked_user_block():
     p = reviewers.build_prompt(RUBRICS, "naming", CTX, "MARKER")
     msg = json.loads(reviewers.claude_input(p))
     assert msg["type"] == "user" and msg["message"]["role"] == "user"
-    first, second = msg["message"]["content"]
-    assert first == {"type": "text", "text": p.shared, "cache_control": {"type": "ephemeral"}}
-    assert second == {"type": "text", "text": p.rubric}
+    assert msg["message"]["content"] == [{"type": "text", "text": str(p)}]
+    assert "cache_control" not in json.dumps(msg)
 
 
 def test_claude_input_accepts_a_plain_prompt():
@@ -46,35 +41,36 @@ def test_claude_input_accepts_a_plain_prompt():
     assert msg["message"]["content"] == [{"type": "text", "text": "just text"}]
 
 
-def _run_claude_input(honours_ttl):
+def _run_claude_input():
     seen = {}
 
     class R:
         returncode, stdout, stderr = 0, "", ""
 
-    orig_sh, orig_check = reviewers.sh, reviewers._claude_honours_cache_ttl
+    orig_sh = reviewers.sh
     reviewers.sh = lambda argv, **kw: (seen.update(argv=list(argv), **kw), R)[1]
-    reviewers._claude_honours_cache_ttl = lambda: honours_ttl
     try:
         p = reviewers.build_prompt(RUBRICS, "naming", CTX, "MARKER")
         reviewers.run_claude(p, ".", "claude-opus-5-5", {"HOME": "/h"})
     finally:
-        reviewers.sh, reviewers._claude_honours_cache_ttl = orig_sh, orig_check
+        reviewers.sh = orig_sh
     return p, seen
 
 
-def test_run_claude_streams_the_blocks_with_a_pinned_ttl():
-    p, seen = _run_claude_input(True)
+def test_run_claude_streams_one_unmarked_block_with_existing_cli_ttl():
+    p, seen = _run_claude_input()
     argv = seen["argv"]
     assert argv[argv.index("--input-format") + 1] == "stream-json"
-    assert json.loads(seen["stdin_text"])["message"]["content"][0]["text"] == p.shared
-    # The breakpoint above carries no ttl, so Claude Code's own must be 5m as well.
+    assert json.loads(seen["stdin_text"])["message"]["content"][0]["text"] == str(p)
+    assert "cache_control" not in seen["stdin_text"]
+    # Preserve the existing CLI TTL policy without reserving an extra breakpoint.
     assert seen["env"] == {"HOME": "/h", "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
 
 
-def test_an_older_claude_gets_one_uncached_block():
-    # A CLI that ignores the TTL pin keeps 1h breakpoints, and the API rejects ours before them.
-    p, seen = _run_claude_input(False)
+def test_transport_does_not_probe_cli_version_or_add_version_dependent_markers():
+    from unittest.mock import patch
+    with patch.object(reviewers, "_claude_honours_cache_ttl", side_effect=AssertionError("transport must not probe CLI version")):
+        p, seen = _run_claude_input()
     assert json.loads(seen["stdin_text"])["message"]["content"] == [{"type": "text", "text": str(p)}]
 
 

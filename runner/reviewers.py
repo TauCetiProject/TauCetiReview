@@ -126,10 +126,9 @@ def reject_retired_opus(model):
 
 
 # One unguessable token per review process. Claude Code writes paths under HOME into its system
-# prompt, which comes before the shared rubric prefix (see ReviewPrompt), so a different HOME for
-# every attempt made each rubric's prompt differ before the pull request and no rubric of a round
-# could read another's cache. Each attempt still gets an empty HOME: the same path, wiped before
-# and after use.
+# prompt. Reusing the path keeps the CLI's system/tool prefix stable between independent rubrics;
+# it does not guarantee shared PR-context cache hits. Each attempt still gets an empty HOME:
+# the same path, wiped before and after use.
 _CLAUDE_HOME_TOKEN = secrets.token_hex(8)
 
 
@@ -333,11 +332,9 @@ class ReviewPrompt(str):
 
     The text is the whole prompt, so every runner can keep treating it as a string. `shared` is the
     part every rubric of a review round has in common (the shared protocol and the pull request), and
-    `rubric` is the rest. run_claude sends them as two content blocks with a cache breakpoint after
-    the first, so the rubrics after the first one in a round read the pull request from the prompt
-    cache instead of paying to write it again. Anthropic only caches a prefix that ends where a
-    breakpoint is, so putting the shared part first in one text block would not be enough.
-    Codex, Kiro and pi get the same text in the same order as one string."""
+    `rubric` is the rest. Every runner receives the complete text in the same order. Claude sends
+    one unmarked user-content block, leaving cache-breakpoint allocation to the CLI; sharing a
+    prefix alone does not guarantee that independent rubrics reuse the PR context from cache."""
 
     def __new__(cls, shared, rubric):
         self = super().__new__(cls, shared + rubric)
@@ -353,8 +350,8 @@ def build_prompt(rubrics_dir, rubric, context, marker, rubric_context=""):
 
     `context` must be identical for every rubric in a round (it describes the pull request);
     anything rubric-specific, such as a reactivation block, goes in `rubric_context`, which follows
-    the rubric text. Anything rubric-specific in `context` would make each rubric's shared prefix
-    different and lose the cache reuse."""
+    the rubric text. This keeps shared context identical without promising cache reuse across
+    independent rubric calls."""
     common = (rubrics_dir / "_common.md").read_text()
     angle = (rubrics_dir / f"{rubric}.md").read_text()
     refs = "".join(_reference_block(rubrics_dir, p) for p in RUBRIC_REFERENCES.get(rubric, []))
@@ -506,16 +503,14 @@ def _tool_trace(stream_lines, root):
     return trace, meta, result
 
 
-# Claude Code picks its own cache TTL (1h for subscribers, 5m otherwise), and the API rejects a
-# 1h breakpoint that comes after a 5m one, so the breakpoint claude_input adds must use the same
-# TTL as Claude Code's own. Pin both to 5m: a round's rubrics run back to back and every turn
-# refreshes the entry, and a 5m write costs 1.25x the input rate against 2x for 1h.
+# Keep the existing five-minute CLI cache policy. Review adds no user breakpoint;
+# Claude Code owns the request's breakpoint allocation, including tool turns.
 _CLAUDE_CACHE_TTL = "5m"
 
 
-# The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL. An older one keeps its
-# own 1h breakpoints, so the API would reject every request carrying our 5m breakpoint before them;
-# with an older or unidentifiable CLI the prompt goes as one block, uncached, as before.
+# The first Claude Code release that honours CLAUDE_CODE_PROMPT_CACHE_TTL.
+# Retained for the separately reviewed saved-session implementation; no production
+# caller currently uses this check. Ordinary rubric transport adds no user breakpoint.
 _CLAUDE_TTL_MIN_VERSION = (2, 1, 242)
 
 
@@ -533,17 +528,13 @@ def _claude_cache_env(env):
     return {**env, "CLAUDE_CODE_PROMPT_CACHE_TTL": _CLAUDE_CACHE_TTL}
 
 
-def claude_input(prompt, cache=True):
-    """The stream-json user message for one rubric. A ReviewPrompt becomes two text blocks with a
-    cache breakpoint after the shared one, so the next rubric of the round reads the pull request
-    from the cache. Claude Code passes the block's cache_control through to the API unchanged.
-    With `cache` false the whole prompt is one block with no breakpoint."""
-    shared = getattr(prompt, "shared", "")
-    if shared and cache:
-        content = [{"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}},
-                   {"type": "text", "text": prompt.rubric}]
-    else:
-        content = [{"type": "text", "text": str(prompt)}]
+def claude_input(prompt):
+    """Keep PR context in user content and let Claude Code own all cache breakpoints.
+
+    An extra user breakpoint exceeds the API limit after Claude Code adds its
+    own tool-result breakpoints, including with deployment-pinned 2.1.280.
+    """
+    content = [{"type": "text", "text": str(prompt)}]
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
 
@@ -556,7 +547,6 @@ def run_claude(prompt, cwd, model, env):
     # did, and the events before it are the only record of what the reviewer looked at. Parsing is
     # tolerant — a malformed line is counted and skipped, and a stream with no result event falls
     # through to the same parse_error path a malformed json document took.
-    cache = _claude_honours_cache_ttl()
     r = sh(["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
             "--disable-slash-commands",
             # --tools RESTRICTS the built-in set; --allowedTools only grants permission within
@@ -579,7 +569,7 @@ def run_claude(prompt, cwd, model, env):
             "--tools", *_REVIEW_TOOLS,
             "--allowedTools", *_REVIEW_TOOLS,
             "--input-format", "stream-json"],
-           cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt, cache))
+           cwd=cwd, env=_claude_cache_env(env), stdin_text=claude_input(prompt))
     out = {"returncode": r.returncode, "raw_stderr": r.stderr[-3000:]}
     trace, meta = [], {}
     try:
