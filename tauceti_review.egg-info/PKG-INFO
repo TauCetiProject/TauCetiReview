@@ -6,7 +6,7 @@ License: Apache-2.0
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 License-File: LICENSE
-Requires-Dist: tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@main
+Requires-Dist: tauceti-tools @ git+https://github.com/TauCetiProject/TauCetiTools@cc55ea7cbd272d688189c09230497d6a9f9ff101
 Dynamic: license-file
 
 # Reviewing a PR yourself
@@ -33,15 +33,7 @@ On your `PATH`, all logged in:
 - `claude` ([Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code)) signed into a
   Claude subscription, and/or `codex` ([Codex](https://www.npmjs.com/package/@openai/codex)) signed
   into a ChatGPT subscription. You need **at least one**; each rubric is judged by whichever you
-  have. With both, the reviewer is drawn per rubric, like CI. For a dedicated Claude
-  agent login, set `CLAUDE_CONFIG_DIR` to the directory containing its `.credentials.json`;
-  the reviewer copies its current access credential into a private config directory, leaving
-  the refresh token with the source owner. If expiry metadata is supplied it must be valid and
-  unexpired; setup-token files without expiry metadata are supported. Refresh the source before
-  long reviews: an access-only snapshot cannot renew itself during an arbitrarily long call.
-  `--require-claude-config-file` also requires a file when the directory is unset (using
-  `~/.claude`), refusing native login fallback. This explicit compatibility flag is forwarded to
-  the engine, so older CLIs or pinned engines reject it before any model inference.
+  have. With both, the reviewer is drawn per rubric, like CI.
 - For explicit Kiro reviews, `kiro-cli` signed in with `kiro-cli login` (or a
   headless `KIRO_API_KEY`). Kiro is never auto-drawn.
 - Python ≥ 3.10.
@@ -214,25 +206,10 @@ gate and a contributor needs no TauCetiData write access for a posted review to 
   config/`AGENTS.md`, skills, and MCP servers do **not** influence the review — two people running
   the same rubrics on the same PR get reviews that differ only by the model, not by their local
   setup. (The repo's own in-tree `CLAUDE.md` is still visible, as part of the code under review.)
-  An explicit `CLAUDE_CONFIG_DIR` selects its credential file on every platform. A missing or
-  unreadable explicit file stops preparation before any provider runs, rather than selecting the
-  operator's login. Explicit directories therefore select the file route even on macOS; if you
-  previously used such a directory only for a Keychain login, unset it for the legacy login route
-  or provide a dedicated agent file. This file route does not implement the separate exported-token
-  route proposed in PR #234. The
-  separate `TAUCETI_CLAUDE_USAGE_CREDENTIALS` login is never copied or passed to a reviewer.
-  With no configured directory or credential file, macOS falls back to
+  On macOS, where the login lives in the keychain rather than a credential file, it falls back to
   your real HOME and prints a note; pass `--auth api` with a key for a guaranteed clean room there.
 - **Determinism.** With both CLIs installed the reviewer is random per rubric, so two runs can
   differ on borderline rubrics — the same property the CI review has.
-- **Crashed rubrics.** A rubric that produces no verdict (a refused tool call, an unreadable CLI
-  stream, an answer with no parseable verdict) is a crash, not a review. When crashes would decide
-  the scoreboard, because no rubric holds a `request_changes` or `block` made on this head, nothing
-  is posted: the run exits with status 4, its last line `review withheld: ...` names each crash
-  kind, the round is recorded as `withheld` (not a full review pass), and the next run re-runs the
-  crashed rubrics. A scoreboard published beside a genuine adverse verdict lists each errored
-  rubric's kind under `errors` in its hidden metadata. The engine log shows
-  `[<rubric>] no verdict: <kind>` for every crash.
 - **Concurrent reviewers.** Before spending inference, a contributing run acquires a renewable
   Git lease for the repository, PR and exact head. Another holder makes the run yield without
   inference (exit status 81), regardless of model. Leases release on exit and expire after crashes.
@@ -292,30 +269,3 @@ acquisitions, or the Fleet cleanup command using the same collector, remove
 unleased publications after the existing repository-cache publication age of one
 day, and recover interrupted publication/deletion. No cache size or worker-count
 limit is introduced. Removing the environment setting restores private preparation.
-
-Native installations can supply a trusted scoreboard backend through the operator
-process environment: `TAUCETI_NATIVE_REVIEW_PUBLISHER=module:factory`. The factory
-receives the native publication transport and returns an object with `publish(body)`.
-An optional `preflight()` validates configuration and publisher access before
-inference. An optional `reserve()` returns an opaque JSON reservation, saved in the
-common paid receipt and supplied to later transports as `plan['backend_run']`.
-This reserves verdict order before inference without publishing an early board or
-changing unchanged-review decisions. A backend can supply `comments()` to select
-receipt-verified prior scoreboards instead of mutable discussion. Optional `scope()`
-serializes all finding/scoreboard writes; `superseded(body)` stops obsolete runs
-before any finding mutation. `--publication-protocol` reports the supported
-backend protocol without accessing a repository or running inference.
-It must durably reconcile retries and return a confirmed positive comment `id`, or
-`{"superseded": true}` when a newer intent supersedes this one. Temporary failures
-raise `tauceti_tools.forge.Incomplete`; the existing rendered-output recovery retries
-publication without new inference. Required findings still publish before the
-scoreboard, using the same posting flow as GitHub. A backend owns its immutable
-scoreboard history, so ordinary comment editing and duplicate cleanup do not run
-for its records. PR/project configuration never selects this executable factory.
-Policy/identity errors raise `PermissionError` and become a blocked publication
-requiring operator repair. Supersession uses exit 87, separately from a changed
-head before inference (82). Ordinary native posting also refuses to edit or delete
-receipt-bound scoreboard comments when the trusted backend is unavailable.
-A backend with `historical = True` publishes retained commit-bound verdicts after a
-PR closes or its head moves. Native findings then use the existing head-bound
-conversation fallback, preserving required-finding ordering and contestability.
