@@ -246,17 +246,20 @@ class SharedPublication(unittest.TestCase):
                 assert json.loads(w.receipt.read_text())['state'] == 'prepared'
                 assert not w.source.findings(7)
 
-    def test_ordinary_native_path_cannot_edit_or_delete_receipt_history(self):
+    def test_ordinary_native_path_maintains_older_provenance_boards_as_on_github(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
             w = workflow('forgejo', pathlib.Path(directory), stack)
             row = w.api.request('POST', 'repos/o/r/issues/7/comments',
                                 {'body': '<!--tauceti-scoreboard-->\n<!--tauceti-source:v2 {}-->'})
+            duplicate = w.api.request('POST', 'repos/o/r/issues/7/comments',
+                                      {'body': '<!--tauceti-scoreboard-->\n<!--tauceti-source:v2 {}-->'})
             transport = publication_transport.NativePublication(w.source.key, 7, HEAD, {}, post, source=w.source)
-            writes = list(w.api.writes)
-            with self.assertRaises(publication.PublicationBlocked):
-                transport.comment('PATCH', row['id'], w.receipt.parent / 'scoreboard.md')
-            assert transport.comment('DELETE', row['id']) is None
-            assert w.api.writes == writes
+            board = w.receipt.parent / 'scoreboard.md'
+            board.write_text('<!--tauceti-scoreboard-->\nEdited in place.')
+            edited = transport.comment('PATCH', row['id'], board)
+            assert edited['id'] == row['id'] and edited['body'] == board.read_text()
+            transport.comment('DELETE', duplicate['id'])
+            assert [c['id'] for c in transport.board_comments()] == [row['id']]
 
     def test_new_board_is_posted_beside_our_receipt_backed_board(self):
         """Without the retired receipt publisher, our legacy receipt-backed board is not edited
