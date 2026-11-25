@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "runner"))
 import cli
+from tauceti_tools.claims import GitClaim
 
 H = "a" * 40
 
@@ -65,6 +66,58 @@ def test_git_outage_proceeds_without_comment_fallback():
         cleanup.assert_not_called()
         assert receipt.call_args.kwargs == {'git_held': False}
 
+
+
+class RealLease(GitClaim):
+    """A real GitClaim whose claim.sh verbs are recorded instead of run."""
+
+    def __init__(self):
+        super().__init__('o/claims', 'review/o/r/1/' + H, 'w-nonce', ttl=3)
+        self.verbs = []
+
+    def command(self, verb):
+        self.verbs.append(verb)
+        return 0
+
+
+def run_main(outcome, *, inference):
+    lease = RealLease()
+    assert lease.acquire() == 0
+    lease.start_heartbeat()
+
+    def fake_main(cleanup, leases, phase):
+        cli._ACTIVE_GIT_CLAIMS.append(lease)
+        phase['inference'] = inference
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    with patch.object(cli, '_main', side_effect=fake_main), patch.object(cli, '_ACTIVE_GIT_CLAIMS', []), \
+         contextlib.redirect_stderr(io.StringIO()):
+        result = cli.main()
+        left = list(cli._ACTIVE_GIT_CLAIMS)
+    return result, lease, left
+
+
+def test_retained_publication_keeps_the_head_lease_until_its_ttl():
+    wait = cli.publication.PUBLICATION_WAIT_EXIT
+    for outcome in (wait, cli.publication.PublicationPending('retained'), OSError('write'),
+                    cli.ForgeError('AmbiguousWrite')):
+        result, lease, left = run_main(outcome, inference=True)
+        assert result == wait, (outcome, result)
+        assert 'release' not in lease.verbs, outcome
+        assert lease.thread is None and lease.stop.is_set() and not lease.held, outcome
+        assert left == [], 'atexit must not release a kept lease'
+        lease.release()
+        assert 'release' not in lease.verbs, 'a kept lease is never released later in this process'
+
+
+def test_other_outcomes_still_release_the_lease():
+    for outcome, inference in ((0, True), (cli.publication.PUBLICATION_BLOCKED_EXIT, True),
+                               (cli.publication.PublicationPending('before'), False)):
+        result, lease, left = run_main(outcome, inference=inference)
+        assert lease.verbs.count('release') == 1, (outcome, lease.verbs)
+        assert left == []
 
 
 def test_reporting_failure_does_not_abort_a_review():
