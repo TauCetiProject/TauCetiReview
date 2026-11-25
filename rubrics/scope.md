@@ -33,7 +33,9 @@ node or heading; read it (in the roadmap checkout) to confirm.
   approving on citation alone: `request_changes`, asking for the target itself or for what makes
   this PR necessary to it.
 - Judge the path, not its mathematical adequacy. If scope turns on whether a prerequisite is
-  strong enough or non-vacuous, leave that to correctness.
+  strong enough or non-vacuous, leave that to correctness. Likewise a PR that states a corrected
+  form of its target because the roadmap's statement is wrong advances that target; whether the
+  correction is right is for correctness.
 
 ## Single topic
 

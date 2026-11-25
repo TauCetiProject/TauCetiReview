@@ -36,6 +36,20 @@ PHASED_RUBRICS = {"quality-pass": {
     "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": 300,
 }}
 
+# Clauses being phased in within a rubric that already runs on every PR: {rubric: {clause: cutoffs}},
+# the cutoffs read as above. The engine tells the reviewer of a PR numbered above a clause's cutoff,
+# in a runner-verified block after the rubric text, that the clause applies, and the rubric applies
+# it only then, so a PR opened earlier is not asked for something its author could not have known
+# of. The merge gate is unaffected: the rubric's row is required either way.
+#
+# roadmap-report (correctness): a PR that departs from its roadmap target because the roadmap's
+# statement is wrong carries a roadmap report in its description. Set the cutoffs as for
+# quality-pass once Tau Ceti's workers write the report.
+PHASED_CLAUSES = {"correctness": {"roadmap-report": {
+    "TauCetiProject/TauCeti": None,
+    "forgejo:https://git.taucetiproject.org/TauCetiProject/TauCeti": None,
+}}}
+
 
 def repository_key(repo):
     """One spelling for each repository: a bare `owner/name` is on GitHub, and case is ignored."""
@@ -43,19 +57,31 @@ def repository_key(repo):
     return name if "://" in name else "github:https://github.com/" + name
 
 
-def with_phased_rubrics(rubrics, repo, pr):
-    """`rubrics`, then each rubric being phased in that PR number `pr` of `repo` is judged against."""
-    rubrics = list(rubrics)
+def _after_cutoff(cutoffs, repo, pr):
+    """Whether PR number `pr` of `repo` is above its cutoff in `cutoffs`; False while there is none
+    for `repo`, or `pr` is not a number."""
     try:
         number = int(pr)
     except (TypeError, ValueError):
-        return rubrics
+        return False
     repo = repository_key(repo)
+    cutoff = {repository_key(name): after for name, after in cutoffs.items()}.get(repo)
+    return cutoff is not None and number > cutoff
+
+
+def with_phased_rubrics(rubrics, repo, pr):
+    """`rubrics`, then each rubric being phased in that PR number `pr` of `repo` is judged against."""
+    rubrics = list(rubrics)
     for rubric, cutoffs in PHASED_RUBRICS.items():
-        cutoff = {repository_key(name): after for name, after in cutoffs.items()}.get(repo)
-        if cutoff is not None and number > cutoff and rubric not in rubrics:
+        if _after_cutoff(cutoffs, repo, pr) and rubric not in rubrics:
             rubrics.append(rubric)
     return rubrics
+
+
+def phased_clauses(rubric, repo, pr):
+    """The clauses of `rubric` being phased in that apply to PR number `pr` of `repo`, sorted."""
+    return sorted(clause for clause, cutoffs in PHASED_CLAUSES.get(rubric, {}).items()
+                  if _after_cutoff(cutoffs, repo, pr))
 
 
 def rebase_request_heads(comments, *, stalled=False):
