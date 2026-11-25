@@ -51,13 +51,12 @@ We A/B-test the reviews themselves, to measure and improve review quality. `judg
 same `(pr, head_sha, rubric)` — production vs a `--shadow` arm with a different model or
 rubric version — and has AI judges pick the better one, grounded in the actual checked-out
 code (a fluent hallucinated finding should lose to a terse real one), in both presentation
-orders, with a cross-family panel to dilute self-preference bias. Hard and audit-sampled
-cases escalate to human meta-reviewers via `label.py`. The judgments and decisions feed
-win-rates per model and rubric version, and judge–human agreement.
+orders, with a cross-family panel to dilute self-preference bias. The judges decide; there is
+no human meta-review step. The judgments feed win-rates per model and rubric version.
 
 So far: several thousand archived review runs, a few hundred A/B pairs, and over a thousand AI
-judgments across five judge models and three judge-prompt versions, plus a first round of human
-decisions and preliminary calibration. All of it lives in
+judgments across five judge models and three judge-prompt versions, plus an earlier round of
+human labels used for preliminary judge calibration. All of it lives in
 [TauCetiData](https://github.com/TauCetiProject/TauCetiData); see its `docs/` for the design.
 
 ## Costs

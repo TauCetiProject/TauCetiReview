@@ -777,7 +777,7 @@ def test_merge_base_is_rechecked_right_before_enqueue():
     assert run(MB, MB, after_mb="e" * 40) == (1, 1)
     assert run(MB, MB, after_mb="") == (1, 1)
 
-def test_up_to_date_eviction_waits_for_human_without_worker_request():
+def test_up_to_date_eviction_waits_for_repair_without_worker_request():
     from types import SimpleNamespace
     from unittest.mock import patch
     head, comments = "a" * 40, []
